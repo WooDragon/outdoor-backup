@@ -1,0 +1,41 @@
+#!/bin/sh /etc/rc.common
+#
+# OpenWrt SD Card Backup - Init Script
+# Procd-style service management
+#
+
+START=99
+STOP=10
+
+USE_PROCD=1
+PROG=/opt/sdcard-backup/scripts/backup-manager.sh
+
+start_service() {
+	# Create runtime directories
+	mkdir -p /opt/sdcard-backup/var/lock
+	mkdir -p /opt/sdcard-backup/log
+	mkdir -p /mnt/ssd/SDMirrors/.logs
+
+	# Set permissions
+	chmod 755 /opt/sdcard-backup/scripts/*.sh
+	chmod 755 /etc/hotplug.d/block/90-sdcard-backup
+
+	logger -t sdcard-backup "Service enabled - SD cards will be backed up automatically"
+}
+
+stop_service() {
+	# Kill any running backup processes
+	pkill -f "backup-manager.sh" 2>/dev/null || true
+
+	logger -t sdcard-backup "Service stopped"
+}
+
+reload_service() {
+	# Reload configuration
+	logger -t sdcard-backup "Configuration reloaded"
+}
+
+service_triggers() {
+	# Reload on config changes
+	procd_add_reload_trigger "sdcard-backup"
+}

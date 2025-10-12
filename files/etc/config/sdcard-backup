@@ -1,0 +1,12 @@
+# UCI Configuration for SD Card Backup System
+# This is a simpler alternative to /opt/sdcard-backup/conf/backup.conf
+# Edit with: uci set sdcard-backup.config.backup_root='/your/path'
+#            uci commit sdcard-backup
+
+config sdcard-backup 'config'
+	option enabled '1'
+	option backup_root '/mnt/ssd/SDMirrors'
+	option mount_point '/mnt/sdcard'
+	option debug '0'
+	option led_green '/sys/class/leds/green:lan'
+	option led_red '/sys/class/leds/red:sys'

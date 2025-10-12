@@ -1,0 +1,33 @@
+# Build artifacts
+*.ipk
+*.o
+*.so
+*.a
+
+# Temporary files
+*~
+*.swp
+*.swo
+.*.swp
+.*.swo
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.vscode/
+.idea/
+*.sublime-*
+
+# Log files
+*.log
+
+# Test output
+test-results/
+coverage/
+
+# Environment
+.env
+.env.local

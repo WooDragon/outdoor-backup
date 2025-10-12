@@ -1,0 +1,82 @@
+#!/bin/sh
+#
+# OpenWrt SD Card Backup - Hotplug Trigger
+# Triggered when block devices are added/removed
+# POSIX-compliant for ash shell
+#
+
+# Only handle block device events
+[ "$SUBSYSTEM" = "block" ] || exit 0
+
+# Configuration
+BACKUP_MANAGER="/opt/sdcard-backup/scripts/backup-manager.sh"
+LOG_TAG="sdcard-backup-hotplug"
+
+# Log function
+log_message() {
+	logger -t "$LOG_TAG" "$1"
+}
+
+# Check if device is an SD card
+is_sdcard() {
+	local dev_path="$1"
+	local dev_base="${DEVNAME%%[0-9]*}"
+
+	# Check multiple indicators for SD card
+	# 1. USB card reader pattern in device path
+	if echo "$dev_path" | grep -q "usb.*card\|reader\|SD\|mmc"; then
+		return 0
+	fi
+
+	# 2. Check device model
+	if [ -f "/sys/block/$dev_base/device/model" ]; then
+		local model=$(cat "/sys/block/$dev_base/device/model" 2>/dev/null)
+		if echo "$model" | grep -iq "card\|reader\|SD\|mmc"; then
+			return 0
+		fi
+	fi
+
+	# 3. Size check - SD cards typically ≤512GB
+	if [ -f "/sys/block/$dev_base/size" ]; then
+		local size=$(cat "/sys/block/$dev_base/size" 2>/dev/null)
+		# Size in 512-byte sectors, 512GB = 1073741824 sectors
+		if [ "$size" -le 1073741824 ] 2>/dev/null; then
+			return 0
+		fi
+	fi
+
+	return 1
+}
+
+# Main logic
+case "$ACTION" in
+	add)
+		# Only process partitions, not whole disks
+		[ "$DEVTYPE" = "partition" ] || exit 0
+
+		# Check if this is an SD card
+		if is_sdcard "$DEVPATH"; then
+			log_message "SD card detected: $DEVNAME"
+
+			# Launch backup manager in background
+			(
+				# Wait for device to settle
+				sleep 2
+
+				# Execute backup
+				"$BACKUP_MANAGER" "add" "$DEVNAME" "$DEVPATH" &
+			) &
+		fi
+		;;
+
+	remove)
+		if is_sdcard "$DEVPATH"; then
+			log_message "SD card removed: $DEVNAME"
+
+			# Notify backup manager to cleanup
+			"$BACKUP_MANAGER" "remove" "$DEVNAME" "$DEVPATH" &
+		fi
+		;;
+esac
+
+exit 0
