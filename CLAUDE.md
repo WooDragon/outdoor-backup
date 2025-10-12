@@ -17,6 +17,35 @@
 - **状态指示**: LED 控制接口（/sys/class/leds/）
 - **包格式**: OpenWrt IPK
 
+## 依赖包（已验证）
+
+项目的 OpenWrt 包依赖已在 Lean's LEDE 主线版本（支持 kmod-fs-ntfs3）上完成验证：
+
+| 包名 | 作用 | 类型 |
+|------|------|------|
+| `rsync` | 增量备份引擎 | 必需 |
+| `block-mount` | 块设备管理和 hotplug 事件触发 | 必需 |
+| `kmod-usb-storage` | USB 大容量存储设备驱动 | 必需 |
+| `kmod-fs-ext4` | ext4 文件系统支持（专业相机/Linux 格式化） | 推荐 |
+| `kmod-fs-vfat` | FAT32 文件系统支持（≤32GB SD 卡标准格式） | 必需 |
+| `kmod-fs-exfat` | exFAT 文件系统支持（>32GB SD 卡标准格式） | 必需 |
+| `kmod-fs-ntfs3` | NTFS 文件系统支持（内核原生驱动，5.15+） | 推荐 |
+
+**环境确认**：
+- 当前使用的 Lean's LEDE 主线版本已确认包含 `kmod-fs-ntfs3` 内核模块
+- 文件系统挂载逻辑使用 `ntfs3`（内核原生驱动），无需 FUSE 层
+- 支持的文件系统：exFAT / NTFS / ext4 / ext3 / ext2 / FAT32
+
+**Makefile 依赖声明**（Makefile:24）：
+```makefile
+DEPENDS:=+rsync +block-mount +kmod-usb-storage +kmod-fs-ext4 +kmod-fs-vfat +kmod-fs-exfat +kmod-fs-ntfs3
+```
+
+**挂载尝试顺序**（backup-manager.sh:107）：
+```bash
+for fs in auto exfat ntfs3 ext4 ext3 ext2 vfat; do
+```
+
 ## 核心设计原则（Linus 风格）
 
 ### 1. 数据结构优先

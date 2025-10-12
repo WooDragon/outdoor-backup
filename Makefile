@@ -21,7 +21,7 @@ define Package/outdoor-backup
   SECTION:=utils
   CATEGORY:=Utilities
   TITLE:=Outdoor Backup - SD card auto backup system
-  DEPENDS:=+rsync +block-mount +kmod-usb-storage +kmod-fs-ext4 +kmod-fs-exfat +kmod-fs-ntfs3
+  DEPENDS:=+rsync +block-mount +kmod-usb-storage +kmod-fs-ext4 +kmod-fs-vfat +kmod-fs-exfat +kmod-fs-ntfs3
   PKGARCH:=all
 endef
 

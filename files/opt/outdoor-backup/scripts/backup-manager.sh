@@ -104,7 +104,7 @@ mount_sdcard() {
 	mkdir -p "$MOUNT_POINT"
 
 	# Try to mount with different filesystems
-	for fs in auto exfat ntfs-3g ntfs ext4 ext3 ext2 vfat; do
+	for fs in auto exfat ntfs3 ext4 ext3 ext2 vfat; do
 		if mount -t "$fs" "/dev/$DEVNAME" "$MOUNT_POINT" 2>/dev/null; then
 			log_info "Mounted $DEVNAME as $fs"
 			return 0
