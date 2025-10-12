@@ -42,8 +42,8 @@ define Package/outdoor-backup/description
 endef
 
 define Package/outdoor-backup/conffiles
-/opt/sdcard-backup/conf/backup.conf
-/etc/config/sdcard-backup
+/opt/outdoor-backup/conf/backup.conf
+/etc/config/outdoor-backup
 endef
 
 define Build/Prepare
@@ -56,28 +56,28 @@ endef
 
 define Package/outdoor-backup/install
 	# Install core scripts
-	$(INSTALL_DIR) $(1)/opt/sdcard-backup/scripts
-	$(INSTALL_BIN) ./files/opt/sdcard-backup/scripts/*.sh $(1)/opt/sdcard-backup/scripts/
+	$(INSTALL_DIR) $(1)/opt/outdoor-backup/scripts
+	$(INSTALL_BIN) ./files/opt/outdoor-backup/scripts/*.sh $(1)/opt/outdoor-backup/scripts/
 
 	# Install configuration
-	$(INSTALL_DIR) $(1)/opt/sdcard-backup/conf
-	$(INSTALL_DATA) ./files/opt/sdcard-backup/conf/backup.conf $(1)/opt/sdcard-backup/conf/
+	$(INSTALL_DIR) $(1)/opt/outdoor-backup/conf
+	$(INSTALL_DATA) ./files/opt/outdoor-backup/conf/backup.conf $(1)/opt/outdoor-backup/conf/
 
 	# Install hotplug script
 	$(INSTALL_DIR) $(1)/etc/hotplug.d/block
-	$(INSTALL_BIN) ./files/etc/hotplug.d/block/90-sdcard-backup $(1)/etc/hotplug.d/block/
+	$(INSTALL_BIN) ./files/etc/hotplug.d/block/90-outdoor-backup $(1)/etc/hotplug.d/block/
 
 	# Install init script
 	$(INSTALL_DIR) $(1)/etc/init.d
-	$(INSTALL_BIN) ./files/etc/init.d/sdcard-backup $(1)/etc/init.d/
+	$(INSTALL_BIN) ./files/etc/init.d/outdoor-backup $(1)/etc/init.d/
 
 	# Install UCI config template
 	$(INSTALL_DIR) $(1)/etc/config
-	$(INSTALL_DATA) ./files/etc/config/sdcard-backup $(1)/etc/config/
+	$(INSTALL_DATA) ./files/etc/config/outdoor-backup $(1)/etc/config/
 
 	# Create runtime directories (will be populated by postinst)
-	$(INSTALL_DIR) $(1)/opt/sdcard-backup/var/lock
-	$(INSTALL_DIR) $(1)/opt/sdcard-backup/log
+	$(INSTALL_DIR) $(1)/opt/outdoor-backup/var/lock
+	$(INSTALL_DIR) $(1)/opt/outdoor-backup/log
 endef
 
 define Package/outdoor-backup/postinst
@@ -88,23 +88,23 @@ define Package/outdoor-backup/postinst
 mkdir -p /mnt/ssd/SDMirrors/.logs
 
 # Set proper permissions
-chmod 755 /opt/sdcard-backup/scripts/*.sh
-chmod 755 /etc/hotplug.d/block/90-sdcard-backup
-chmod 644 /opt/sdcard-backup/conf/backup.conf
+chmod 755 /opt/outdoor-backup/scripts/*.sh
+chmod 755 /etc/hotplug.d/block/90-outdoor-backup
+chmod 644 /opt/outdoor-backup/conf/backup.conf
 
 # Enable service
-/etc/init.d/sdcard-backup enable
+/etc/init.d/outdoor-backup enable
 
 echo "======================================"
 echo "Outdoor Backup Installed"
 echo "======================================"
 echo ""
 echo "Backup location: /mnt/ssd/SDMirrors/"
-echo "Configuration: /opt/sdcard-backup/conf/backup.conf"
-echo "or UCI: /etc/config/sdcard-backup"
+echo "Configuration: /opt/outdoor-backup/conf/backup.conf"
+echo "or UCI: /etc/config/outdoor-backup"
 echo ""
 echo "The system will automatically backup SD cards when inserted."
-echo "Monitor logs: logread -f | grep sdcard-backup"
+echo "Monitor logs: logread -f | grep outdoor-backup"
 echo ""
 exit 0
 endef
@@ -114,8 +114,8 @@ define Package/outdoor-backup/prerm
 [ -n "$${IPKG_INSTROOT}" ] && exit 0
 
 # Disable service
-/etc/init.d/sdcard-backup stop
-/etc/init.d/sdcard-backup disable
+/etc/init.d/outdoor-backup stop
+/etc/init.d/outdoor-backup disable
 
 # Kill any running backup processes
 pkill -f "backup-manager.sh" 2>/dev/null || true

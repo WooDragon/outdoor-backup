@@ -30,7 +30,7 @@
 - **无分支安装**: INSTALL_BIN/INSTALL_DATA 宏自动处理权限
 
 ### 3. 向后兼容
-- **固定路径**: /opt/sdcard-backup 不变
+- **固定路径**: /opt/outdoor-backup 不变
 - **配置保护**: conffiles 机制保留用户修改
 - **数据保留**: 卸载不删除备份数据
 
@@ -46,10 +46,10 @@ outdoor-backup/
 ├── Makefile                      # OpenWrt 包定义（126 行）
 ├── files/                        # 安装文件树
 │   ├── etc/
-│   │   ├── config/sdcard-backup         # UCI 配置
-│   │   ├── hotplug.d/block/90-sdcard-backup  # 热插拔触发器
-│   │   └── init.d/sdcard-backup         # procd 服务脚本
-│   └── opt/sdcard-backup/
+│   │   ├── config/outdoor-backup         # UCI 配置
+│   │   ├── hotplug.d/block/90-outdoor-backup  # 热插拔触发器
+│   │   └── init.d/outdoor-backup         # procd 服务脚本
+│   └── opt/outdoor-backup/
 │       ├── conf/backup.conf             # 全局配置
 │       └── scripts/
 │           ├── backup-manager.sh        # 主备份逻辑（303 行）
@@ -64,7 +64,7 @@ outdoor-backup/
 
 ## 核心组件
 
-### 1. Hotplug 触发器 (`/etc/hotplug.d/block/90-sdcard-backup`)
+### 1. Hotplug 触发器 (`/etc/hotplug.d/block/90-outdoor-backup`)
 **职责**: 监听块设备事件，识别 SD 卡，触发备份
 **输入**: `$ACTION`, `$DEVNAME`, `$DEVPATH`
 **输出**: 后台启动 backup-manager.sh
@@ -96,13 +96,13 @@ outdoor-backup/
 - `is_safe_path()`: 路径安全检查
 - `generate_uuid()`: UUID 生成（兼容无 uuidgen 的系统）
 
-### 4. 服务脚本 (`/etc/init.d/sdcard-backup`)
+### 4. 服务脚本 (`/etc/init.d/outdoor-backup`)
 **职责**: procd 服务管理，目录初始化
 **功能**: enable/disable/start/stop/reload
 
 ## 配置系统
 
-### 全局配置 (`/opt/sdcard-backup/conf/backup.conf`)
+### 全局配置 (`/opt/outdoor-backup/conf/backup.conf`)
 ```bash
 BACKUP_ROOT="/mnt/ssd/SDMirrors"   # 备份存储位置
 DEBUG=0                             # 调试开关
@@ -110,9 +110,9 @@ LED_GREEN="/sys/class/leds/green:lan"
 LED_RED="/sys/class/leds/red:sys"
 ```
 
-### UCI 配置 (`/etc/config/sdcard-backup`)
+### UCI 配置 (`/etc/config/outdoor-backup`)
 ```uci
-config sdcard-backup 'config'
+config outdoor-backup 'config'
     option enabled '1'
     option backup_root '/mnt/ssd/SDMirrors'
     option debug '0'
@@ -134,11 +134,11 @@ BACKUP_MODE="PRIMARY"           # PRIMARY 或 REPLICA
 ```
 [SD 卡插入]
     ↓
-[hotplug 检测] → /etc/hotplug.d/block/90-sdcard-backup
+[hotplug 检测] → /etc/hotplug.d/block/90-outdoor-backup
     ↓
 [启动备份管理器] → backup-manager.sh add sda1 /devices/...
     ↓
-[获取 PID 锁] → /opt/sdcard-backup/var/lock/backup.pid
+[获取 PID 锁] → /opt/outdoor-backup/var/lock/backup.pid
     ↓
 [挂载 SD 卡] → /mnt/sdcard/
     ↓
@@ -156,7 +156,7 @@ BACKUP_MODE="PRIMARY"           # PRIMARY 或 REPLICA
 ## 安全机制
 
 ### 并发控制
-- **PID 锁文件**: `/opt/sdcard-backup/var/lock/backup.pid`
+- **PID 锁文件**: `/opt/outdoor-backup/var/lock/backup.pid`
 - **活跃进程检查**: `kill -0 $pid`
 - **超时机制**: 5 分钟未获取锁则放弃
 - **僵尸锁清理**: 自动检测并移除无效锁
@@ -235,10 +235,10 @@ BACKUP_MODE="PRIMARY"           # PRIMARY 或 REPLICA
 ### 日志位置
 ```bash
 # 系统日志
-logread | grep sdcard-backup
+logread | grep outdoor-backup
 
 # 本地日志
-/opt/sdcard-backup/log/backup.log
+/opt/outdoor-backup/log/backup.log
 
 # rsync 详细日志
 /mnt/ssd/SDMirrors/.logs/backup_{UUID}_{timestamp}.log
@@ -246,21 +246,21 @@ logread | grep sdcard-backup
 
 ### 常见问题
 **SD 卡未检测**: 检查 `logread | grep hotplug`，验证设备路径
-**备份卡住**: 检查锁文件 `cat /opt/sdcard-backup/var/lock/backup.pid`
+**备份卡住**: 检查锁文件 `cat /opt/outdoor-backup/var/lock/backup.pid`
 **LED 不工作**: `ls /sys/class/leds/`，调整配置中的路径
 **性能慢**: 检查 SD 卡速度、文件系统类型、rsync 参数
 
 ### 手动测试
 ```bash
 # 直接运行备份管理器
-/opt/sdcard-backup/scripts/backup-manager.sh add sda1 /devices/test
+/opt/outdoor-backup/scripts/backup-manager.sh add sda1 /devices/test
 
 # 启用调试
-uci set sdcard-backup.config.debug='1'
+uci set outdoor-backup.config.debug='1'
 uci commit
 
 # 查看实时日志
-logread -f | grep sdcard-backup
+logread -f | grep outdoor-backup
 ```
 
 ## 后续改进（可选）
@@ -308,15 +308,15 @@ logread -f | grep sdcard-backup
   - FieldBackup 项目研究（仅作参考）
 
 ### 核心代码
-- **[files/opt/sdcard-backup/scripts/backup-manager.sh](files/opt/sdcard-backup/scripts/backup-manager.sh)**: 主备份逻辑（303 行）
-- **[files/opt/sdcard-backup/scripts/common.sh](files/opt/sdcard-backup/scripts/common.sh)**: 公共函数库（155 行）
-- **[files/etc/hotplug.d/block/90-sdcard-backup](files/etc/hotplug.d/block/90-sdcard-backup)**: 热插拔触发器（82 行）
-- **[files/etc/init.d/sdcard-backup](files/etc/init.d/sdcard-backup)**: 服务管理脚本（41 行）
+- **[files/opt/outdoor-backup/scripts/backup-manager.sh](files/opt/outdoor-backup/scripts/backup-manager.sh)**: 主备份逻辑（303 行）
+- **[files/opt/outdoor-backup/scripts/common.sh](files/opt/outdoor-backup/scripts/common.sh)**: 公共函数库（155 行）
+- **[files/etc/hotplug.d/block/90-outdoor-backup](files/etc/hotplug.d/block/90-outdoor-backup)**: 热插拔触发器（82 行）
+- **[files/etc/init.d/outdoor-backup](files/etc/init.d/outdoor-backup)**: 服务管理脚本（41 行）
 - **[Makefile](Makefile)**: OpenWrt 包定义（128 行）
 
 ### 配置文件
-- **[files/opt/sdcard-backup/conf/backup.conf](files/opt/sdcard-backup/conf/backup.conf)**: 全局配置模板
-- **[files/etc/config/sdcard-backup](files/etc/config/sdcard-backup)**: UCI 配置模板
+- **[files/opt/outdoor-backup/conf/backup.conf](files/opt/outdoor-backup/conf/backup.conf)**: 全局配置模板
+- **[files/etc/config/outdoor-backup](files/etc/config/outdoor-backup)**: UCI 配置模板
 
 ## 参考项目
 

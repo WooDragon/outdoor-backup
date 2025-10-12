@@ -9,8 +9,8 @@
 [ "$SUBSYSTEM" = "block" ] || exit 0
 
 # Configuration
-BACKUP_MANAGER="/opt/sdcard-backup/scripts/backup-manager.sh"
-LOG_TAG="sdcard-backup-hotplug"
+BACKUP_MANAGER="/opt/outdoor-backup/scripts/backup-manager.sh"
+LOG_TAG="outdoor-backup-hotplug"
 
 # Log function
 log_message() {

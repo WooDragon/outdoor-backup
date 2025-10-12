@@ -34,7 +34,7 @@
 # 快速部署脚本 - 保存为 quick-deploy.sh
 
 # 下载并执行安装
-wget -O - https://raw.githubusercontent.com/your-repo/openwrt-sdcard-backup/main/deploy.sh | sh
+wget -O - https://raw.githubusercontent.com/your-repo/openwrt-outdoor-backup/main/deploy.sh | sh
 ```
 
 ### 2.2 手动部署步骤
@@ -68,18 +68,18 @@ opkg install kmod-fs-exfat kmod-fs-ntfs3
 
 ```bash
 cd /opt
-git clone https://github.com/your-repo/openwrt-sdcard-backup.git
+git clone https://github.com/your-repo/openwrt-outdoor-backup.git
 
 # 或者使用wget下载压缩包
-wget https://github.com/your-repo/openwrt-sdcard-backup/archive/main.tar.gz
+wget https://github.com/your-repo/openwrt-outdoor-backup/archive/main.tar.gz
 tar xzf main.tar.gz
-mv openwrt-sdcard-backup-main openwrt-sdcard-backup
+mv openwrt-outdoor-backup-main openwrt-outdoor-backup
 ```
 
 #### 步骤5: 运行安装脚本
 
 ```bash
-cd /opt/openwrt-sdcard-backup
+cd /opt/openwrt-outdoor-backup
 chmod +x install.sh
 ./install.sh
 ```
@@ -100,7 +100,7 @@ ls -la /sys/class/leds/
 
 修改配置文件中的LED路径：
 ```bash
-vi /opt/sdcard-backup/conf/backup.conf
+vi /opt/outdoor-backup/conf/backup.conf
 
 # 修改LED_GREEN和LED_RED为实际路径
 LED_GREEN="/sys/class/leds/你的绿色LED路径"
@@ -114,7 +114,7 @@ LED_RED="/sys/class/leds/你的红色LED路径"
 df -h | grep ssd
 
 # 修改备份根目录
-vi /opt/sdcard-backup/conf/backup.conf
+vi /opt/outdoor-backup/conf/backup.conf
 
 # 修改BACKUP_ROOT为你的SSD路径
 BACKUP_ROOT="/mnt/你的SSD路径/SDMirrors"
@@ -124,7 +124,7 @@ BACKUP_ROOT="/mnt/你的SSD路径/SDMirrors"
 
 ```bash
 # 编辑配置文件
-vi /opt/sdcard-backup/conf/backup.conf
+vi /opt/outdoor-backup/conf/backup.conf
 
 # 高性能设置（SSD + 充足内存）
 BANDWIDTH_LIMIT=0        # 不限速
@@ -166,10 +166,10 @@ logread -f | grep hotplug
 
 ```bash
 # 直接运行备份脚本
-/opt/sdcard-backup/scripts/backup-manager.sh add sda1 /dev/sda1
+/opt/outdoor-backup/scripts/backup-manager.sh add sda1 /dev/sda1
 
 # 查看日志
-tail -f /opt/sdcard-backup/log/backup.log
+tail -f /opt/outdoor-backup/log/backup.log
 ```
 
 ### 4.4 完整流程测试
@@ -195,10 +195,10 @@ ls -la /mnt/ssd/SDMirrors/*/
 
 ```bash
 # 实时查看备份日志
-logread -f | grep sdcard-backup
+logread -f | grep outdoor-backup
 
 # 查看历史备份记录
-cat /opt/sdcard-backup/log/backup.log
+cat /opt/outdoor-backup/log/backup.log
 
 # 查看特定SD卡的备份日志
 ls -la /mnt/ssd/SDMirrors/.logs/
@@ -253,7 +253,7 @@ umount /tmp/test
 
 # 3. 检查hotplug脚本
 ls -la /etc/hotplug.d/block/
-cat /etc/hotplug.d/block/90-sdcard-backup
+cat /etc/hotplug.d/block/90-outdoor-backup
 ```
 
 ### 6.2 备份失败
@@ -263,7 +263,7 @@ cat /etc/hotplug.d/block/90-sdcard-backup
 **排查步骤**:
 ```bash
 # 1. 查看错误日志
-grep ERROR /opt/sdcard-backup/log/backup.log
+grep ERROR /opt/outdoor-backup/log/backup.log
 
 # 2. 检查存储空间
 df -h /mnt/ssd
@@ -293,7 +293,7 @@ dd if=/dev/zero of=/mnt/ssd/test bs=1M count=1000
 dd if=/dev/sda1 of=/dev/null bs=1M count=1000
 
 # 4. 优化rsync参数
-vi /opt/sdcard-backup/conf/backup.conf
+vi /opt/outdoor-backup/conf/backup.conf
 # 添加到RSYNC_EXTRA_OPTS
 RSYNC_EXTRA_OPTS="--inplace --no-whole-file"
 ```
@@ -305,13 +305,13 @@ RSYNC_EXTRA_OPTS="--inplace --no-whole-file"
 **解决方法**:
 ```bash
 # 1. 检查锁文件
-ls -la /opt/sdcard-backup/var/lock/
+ls -la /opt/outdoor-backup/var/lock/
 
 # 2. 清理残留锁
-rm -f /opt/sdcard-backup/var/lock/*.pid
+rm -f /opt/outdoor-backup/var/lock/*.pid
 
 # 3. 增加并发数（谨慎）
-vi /opt/sdcard-backup/conf/backup.conf
+vi /opt/outdoor-backup/conf/backup.conf
 MAX_CONCURRENT=2
 ```
 
@@ -321,14 +321,14 @@ MAX_CONCURRENT=2
 
 ```bash
 # 创建日志轮转脚本
-cat > /etc/cron.daily/sdcard-backup-logrotate << 'EOF'
+cat > /etc/cron.daily/outdoor-backup-logrotate << 'EOF'
 #!/bin/sh
-LOG_DIR="/opt/sdcard-backup/log"
+LOG_DIR="/opt/outdoor-backup/log"
 find $LOG_DIR -name "*.log" -mtime +30 -delete
 find /mnt/ssd/SDMirrors/.logs -name "*.log" -mtime +60 -delete
 EOF
 
-chmod +x /etc/cron.daily/sdcard-backup-logrotate
+chmod +x /etc/cron.daily/outdoor-backup-logrotate
 ```
 
 ### 7.2 备份验证
@@ -350,7 +350,7 @@ done
 crontab -e
 
 # 每天检查存储空间
-0 2 * * * df -h /mnt/ssd | grep -q "9[0-9]%" && logger -t sdcard-backup "WARNING: Storage nearly full"
+0 2 * * * df -h /mnt/ssd | grep -q "9[0-9]%" && logger -t outdoor-backup "WARNING: Storage nearly full"
 ```
 
 ## 8. 卸载
@@ -358,19 +358,19 @@ crontab -e
 ### 8.1 完全卸载
 
 ```bash
-cd /opt/openwrt-sdcard-backup
+cd /opt/openwrt-outdoor-backup
 ./uninstall.sh
 
 # 手动清理（可选）
-rm -rf /opt/openwrt-sdcard-backup
+rm -rf /opt/openwrt-outdoor-backup
 ```
 
 ### 8.2 保留数据卸载
 
 ```bash
 # 只删除程序，保留备份数据
-rm -f /etc/hotplug.d/block/90-sdcard-backup
-rm -rf /opt/openwrt-sdcard-backup
+rm -f /etc/hotplug.d/block/90-outdoor-backup
+rm -rf /opt/openwrt-outdoor-backup
 
 # 备份数据在 /mnt/ssd/SDMirrors/ 保留
 ```
@@ -380,7 +380,7 @@ rm -rf /opt/openwrt-sdcard-backup
 ### 9.1 在线升级
 
 ```bash
-cd /opt/openwrt-sdcard-backup
+cd /opt/openwrt-outdoor-backup
 git pull
 ./install.sh
 ```
@@ -389,18 +389,18 @@ git pull
 
 ```bash
 # 备份配置
-cp /opt/openwrt-sdcard-backup/conf/backup.conf /tmp/
+cp /opt/openwrt-outdoor-backup/conf/backup.conf /tmp/
 
 # 下载新版本
 cd /opt
-wget https://github.com/your-repo/openwrt-sdcard-backup/archive/main.tar.gz
+wget https://github.com/your-repo/openwrt-outdoor-backup/archive/main.tar.gz
 tar xzf main.tar.gz
 
 # 恢复配置
-cp /tmp/backup.conf /opt/openwrt-sdcard-backup/conf/
+cp /tmp/backup.conf /opt/openwrt-outdoor-backup/conf/
 
 # 重新安装
-cd /opt/openwrt-sdcard-backup
+cd /opt/openwrt-outdoor-backup
 ./install.sh
 ```
 
@@ -410,9 +410,9 @@ cd /opt/openwrt-sdcard-backup
 
 ```bash
 # 确保脚本权限正确
-chmod 755 /etc/hotplug.d/block/90-sdcard-backup
-chmod 755 /opt/openwrt-sdcard-backup/scripts/*.sh
-chmod 644 /opt/openwrt-sdcard-backup/conf/*.conf
+chmod 755 /etc/hotplug.d/block/90-outdoor-backup
+chmod 755 /opt/openwrt-outdoor-backup/scripts/*.sh
+chmod 644 /opt/openwrt-outdoor-backup/conf/*.conf
 ```
 
 ### 10.2 备份加密（可选）
@@ -452,6 +452,6 @@ A: 当前版本基于热插拔触发，不支持定时备份。
 
 ## 12. 获取帮助
 
-- GitHub Issues: https://github.com/your-repo/openwrt-sdcard-backup/issues
+- GitHub Issues: https://github.com/your-repo/openwrt-outdoor-backup/issues
 - OpenWrt论坛: https://forum.openwrt.org/
-- 项目文档: https://github.com/your-repo/openwrt-sdcard-backup/wiki
+- 项目文档: https://github.com/your-repo/openwrt-outdoor-backup/wiki

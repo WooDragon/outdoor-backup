@@ -2,7 +2,7 @@
 
 ## 1. 热插拔触发脚本
 
-### 文件: `/etc/hotplug.d/block/90-sdcard-backup`
+### 文件: `/etc/hotplug.d/block/90-outdoor-backup`
 
 ```bash
 #!/bin/sh
@@ -15,11 +15,11 @@
 [ "$SUBSYSTEM" = "block" ] || exit 0
 
 # Load common functions
-. /opt/sdcard-backup/scripts/common.sh
+. /opt/outdoor-backup/scripts/common.sh
 
 # Configuration
-BACKUP_MANAGER="/opt/sdcard-backup/scripts/backup-manager.sh"
-LOG_TAG="sdcard-backup-hotplug"
+BACKUP_MANAGER="/opt/outdoor-backup/scripts/backup-manager.sh"
+LOG_TAG="outdoor-backup-hotplug"
 
 # Log function
 log_message() {
@@ -92,7 +92,7 @@ exit 0
 
 ## 2. 备份管理器主脚本
 
-### 文件: `/opt/sdcard-backup/scripts/backup-manager.sh`
+### 文件: `/opt/outdoor-backup/scripts/backup-manager.sh`
 
 ```bash
 #!/bin/sh
@@ -110,7 +110,7 @@ MOUNT_POINT="/mnt/sdcard"
 BACKUP_ROOT="/mnt/ssd/SDMirrors"
 LOCK_FILE="$BASE_DIR/var/lock/backup.pid"
 CONFIG_FILE="FieldBackup.conf"
-LOG_TAG="sdcard-backup"
+LOG_TAG="outdoor-backup"
 
 # Load common functions
 . "$SCRIPT_DIR/common.sh"
@@ -384,7 +384,7 @@ main "$@"
 
 ## 3. 公共函数库
 
-### 文件: `/opt/sdcard-backup/scripts/common.sh`
+### 文件: `/opt/outdoor-backup/scripts/common.sh`
 
 ```bash
 #!/bin/sh
@@ -551,7 +551,7 @@ EOF
 
 ## 4. 安装脚本
 
-### 文件: `/opt/sdcard-backup/install.sh`
+### 文件: `/opt/outdoor-backup/install.sh`
 
 ```bash
 #!/bin/sh
@@ -601,8 +601,8 @@ chmod 755 "$SCRIPT_DIR/bin/"* 2>/dev/null || true
 
 # Install hotplug script
 echo "Installing hotplug script..."
-cp "$SCRIPT_DIR/scripts/90-sdcard-backup.hotplug" "/etc/hotplug.d/block/90-sdcard-backup"
-chmod 755 "/etc/hotplug.d/block/90-sdcard-backup"
+cp "$SCRIPT_DIR/scripts/90-outdoor-backup.hotplug" "/etc/hotplug.d/block/90-outdoor-backup"
+chmod 755 "/etc/hotplug.d/block/90-outdoor-backup"
 
 # Create default config
 echo "Creating default configuration..."
@@ -644,7 +644,7 @@ fi
 cat > "$SCRIPT_DIR/uninstall.sh" << 'EOF'
 #!/bin/sh
 echo "Uninstalling OpenWrt SD Card Backup System..."
-rm -f /etc/hotplug.d/block/90-sdcard-backup
+rm -f /etc/hotplug.d/block/90-outdoor-backup
 echo "Hotplug script removed"
 echo "Note: Backup data in /mnt/ssd/SDMirrors/ was not removed"
 echo "Uninstall complete"
@@ -661,7 +661,7 @@ echo "Backup location: /mnt/ssd/SDMirrors/"
 echo "Logs: $SCRIPT_DIR/log/"
 echo
 echo "To monitor backups:"
-echo "  logread -f | grep sdcard-backup"
+echo "  logread -f | grep outdoor-backup"
 echo
 echo "To uninstall:"
 echo "  $SCRIPT_DIR/uninstall.sh"
@@ -681,7 +681,7 @@ echo "Setup complete!"
 
 ## 5. 配置文件模板
 
-### 文件: `/opt/sdcard-backup/conf/backup.conf`
+### 文件: `/opt/outdoor-backup/conf/backup.conf`
 
 ```bash
 # OpenWrt SD Card Backup System Configuration

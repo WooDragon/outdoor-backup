@@ -72,20 +72,20 @@ ssh root@router "opkg install /tmp/outdoor-backup_*.ipk"
 2. **Monitor progress**:
    ```bash
    # Watch system logs
-   logread -f | grep sdcard-backup
+   logread -f | grep outdoor-backup
 
    # Check backup status
    ls -lh /mnt/ssd/SDMirrors/
 
    # View detailed logs
-   tail -f /opt/sdcard-backup/log/backup.log
+   tail -f /opt/outdoor-backup/log/backup.log
    ```
 
 ## Configuration
 
 ### Option 1: Simple Config File
 
-Edit `/opt/sdcard-backup/conf/backup.conf`:
+Edit `/opt/outdoor-backup/conf/backup.conf`:
 
 ```bash
 # Change backup location
@@ -103,9 +103,9 @@ LED_RED="/sys/class/leds/red:sys"
 
 ```bash
 # Edit via UCI
-uci set sdcard-backup.config.backup_root='/mnt/nvme/backups'
-uci set sdcard-backup.config.debug='1'
-uci commit sdcard-backup
+uci set outdoor-backup.config.backup_root='/mnt/nvme/backups'
+uci set outdoor-backup.config.debug='1'
+uci commit outdoor-backup
 ```
 
 ### Per-SD Card Configuration
@@ -130,7 +130,7 @@ CREATED_AT="2024-01-15 10:30:00"
 outdoor-backup/
 ├── Makefile                          # OpenWrt package definition
 ├── files/                            # Files to install
-│   ├── opt/sdcard-backup/
+│   ├── opt/outdoor-backup/
 │   │   ├── scripts/
 │   │   │   ├── backup-manager.sh    # Core backup logic
 │   │   │   └── common.sh            # Shared functions
@@ -139,9 +139,9 @@ outdoor-backup/
 │   │   ├── var/lock/                # PID lock directory
 │   │   └── log/                     # Log files
 │   └── etc/
-│       ├── hotplug.d/block/90-sdcard-backup  # Hotplug trigger
-│       ├── init.d/sdcard-backup              # Service script
-│       └── config/sdcard-backup              # UCI config
+│       ├── hotplug.d/block/90-outdoor-backup  # Hotplug trigger
+│       ├── init.d/outdoor-backup              # Service script
+│       └── config/outdoor-backup              # UCI config
 ├── docs/                             # Design documentation
 ├── README.md                         # User manual
 ├── BUILD.md                          # Build guide
@@ -174,9 +174,9 @@ find bin/ -name "outdoor-backup*.ipk"
 
 ### Customization Points
 
-1. **LED Paths**: Edit `files/opt/sdcard-backup/conf/backup.conf`
+1. **LED Paths**: Edit `files/opt/outdoor-backup/conf/backup.conf`
 2. **Mount Point**: Change `BACKUP_ROOT` in config
-3. **Hotplug Priority**: Rename `90-sdcard-backup` (higher number = later execution)
+3. **Hotplug Priority**: Rename `90-outdoor-backup` (higher number = later execution)
 4. **Dependencies**: Add to `DEPENDS` in Makefile
 
 ## Maintenance
@@ -185,15 +185,15 @@ find bin/ -name "outdoor-backup*.ipk"
 
 ```bash
 # Enable/disable service
-/etc/init.d/sdcard-backup enable
-/etc/init.d/sdcard-backup disable
+/etc/init.d/outdoor-backup enable
+/etc/init.d/outdoor-backup disable
 
 # Start/stop (primarily controls directory setup)
-/etc/init.d/sdcard-backup start
-/etc/init.d/sdcard-backup stop
+/etc/init.d/outdoor-backup start
+/etc/init.d/outdoor-backup stop
 
 # Reload configuration
-/etc/init.d/sdcard-backup reload
+/etc/init.d/outdoor-backup reload
 ```
 
 ### Troubleshooting
@@ -208,17 +208,17 @@ ls -l /dev/sd*
 
 # Test hotplug script manually
 SUBSYSTEM=block ACTION=add DEVNAME=sda1 DEVTYPE=partition \
-  /etc/hotplug.d/block/90-sdcard-backup
+  /etc/hotplug.d/block/90-outdoor-backup
 ```
 
 **Backup not starting?**
 ```bash
 # Check lock file
-cat /opt/sdcard-backup/var/lock/backup.pid
-ps | grep $(cat /opt/sdcard-backup/var/lock/backup.pid)
+cat /opt/outdoor-backup/var/lock/backup.pid
+ps | grep $(cat /opt/outdoor-backup/var/lock/backup.pid)
 
 # Remove stale lock
-rm /opt/sdcard-backup/var/lock/backup.pid
+rm /opt/outdoor-backup/var/lock/backup.pid
 
 # Check rsync
 which rsync
@@ -241,7 +241,7 @@ echo "100" > /sys/class/leds/green:lan/delay_off
 | Location | Content |
 |----------|---------|
 | `logread` | System-wide backup events |
-| `/opt/sdcard-backup/log/backup.log` | Detailed backup log |
+| `/opt/outdoor-backup/log/backup.log` | Detailed backup log |
 | `/mnt/ssd/SDMirrors/.logs/` | Per-backup rsync logs |
 
 ### Uninstallation
@@ -260,24 +260,24 @@ rm -rf /mnt/ssd/SDMirrors/
 
 ```bash
 # Copy scripts to device
-scp -r files/opt/sdcard-backup root@router:/tmp/
+scp -r files/opt/outdoor-backup root@router:/tmp/
 
 # Run manually
-ssh root@router "/tmp/sdcard-backup/scripts/backup-manager.sh add sda1 /devices/platform/usb"
+ssh root@router "/tmp/outdoor-backup/scripts/backup-manager.sh add sda1 /devices/platform/usb"
 ```
 
 ### Debugging
 
 ```bash
 # Enable debug mode
-uci set sdcard-backup.config.debug='1'
+uci set outdoor-backup.config.debug='1'
 uci commit
 
 # Or edit config file
-echo 'DEBUG=1' >> /opt/sdcard-backup/conf/backup.conf
+echo 'DEBUG=1' >> /opt/outdoor-backup/conf/backup.conf
 
 # Watch debug logs
-logread -f | grep sdcard-backup
+logread -f | grep outdoor-backup
 ```
 
 ### Shellcheck Validation

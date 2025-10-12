@@ -22,14 +22,14 @@
 ┌─────────────────────────────────────────────┐
 │                  触发机制层                    │
 ├─────────────────────────────────────────────┤
-│     /etc/hotplug.d/block/90-sdcard-backup    │
+│     /etc/hotplug.d/block/90-outdoor-backup    │
 │              (USB/SD卡热插拔检测)              │
 └─────────────────────────────────────────────┘
                        ▼
 ┌─────────────────────────────────────────────┐
 │                  核心服务层                    │
 ├─────────────────────────────────────────────┤
-│   /opt/sdcard-backup/scripts/backup-manager  │
+│   /opt/outdoor-backup/scripts/backup-manager  │
 │      并发控制 | 状态管理 | 错误处理             │
 └─────────────────────────────────────────────┘
                        ▼
@@ -50,7 +50,7 @@
 ## 2. 目录结构设计
 
 ```
-/opt/sdcard-backup/                 # 主程序目录
+/opt/outdoor-backup/                 # 主程序目录
 ├── bin/
 │   └── rsync                      # ARM架构静态编译rsync (可选)
 ├── scripts/
@@ -67,7 +67,7 @@
 └── log/                           # 日志目录
 
 /etc/hotplug.d/block/
-└── 90-sdcard-backup               # 热插拔触发脚本
+└── 90-outdoor-backup               # 热插拔触发脚本
 
 /mnt/ssd/SDMirrors/                # 备份数据存储
 ├── {UUID-1}/                      # SD卡1的备份
@@ -79,7 +79,7 @@
 
 ### 3.1 热插拔检测机制
 
-**文件**: `/etc/hotplug.d/block/90-sdcard-backup`
+**文件**: `/etc/hotplug.d/block/90-outdoor-backup`
 
 **功能**:
 - 监听块设备的add/remove事件
@@ -94,7 +94,7 @@
 
 ### 3.2 备份管理器
 
-**文件**: `/opt/sdcard-backup/scripts/backup-manager.sh`
+**文件**: `/opt/outdoor-backup/scripts/backup-manager.sh`
 
 **核心功能**:
 1. **并发控制**: PID锁机制，防止多重备份
@@ -182,7 +182,7 @@ LED指示完成
 ```
 请求备份
     ↓
-检查锁文件 (/opt/sdcard-backup/var/lock/backup.pid)
+检查锁文件 (/opt/outdoor-backup/var/lock/backup.pid)
     ↓
 锁存在？
     ├─ 是 → 等待(最多5分钟) → 超时则报错

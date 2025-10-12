@@ -55,7 +55,7 @@ $(eval $(call BuildPackage,my-package))
 
 | 变量 | 作用 | 示例 |
 |------|------|------|
-| `PKG_NAME` | 包名 | `openwrt-sdcard-backup` |
+| `PKG_NAME` | 包名 | `openwrt-outdoor-backup` |
 | `PKG_VERSION` | 上游版本 | `1.0.0` |
 | `PKG_RELEASE` | 打包版本 | `1` (Makefile 变更递增) |
 | `PKG_SOURCE` | 源码文件 | `app-v1.0.0.tar.gz` |

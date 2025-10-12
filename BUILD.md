@@ -78,7 +78,7 @@ ssh root@192.168.1.1 "opkg install /tmp/outdoor-backup*.ipk"
 
 ```bash
 # 1. 修改脚本
-vim package/outdoor-backup/files/opt/sdcard-backup/scripts/backup-manager.sh
+vim package/outdoor-backup/files/opt/outdoor-backup/scripts/backup-manager.sh
 
 # 2. 增加版本号
 vim package/outdoor-backup/Makefile
@@ -97,7 +97,7 @@ ssh root@router "opkg upgrade /tmp/outdoor-backup*.ipk"
 
 ```bash
 # 不安装，直接测试脚本
-scp -r package/outdoor-backup/files/opt/sdcard-backup root@router:/tmp/test-backup/
+scp -r package/outdoor-backup/files/opt/outdoor-backup root@router:/tmp/test-backup/
 ssh root@router "sh -x /tmp/test-backup/scripts/backup-manager.sh add sda1 /devices/test"
 
 # 查看包内容（不安装）
@@ -105,7 +105,7 @@ tar -tzf outdoor-backup_*.ipk
 tar -xzf outdoor-backup_*.ipk -C /tmp/inspect/
 
 # 验证脚本 POSIX 兼容性
-shellcheck --shell=sh files/opt/sdcard-backup/scripts/*.sh
+shellcheck --shell=sh files/opt/outdoor-backup/scripts/*.sh
 ```
 
 ## 常见问题
@@ -149,8 +149,8 @@ ssh root@router "opkg update && opkg install rsync block-mount kmod-usb-storage"
 # 确保使用 $(INSTALL_BIN) 而不是 $(INSTALL_DATA)
 
 # 手动修复（临时）
-ssh root@router "chmod 755 /opt/sdcard-backup/scripts/*.sh"
-ssh root@router "chmod 755 /etc/hotplug.d/block/90-sdcard-backup"
+ssh root@router "chmod 755 /opt/outdoor-backup/scripts/*.sh"
+ssh root@router "chmod 755 /etc/hotplug.d/block/90-outdoor-backup"
 ```
 
 ## 版本管理
@@ -281,4 +281,4 @@ ssh root@router "opkg update && opkg install outdoor-backup"
 - ✅ 测试前先 `shellcheck` 验证
 - ✅ 保持 POSIX 兼容（ash shell）
 
-Good luck! 有问题看日志：`logread -f | grep sdcard-backup`
+Good luck! 有问题看日志：`logread -f | grep outdoor-backup`

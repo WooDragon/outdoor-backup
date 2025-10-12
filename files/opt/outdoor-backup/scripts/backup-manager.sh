@@ -14,11 +14,11 @@ MOUNT_POINT="/mnt/sdcard"
 BACKUP_ROOT="/mnt/ssd/SDMirrors"
 LOCK_FILE="$BASE_DIR/var/lock/backup.pid"
 CONFIG_FILE="FieldBackup.conf"
-LOG_TAG="sdcard-backup"
+LOG_TAG="outdoor-backup"
 
 # Load configuration
 [ -f "$BASE_DIR/conf/backup.conf" ] && . "$BASE_DIR/conf/backup.conf"
-[ -f /etc/config/sdcard-backup ] && . /etc/config/sdcard-backup
+[ -f /etc/config/outdoor-backup ] && . /etc/config/outdoor-backup
 
 # Load common functions
 . "$SCRIPT_DIR/common.sh"
