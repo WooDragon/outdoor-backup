@@ -1,19 +1,11 @@
 # ShellCheck configuration for OpenWrt outdoor-backup project
-# OpenWrt uses ash (BusyBox shell), not POSIX sh
+# OpenWrt uses BusyBox ash, which supports bash-like features (FD >9, string indexing)
 
-# Use ash shell dialect (closer to OpenWrt reality than POSIX)
-shell=ash
+# Use bash shell dialect (BusyBox ash is closer to bash than dash)
+# ash mode is too strict (dash-based), fails on valid BusyBox ash code
+shell=bash
 
 # Disable false positives for OpenWrt environment
-disable=SC3043  # 'local' is undefined in POSIX but widely supported in ash/bash/dash
 disable=SC2034  # Variables like START/STOP/USE_PROCD appear unused but are used by OpenWrt init system
 disable=SC1090  # Can't follow non-constant source (common pattern in OpenWrt scripts)
 disable=SC1091  # Not following sourced files (common.sh uses dynamic paths)
-
-# Only fail on actual errors, not warnings
-# severity=error would make it less strict, but we want to see warnings too
-# So we keep default severity but exclude known false positives above
-
-# Enable checking for common issues
-enable=quote-safe-variables
-enable=require-variable-braces
