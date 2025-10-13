@@ -110,40 +110,29 @@ outdoor-backup/
 ### 三层配置架构
 1. **全局配置** (`/opt/outdoor-backup/conf/backup.conf`): 备份路径、LED 路径、调试开关
 2. **UCI 配置** (`/etc/config/outdoor-backup`): OpenWrt 标准配置接口
-3. **SD 卡配置** (`{SD_ROOT}/FieldBackup.conf`): UUID、SD_NAME（已废弃）、备份模式
+3. **SD 卡配置** (`{SD_ROOT}/FieldBackup.conf`): UUID、备份模式、创建时间
 
-### 别名管理机制（重要）
+### 别名管理机制
 
-**双机制整合设计**：
-```
-WebUI 别名（aliases.json） = 唯一显示真相
-SD_NAME（FieldBackup.conf） = 一次性初始化器（仅用于首次插入）
-```
+**设计原则（Linus 风格）**：
+- **单一真相来源**：WebUI 别名（aliases.json）是唯一显示数据源
+- **简洁配置**：FieldBackup.conf 只包含必需字段（UUID、模式、时间戳）
+- **代码生成初始值**：首次插入时，代码自动生成时间戳格式的初始别名
 
 **工作流程**：
 1. **首次插入 SD 卡**：
-   - 生成 `SD_UUID` 和 `SD_NAME`（时间戳格式）
-   - 自动在 `aliases.json` 中创建别名条目，使用 `SD_NAME` 作为初始别名
-   - 用户在 WebUI 中立即看到有意义的名字（如 `SDCard_20250115_103000`）
+   - 生成 `SD_UUID` 和 `BACKUP_MODE`
+   - 代码自动在 `aliases.json` 中创建别名条目（格式：`SDCard_20250115_103000`）
+   - 用户在 WebUI 中立即看到有意义的名字
 
 2. **用户修改别名**：
    - 在 WebUI 中修改别名 → 存储到 `aliases.json`
    - 显示名称立即更新
 
-3. **SD_NAME 的角色（已废弃）**：
-   - 保留在配置文件中（向后兼容）
-   - 配置文件中有明确注释：已废弃，请使用 WebUI 管理别名
-   - **手动编辑 SD_NAME 不会影响显示名称**
-
 **显示优先级**：
 ```
 WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 ```
-
-**设计原则（Linus 风格）**：
-- **单一真相来源**：WebUI 别名是唯一显示数据源
-- **消除特殊情况**：SD_NAME 只在首次初始化时起作用，之后完全由 WebUI 接管
-- **向后兼容**：保留 SD_NAME 字段，不破坏已有配置
 
 **备份模式**:
 - `PRIMARY`: SD → 内置存储（默认）

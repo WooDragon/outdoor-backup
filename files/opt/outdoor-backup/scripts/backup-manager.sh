@@ -133,7 +133,6 @@ setup_sdcard_config() {
 
 		# Generate new config
 		SD_UUID=$(generate_uuid)
-		SD_NAME="SDCard_$(date +%Y%m%d_%H%M%S)"
 		BACKUP_MODE="PRIMARY"
 
 		cat > "$config_path" << EOF
@@ -143,12 +142,6 @@ setup_sdcard_config() {
 # Unique identifier for this SD card
 SD_UUID="$SD_UUID"
 
-# Friendly name (DEPRECATED: for backward compatibility only)
-# NOTE: This field is no longer used for display in WebUI
-# Please use the WebUI to manage card aliases (this serves as initial value)
-# Editing this field will NOT change the display name
-SD_NAME="$SD_NAME"
-
 # Backup mode: PRIMARY (SD→SSD) or REPLICA (SSD→SD)
 BACKUP_MODE="$BACKUP_MODE"
 
@@ -156,14 +149,15 @@ BACKUP_MODE="$BACKUP_MODE"
 CREATED_AT="$(date '+%Y-%m-%d %H:%M:%S')"
 EOF
 
-		log_info "Created new config for SD: $SD_NAME ($SD_UUID)"
-
 		# Load the new config
 		. "$config_path"
 
-		# Create initial alias entry in aliases.json using SD_NAME
+		# Generate initial alias (timestamp format) and create entry in aliases.json
 		# This ensures first-time insertion shows a meaningful name in WebUI
-		update_alias_last_seen "$SD_UUID" "$SD_NAME" || log_warn "Failed to create initial alias"
+		local initial_alias="SDCard_$(date +%Y%m%d_%H%M%S)"
+		update_alias_last_seen "$SD_UUID" "$initial_alias" || log_warn "Failed to create initial alias"
+
+		log_info "Created new config for SD: $initial_alias ($SD_UUID)"
 	fi
 
 	return 0

@@ -115,10 +115,11 @@ Each SD card gets a `FieldBackup.conf` file:
 ```bash
 # Automatically generated on first insertion
 SD_UUID="550e8400-e29b-41d4-a716-446655440000"
-SD_NAME="Canon_5D4_Card1"           # Edit this to rename
 BACKUP_MODE="PRIMARY"                # PRIMARY or REPLICA
 CREATED_AT="2024-01-15 10:30:00"
 ```
+
+**Note**: To set a friendly name for your SD card, use the WebUI alias management feature instead of editing this file.
 
 **Modes**:
 - `PRIMARY`: SD → Internal Storage (default)

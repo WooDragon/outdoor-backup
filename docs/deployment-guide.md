@@ -206,18 +206,21 @@ ls -la /mnt/ssd/SDMirrors/.logs/
 
 ### 5.2 管理SD卡配置
 
-每张SD卡根目录的`FieldBackup.conf`文件可以编辑：
+**设置友好名称**：
+使用 WebUI 别名管理功能设置SD卡的友好名称，而不是手动编辑配置文件。
+
+**切换备份模式**：
+如需将备份数据恢复回 SD 卡，可编辑配置文件：
 
 ```bash
 # 在SD卡上编辑配置
 vi /mnt/sdcard/FieldBackup.conf
 
-# 修改友好名称
-SD_NAME="我的Canon相机卡"
-
 # 切换备份模式
 BACKUP_MODE="REPLICA"  # 从SSD恢复到SD卡
 ```
+
+注意：`FieldBackup.conf` 文件只包含 UUID、备份模式和创建时间，不包含名称字段。
 
 ### 5.3 查看备份统计
 

@@ -215,7 +215,8 @@ setup_sdcard_config() {
     if [ -f "$config_path" ]; then
         # Load existing config
         . "$config_path"
-        log_info "Loaded config for SD: $SD_NAME ($SD_UUID)"
+        local display_name=$(get_display_name "$SD_UUID")
+        log_info "Loaded config for SD: $display_name ($SD_UUID)"
     else
         # Check if SD card is read-only
         if ! touch "$config_path" 2>/dev/null; then
@@ -224,8 +225,7 @@ setup_sdcard_config() {
         fi
 
         # Generate new config
-        SD_UUID=$(cat /proc/sys/kernel/random/uuid)
-        SD_NAME="SDCard_$(date +%Y%m%d_%H%M%S)"
+        SD_UUID=$(generate_uuid)
         BACKUP_MODE="PRIMARY"
 
         cat > "$config_path" << EOF
@@ -235,9 +235,6 @@ setup_sdcard_config() {
 # Unique identifier for this SD card
 SD_UUID="$SD_UUID"
 
-# Friendly name (can be edited)
-SD_NAME="$SD_NAME"
-
 # Backup mode: PRIMARY (SD→SSD) or REPLICA (SSD→SD)
 BACKUP_MODE="$BACKUP_MODE"
 
@@ -245,10 +242,14 @@ BACKUP_MODE="$BACKUP_MODE"
 CREATED_AT="$(date '+%Y-%m-%d %H:%M:%S')"
 EOF
 
-        log_info "Created new config for SD: $SD_NAME ($SD_UUID)"
-
         # Load the new config
         . "$config_path"
+
+        # Generate initial alias and create entry in aliases.json
+        local initial_alias="SDCard_$(date +%Y%m%d_%H%M%S)"
+        update_alias_last_seen "$SD_UUID" "$initial_alias" || log_warn "Failed to create initial alias"
+
+        log_info "Created new config for SD: $initial_alias ($SD_UUID)"
     fi
 
     return 0
@@ -259,6 +260,13 @@ perform_backup() {
     local source_dir=""
     local target_dir=""
     local log_file=""
+    local display_name=""
+
+    # Get display name with alias support
+    display_name=$(get_display_name "$SD_UUID")
+
+    # Update last_seen timestamp in aliases.json
+    update_alias_last_seen "$SD_UUID" || log_warn "Failed to update alias timestamp"
 
     # Determine backup direction
     if [ "$BACKUP_MODE" = "REPLICA" ]; then
@@ -267,14 +275,14 @@ perform_backup() {
         target_dir="$MOUNT_POINT/"
         log_file="$BACKUP_ROOT/.logs/replica_${SD_UUID}_$(date +%Y%m%d_%H%M%S).log"
 
-        log_info "Starting REPLICA backup: SSD → SD ($SD_NAME)"
+        log_info "Starting REPLICA backup: SSD → SD ($display_name)"
     else
         # Primary mode: SD → SSD
         source_dir="$MOUNT_POINT/"
         target_dir="$BACKUP_ROOT/$SD_UUID/"
         log_file="$BACKUP_ROOT/.logs/backup_${SD_UUID}_$(date +%Y%m%d_%H%M%S).log"
 
-        log_info "Starting PRIMARY backup: SD → SSD ($SD_NAME)"
+        log_info "Starting PRIMARY backup: SD → SSD ($display_name)"
     fi
 
     # Create target directory
@@ -319,7 +327,7 @@ perform_backup() {
     cat >> "$log_file" << EOF
 
 === Backup Summary ===
-SD Card: $SD_NAME ($SD_UUID)
+SD Card: $display_name ($SD_UUID)
 Mode: $BACKUP_MODE
 Duration: ${duration} seconds
 Exit Code: $rsync_exit

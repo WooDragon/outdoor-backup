@@ -118,15 +118,14 @@
 # SD卡唯一标识（自动生成UUID）
 SD_UUID="550e8400-e29b-41d4-a716-446655440000"
 
-# SD卡友好名称（可手动修改）
-SD_NAME="Canon_5D4_Card1"
-
 # 备份模式: PRIMARY(默认) 或 REPLICA
 BACKUP_MODE="PRIMARY"
 
 # 创建时间
 CREATED_AT="2024-01-15 10:30:00"
 ```
+
+**注意**: SD 卡的友好名称通过 WebUI 别名管理功能设置，不在此配置文件中。
 
 ### 3.4 LED状态指示
 
