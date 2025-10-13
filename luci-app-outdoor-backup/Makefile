@@ -58,7 +58,7 @@ define Package/luci-app-outdoor-backup/install
 
 	# Install uHTTPd ACL
 	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
-	$(INSTALL_DATA) ./root/usr/share/rpcd/acl.d/luci-app-outdoor-backup.json $(1)/usr/share/rpcd/acl.d/
+	$(INSTALL_DATA) ./root/usr/share/rpcd/acl.d/outdoor-backup.json $(1)/usr/share/rpcd/acl.d/
 endef
 
 $(eval $(call BuildPackage,luci-app-outdoor-backup))
