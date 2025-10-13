@@ -129,6 +129,18 @@ jobs:
           echo "Enabled packages:"
           grep "CONFIG_PACKAGE_outdoor-backup" .config || echo "Warning: Package not found in .config"
 
+      - name: Build tools
+        run: |
+          cd ../lede
+          echo "Building host tools..."
+          make tools/install -j$(nproc) V=s
+
+      - name: Build toolchain
+        run: |
+          cd ../lede
+          echo "Building toolchain..."
+          make toolchain/install -j$(nproc) V=s
+
       - name: Build outdoor-backup package
         run: |
           cd ../lede
