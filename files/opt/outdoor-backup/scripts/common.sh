@@ -174,7 +174,7 @@ get_alias() {
 	# 2. Read forward to find "alias":
 	# 3. Extract the value between quotes
 	awk -v uuid="$uuid" '
-		/"'"$uuid"'"[[:space:]]*:[[:space:]]*\{/ {
+		$0 ~ "\"" uuid "\"[[:space:]]*:[[:space:]]*\\{" {
 			in_uuid = 1
 			next
 		}
@@ -196,14 +196,45 @@ get_alias() {
 # Args: $1 = UUID
 # Creates new entry if UUID doesn't exist (with empty alias/notes)
 # Uses atomic write (tmp file + mv) for safety
+# Uses file lock to prevent concurrent write conflicts
 update_alias_last_seen() {
 	local uuid="$1"
 	local alias_file="/opt/outdoor-backup/conf/aliases.json"
 	local temp_file="${alias_file}.tmp"
+	local lock_file="${alias_file}.lock"
 	local now=$(date +%s)
+	local lock_fd
 
 	# Ensure directory exists
 	mkdir -p "$(dirname "$alias_file")"
+
+	# Acquire file lock (maximum 10 seconds wait)
+	# Use file descriptor 200 for lock file
+	exec 200>"$lock_file" 2>/dev/null || {
+		log_warn "Failed to open lock file for aliases.json"
+		return 1
+	}
+
+	# Use flock if available (busybox flock or util-linux flock)
+	if command -v flock >/dev/null 2>&1; then
+		if ! flock -w 10 200; then
+			exec 200>&-
+			log_warn "Failed to acquire lock for aliases.json (timeout after 10s)"
+			return 1
+		fi
+	else
+		# Fallback: simple lock with timeout (not as robust)
+		local retry=0
+		while [ -f "$lock_file" ] && [ $retry -lt 100 ]; do
+			sleep 0.1
+			retry=$((retry + 1))
+		done
+		if [ $retry -ge 100 ]; then
+			exec 200>&-
+			log_warn "Failed to acquire lock for aliases.json (timeout)"
+			return 1
+		fi
+	fi
 
 	# Initialize if file doesn't exist
 	if [ ! -f "$alias_file" ]; then
@@ -220,7 +251,7 @@ EOF
 	if grep -q "\"$uuid\"" "$alias_file" 2>/dev/null; then
 		# Update existing entry: replace last_seen value
 		awk -v uuid="$uuid" -v now="$now" '
-			/"'"$uuid"'"[[:space:]]*:[[:space:]]*\{/ {
+			$0 ~ "\"" uuid "\"[[:space:]]*:[[:space:]]*\\{" {
 				in_uuid = 1
 			}
 			in_uuid && /"last_seen"[[:space:]]*:/ {
@@ -273,13 +304,23 @@ EOF
 		mv "$temp_file" "$alias_file" || {
 			log_error "Failed to update aliases.json"
 			rm -f "$temp_file"
+			# Release lock before returning
+			exec 200>&-
+			rm -f "$lock_file"
 			return 1
 		}
 		log_debug "Updated last_seen for UUID: ${uuid:0:8}..."
 	else
 		log_error "Failed to generate temp file for aliases update"
+		# Release lock before returning
+		exec 200>&-
+		rm -f "$lock_file"
 		return 1
 	fi
+
+	# Release file lock
+	exec 200>&-
+	rm -f "$lock_file"
 
 	return 0
 }

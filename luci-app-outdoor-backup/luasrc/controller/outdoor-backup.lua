@@ -398,7 +398,8 @@ function api_cleanup_execute()
     end
 
     -- Execute cleanup (preserve aliases)
-    local cmd = string.format("%s '%s' 1 2>&1", cleanup_script, backup_root)
+    -- IMPORTANT: Must use --force flag to pass safety check in cleanup-all.sh
+    local cmd = string.format("%s --force '%s' 1 2>&1", cleanup_script, backup_root)
     local result = luci.sys.exec(cmd)
     local exit_code = luci.sys.call(cmd)
 

@@ -39,9 +39,31 @@ LOG_TAG="outdoor-backup-cleanup"
 # Load common functions
 . "$SCRIPT_DIR/common.sh"
 
-# Arguments
-BACKUP_ROOT="$1"
-KEEP_ALIASES="${2:-1}"  # Default: keep aliases
+# Parse command line arguments
+FORCE_CLEANUP=0
+BACKUP_ROOT=""
+KEEP_ALIASES=""
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--force|-f)
+			FORCE_CLEANUP=1
+			shift
+			;;
+		*)
+			# First positional arg is backup_root, second is keep_aliases
+			if [ -z "$BACKUP_ROOT" ]; then
+				BACKUP_ROOT="$1"
+			elif [ -z "$KEEP_ALIASES" ]; then
+				KEEP_ALIASES="$1"
+			fi
+			shift
+			;;
+	esac
+done
+
+# Default value for KEEP_ALIASES
+KEEP_ALIASES="${KEEP_ALIASES:-1}"  # Default: keep aliases
 
 # Exit codes
 EXIT_SUCCESS=0
@@ -52,7 +74,17 @@ EXIT_CLEANUP_ERROR=3
 # Validate arguments
 if [ -z "$BACKUP_ROOT" ]; then
 	log_error "Missing backup_root argument"
-	echo "Usage: $0 <backup_root> [keep_aliases]" >&2
+	echo "Usage: $0 [--force] <backup_root> [keep_aliases]" >&2
+	exit $EXIT_INVALID_ARGS
+fi
+
+# Safety check: require explicit --force flag to prevent accidental deletion
+if [ "$FORCE_CLEANUP" != "1" ]; then
+	log_error "SAFETY CHECK FAILED: This operation will DELETE ALL BACKUP DATA"
+	log_error "This is a destructive operation that cannot be undone"
+	log_error "Please use --force flag to confirm: $0 --force '$BACKUP_ROOT' $KEEP_ALIASES"
+	echo "ERROR: --force flag required for safety" >&2
+	echo "Usage: $0 --force <backup_root> [keep_aliases]" >&2
 	exit $EXIT_INVALID_ARGS
 fi
 
