@@ -1,0 +1,893 @@
+<%+header%>
+
+<!-- CSS Styles -->
+<style>
+/* Modal Base Styles */
+.modal {
+    display: none;
+    position: fixed;
+    z-index: 1000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0,0,0,0.4);
+    overflow-y: auto;
+}
+
+.modal-content {
+    background-color: #fefefe;
+    margin: 5% auto;
+    padding: 0;
+    border: 1px solid #888;
+    width: 60%;
+    max-width: 700px;
+    border-radius: 5px;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 15px 20px;
+    border-bottom: 1px solid #ddd;
+    background-color: #f8f9fa;
+    border-radius: 5px 5px 0 0;
+}
+
+.modal-header h3 {
+    margin: 0;
+    font-size: 1.2em;
+}
+
+.modal-close {
+    cursor: pointer;
+    font-size: 28px;
+    font-weight: bold;
+    color: #aaa;
+    line-height: 1;
+    transition: color 0.2s;
+}
+
+.modal-close:hover {
+    color: #000;
+}
+
+.modal-body {
+    padding: 20px;
+}
+
+.modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 15px 20px;
+    border-top: 1px solid #ddd;
+    background-color: #f8f9fa;
+    border-radius: 0 0 5px 5px;
+}
+
+/* Progress Bar Styles */
+.progress-bar {
+    width: 100%;
+    height: 30px;
+    background-color: #f0f0f0;
+    border-radius: 5px;
+    overflow: hidden;
+    position: relative;
+}
+
+.progress-bar-fill {
+    height: 100%;
+    background-color: #4CAF50;
+    transition: width 0.5s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-weight: bold;
+}
+
+.progress-bar-text {
+    position: absolute;
+    width: 100%;
+    text-align: center;
+    line-height: 30px;
+    color: #333;
+    font-weight: bold;
+}
+
+/* Storage Bar Styles */
+.storage-bar {
+    width: 100%;
+    height: 25px;
+    background-color: #e0e0e0;
+    border-radius: 5px;
+    overflow: hidden;
+    position: relative;
+}
+
+.storage-bar-fill {
+    height: 100%;
+    background: linear-gradient(to right, #4CAF50, #FFC107, #F44336);
+    transition: width 0.5s ease;
+}
+
+/* Alert Styles */
+.alert-warning {
+    background-color: #fff3cd;
+    border: 1px solid #ffc107;
+    border-radius: 5px;
+    padding: 15px;
+    margin: 15px 0;
+    color: #856404;
+}
+
+.alert-danger {
+    background-color: #f8d7da;
+    border: 1px solid #f5c6cb;
+    border-radius: 5px;
+    padding: 15px;
+    margin: 15px 0;
+    color: #721c24;
+}
+
+.alert-success {
+    background-color: #d4edda;
+    border: 1px solid #c3e6cb;
+    border-radius: 5px;
+    padding: 15px;
+    margin: 15px 0;
+    color: #155724;
+}
+
+.alert-info {
+    background-color: #d1ecf1;
+    border: 1px solid #bee5eb;
+    border-radius: 5px;
+    padding: 15px;
+    margin: 15px 0;
+    color: #0c5460;
+}
+
+/* Button Styles */
+.btn {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: background-color 0.2s;
+}
+
+.btn-primary {
+    background-color: #007bff;
+    color: white;
+}
+
+.btn-primary:hover {
+    background-color: #0056b3;
+}
+
+.btn-danger {
+    background-color: #dc3545;
+    color: white;
+}
+
+.btn-danger:hover {
+    background-color: #c82333;
+}
+
+.btn-danger:disabled {
+    background-color: #cccccc;
+    cursor: not-allowed;
+}
+
+.btn-secondary {
+    background-color: #6c757d;
+    color: white;
+}
+
+.btn-secondary:hover {
+    background-color: #545b62;
+}
+
+/* Form Styles */
+.form-group {
+    margin-bottom: 15px;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 5px;
+    font-weight: bold;
+}
+
+.form-group input[type="text"],
+.form-group textarea {
+    width: 100%;
+    padding: 8px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    box-sizing: border-box;
+}
+
+.form-group textarea {
+    resize: vertical;
+    min-height: 60px;
+}
+
+/* Info Box Styles */
+.info-box {
+    background-color: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 5px;
+    padding: 15px;
+    margin: 15px 0;
+}
+
+.info-box-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 5px 0;
+}
+
+/* Table Enhancements */
+.action-link {
+    color: #007bff;
+    cursor: pointer;
+    text-decoration: none;
+    margin: 0 5px;
+}
+
+.action-link:hover {
+    text-decoration: underline;
+}
+
+/* Cleanup Preview Table */
+.cleanup-preview-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 15px 0;
+}
+
+.cleanup-preview-table th,
+.cleanup-preview-table td {
+    border: 1px solid #ddd;
+    padding: 10px;
+    text-align: left;
+}
+
+.cleanup-preview-table th {
+    background-color: #f8f9fa;
+    font-weight: bold;
+}
+
+.cleanup-preview-table tbody tr:hover {
+    background-color: #f5f5f5;
+}
+
+/* Confirmation Input */
+.confirm-input-wrapper {
+    margin: 20px 0;
+}
+
+.confirm-input-wrapper input {
+    width: 100%;
+    padding: 10px;
+    font-size: 16px;
+    border: 2px solid #dc3545;
+    border-radius: 5px;
+    box-sizing: border-box;
+}
+
+.confirm-checkbox {
+    display: flex;
+    align-items: center;
+    margin: 15px 0;
+}
+
+.confirm-checkbox input {
+    margin-right: 10px;
+    width: 20px;
+    height: 20px;
+}
+
+/* Status Indicators */
+.status-badge {
+    display: inline-block;
+    padding: 3px 8px;
+    border-radius: 3px;
+    font-size: 0.9em;
+    font-weight: bold;
+}
+
+.status-completed {
+    background-color: #d4edda;
+    color: #155724;
+}
+
+.status-running {
+    background-color: #d1ecf1;
+    color: #0c5460;
+}
+
+.status-error {
+    background-color: #f8d7da;
+    color: #721c24;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+    .modal-content {
+        width: 90%;
+        margin: 10% auto;
+    }
+
+    .info-box-row {
+        flex-direction: column;
+    }
+
+    .cbi-section-table {
+        font-size: 0.9em;
+    }
+}
+</style>
+
+<!-- JavaScript Code -->
+<script type="text/javascript">
+// Global state
+var currentStatus = null;
+
+// Utility Functions
+function formatBytes(bytes) {
+    if (bytes === 0) return '0 B';
+    var k = 1024;
+    var sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    var i = Math.floor(Math.log(bytes) / Math.log(k));
+    return (bytes / Math.pow(k, i)).toFixed(2) + ' ' + sizes[i];
+}
+
+function formatRelativeTime(timestamp) {
+    var now = Math.floor(Date.now() / 1000);
+    var diff = now - timestamp;
+
+    if (diff < 60) return diff + ' seconds ago';
+    if (diff < 3600) return Math.floor(diff / 60) + ' minutes ago';
+    if (diff < 86400) return Math.floor(diff / 3600) + ' hours ago';
+    if (diff < 2592000) return Math.floor(diff / 86400) + ' days ago';
+
+    var date = new Date(timestamp * 1000);
+    return date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
+}
+
+function formatETA(bytesRemaining, speedBytesPerSec) {
+    if (speedBytesPerSec === 0) return 'calculating...';
+    var seconds = Math.ceil(bytesRemaining / speedBytesPerSec);
+
+    if (seconds < 60) return seconds + ' seconds';
+    if (seconds < 3600) return Math.floor(seconds / 60) + ' minutes';
+    return Math.floor(seconds / 3600) + ' hours ' + Math.floor((seconds % 3600) / 60) + ' minutes';
+}
+
+// Modal Functions
+function showModal(modalId) {
+    document.getElementById(modalId).style.display = 'block';
+}
+
+function closeModal(modalId) {
+    document.getElementById(modalId).style.display = 'none';
+}
+
+// Close modal when clicking outside
+window.onclick = function(event) {
+    if (event.target.classList.contains('modal')) {
+        event.target.style.display = 'none';
+    }
+}
+
+// Status Update Functions
+function updateCurrentBackup(backup) {
+    var container = document.getElementById('current-backup');
+
+    if (!backup || !backup.active) {
+        container.innerHTML = '<p style="color: #888; font-style: italic;">No backup in progress</p>';
+        return;
+    }
+
+    var percent = backup.progress_percent || 0;
+    var filesDone = backup.files_done || 0;
+    var filesTotal = backup.files_total || 0;
+    var bytesDone = backup.bytes_done || 0;
+    var bytesTotal = backup.bytes_total || 0;
+    var speed = backup.speed_bytes_per_sec || 0;
+    var bytesRemaining = bytesTotal - bytesDone;
+    var eta = formatETA(bytesRemaining, speed);
+
+    var html = '<div>';
+    html += '<div class="info-box">';
+    html += '<div class="info-box-row"><strong>Card Name:</strong> <span>' + (backup.name || 'Unknown') + '</span></div>';
+    html += '<div class="info-box-row"><strong>UUID:</strong> <span style="font-family: monospace;">' + (backup.uuid || 'N/A') + '</span></div>';
+    html += '<div class="info-box-row"><strong>Device:</strong> <span>/dev/' + (backup.device || 'N/A') + '</span></div>';
+    html += '<div class="info-box-row"><strong>Started:</strong> <span>' + (backup.started_at ? formatRelativeTime(backup.started_at) : 'N/A') + '</span></div>';
+    html += '</div>';
+
+    html += '<div class="progress-bar" style="margin: 15px 0;">';
+    html += '<div class="progress-bar-fill" style="width: ' + percent + '%;">' + percent.toFixed(1) + '%</div>';
+    html += '</div>';
+
+    html += '<div class="info-box">';
+    html += '<div class="info-box-row"><strong>Files:</strong> <span>' + filesDone + ' / ' + filesTotal + '</span></div>';
+    html += '<div class="info-box-row"><strong>Size:</strong> <span>' + formatBytes(bytesDone) + ' / ' + formatBytes(bytesTotal) + '</span></div>';
+    html += '<div class="info-box-row"><strong>Speed:</strong> <span>' + formatBytes(speed) + '/s</span></div>';
+    html += '<div class="info-box-row"><strong>ETA:</strong> <span>' + eta + '</span></div>';
+    html += '</div>';
+
+    html += '</div>';
+    container.innerHTML = html;
+}
+
+function updateStorageInfo(storage) {
+    var container = document.getElementById('storage-info');
+
+    if (!storage) {
+        container.innerHTML = '<p style="color: #888; font-style: italic;">Storage information unavailable</p>';
+        return;
+    }
+
+    var total = storage.total_bytes || 0;
+    var used = storage.used_bytes || 0;
+    var free = storage.free_bytes || 0;
+    var percent = total > 0 ? (used / total * 100) : 0;
+
+    var html = '<div>';
+    html += '<div class="info-box">';
+    html += '<div class="info-box-row"><strong>Backup Root:</strong> <span>' + (storage.root || 'N/A') + '</span></div>';
+    html += '<div class="info-box-row"><strong>Used:</strong> <span>' + formatBytes(used) + ' / ' + formatBytes(total) + ' (' + percent.toFixed(1) + '%)</span></div>';
+    html += '<div class="info-box-row"><strong>Available:</strong> <span>' + formatBytes(free) + '</span></div>';
+    html += '</div>';
+
+    html += '<div class="storage-bar" style="margin: 15px 0;">';
+    html += '<div class="storage-bar-fill" style="width: ' + percent + '%;"></div>';
+    html += '</div>';
+
+    html += '</div>';
+    container.innerHTML = html;
+}
+
+function updateHistoryTable(history) {
+    var tbody = document.getElementById('history-table');
+
+    if (!history || history.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #888; font-style: italic;">No backup history found</td></tr>';
+        return;
+    }
+
+    var html = '';
+    for (var i = 0; i < history.length; i++) {
+        var item = history[i];
+        var uuid = item.uuid || 'N/A';
+        var name = item.name || 'SD_' + uuid.substring(0, 8);
+        var lastBackup = item.last_backup_at ? formatRelativeTime(item.last_backup_at) : 'Never';
+        var size = formatBytes(item.bytes_total || 0);
+        var status = item.status || 'unknown';
+        var statusClass = status === 'completed' ? 'status-completed' : (status === 'running' ? 'status-running' : 'status-error');
+        var statusText = status.charAt(0).toUpperCase() + status.slice(1);
+
+        html += '<tr>';
+        html += '<td>' + name + '</td>';
+        html += '<td style="font-family: monospace; font-size: 0.9em;">' + uuid.substring(0, 8) + '...</td>';
+        html += '<td>' + lastBackup + '</td>';
+        html += '<td>' + size + '</td>';
+        html += '<td><span class="status-badge ' + statusClass + '">' + statusText + '</span></td>';
+        html += '<td><a class="action-link" onclick="showAliasModal(\'' + uuid + '\', \'' + name + '\', \'\')">Edit</a></td>';
+        html += '</tr>';
+    }
+
+    tbody.innerHTML = html;
+}
+
+function refreshData() {
+    XHR.get('<%=url("admin/services/outdoor-backup/api/status")%>', null,
+        function(x, data) {
+            if (data) {
+                currentStatus = data;
+                updateCurrentBackup(data.current_backup);
+                updateStorageInfo(data.storage);
+                updateHistoryTable(data.history);
+            }
+        }
+    );
+}
+
+// Alias Management Functions
+function showAliasModal(uuid, currentAlias, currentNotes) {
+    document.getElementById('alias-uuid').innerText = uuid;
+    document.getElementById('alias-input').value = currentAlias.startsWith('SD_') ? '' : currentAlias;
+    document.getElementById('alias-notes').value = currentNotes || '';
+    document.getElementById('alias-uuid-hidden').value = uuid;
+    showModal('alias-modal');
+}
+
+function saveAlias() {
+    var uuid = document.getElementById('alias-uuid-hidden').value;
+    var alias = document.getElementById('alias-input').value.trim();
+    var notes = document.getElementById('alias-notes').value.trim();
+
+    var data = {
+        uuid: uuid,
+        alias: alias,
+        notes: notes
+    };
+
+    XHR.post('<%=url("admin/services/outdoor-backup/api/alias/update")%>',
+        JSON.stringify(data),
+        function(x, result) {
+            if (result && result.success) {
+                closeModal('alias-modal');
+                refreshData();
+            } else {
+                alert('Failed to save alias: ' + (result ? result.error : 'Unknown error'));
+            }
+        }
+    );
+}
+
+function deleteAlias() {
+    var uuid = document.getElementById('alias-uuid-hidden').value;
+
+    if (!confirm('Are you sure you want to delete this alias mapping?\n\nNote: This will NOT delete backup data.')) {
+        return;
+    }
+
+    var params = 'uuid=' + encodeURIComponent(uuid);
+    XHR.get('<%=url("admin/services/outdoor-backup/api/alias/delete")%>?' + params,
+        null,
+        function(x, result) {
+            if (result && result.success) {
+                closeModal('alias-modal');
+                refreshData();
+            } else {
+                alert('Failed to delete alias: ' + (result ? result.error : 'Unknown error'));
+            }
+        }
+    );
+}
+
+// Batch Cleanup Functions
+function showCleanupPreview() {
+    XHR.get('<%=url("admin/services/outdoor-backup/api/cleanup/preview")%>', null,
+        function(x, data) {
+            if (data && data.cards) {
+                renderCleanupPreview(data);
+                showModal('cleanup-preview-modal');
+            } else {
+                alert('Failed to load cleanup preview: ' + (data ? data.error : 'Unknown error'));
+            }
+        }
+    );
+}
+
+function renderCleanupPreview(data) {
+    var cards = data.cards || [];
+    var totalSize = data.total_size_bytes || 0;
+    var totalCards = cards.length;
+
+    var html = '<table class="cleanup-preview-table">';
+    html += '<thead><tr><th>Card Name</th><th>UUID (Short)</th><th>Size</th></tr></thead>';
+    html += '<tbody>';
+
+    if (cards.length === 0) {
+        html += '<tr><td colspan="3" style="text-align: center; color: #888;">No backup data found</td></tr>';
+    } else {
+        for (var i = 0; i < cards.length; i++) {
+            var card = cards[i];
+            html += '<tr>';
+            html += '<td>' + card.display_name + '</td>';
+            html += '<td style="font-family: monospace;">' + card.uuid.substring(0, 8) + '...</td>';
+            html += '<td>' + formatBytes(card.size_bytes) + '</td>';
+            html += '</tr>';
+        }
+    }
+
+    html += '</tbody></table>';
+
+    document.getElementById('cleanup-preview-cards').innerHTML = html;
+    document.getElementById('cleanup-total-cards').innerText = totalCards;
+    document.getElementById('cleanup-total-size').innerText = formatBytes(totalSize);
+
+    // Store cleanup data for next step
+    window.cleanupData = data;
+}
+
+function showCleanupConfirm() {
+    if (!window.cleanupData || window.cleanupData.cards.length === 0) {
+        alert('No data to clean up');
+        return;
+    }
+
+    closeModal('cleanup-preview-modal');
+
+    var totalSize = formatBytes(window.cleanupData.total_size_bytes);
+    var totalCards = window.cleanupData.cards.length;
+
+    document.getElementById('confirm-total-size').innerText = totalSize;
+    document.getElementById('confirm-total-cards').innerText = totalCards;
+    document.getElementById('confirm-text-input').value = '';
+    document.getElementById('confirm-checkbox').checked = false;
+    document.getElementById('execute-cleanup-btn').disabled = true;
+
+    showModal('cleanup-confirm-modal');
+}
+
+function validateCleanupConfirm() {
+    var text = document.getElementById('confirm-text-input').value;
+    var checkbox = document.getElementById('confirm-checkbox').checked;
+    var button = document.getElementById('execute-cleanup-btn');
+
+    if (text === '清空备份数据' && checkbox) {
+        button.disabled = false;
+    } else {
+        button.disabled = true;
+    }
+}
+
+function executeCleanup() {
+    var confirmText = document.getElementById('confirm-text-input').value;
+
+    if (confirmText !== '清空备份数据') {
+        alert('Confirmation text does not match');
+        return;
+    }
+
+    closeModal('cleanup-confirm-modal');
+    showModal('cleanup-progress-modal');
+
+    document.getElementById('cleanup-status-text').innerText = 'Executing cleanup...';
+    document.getElementById('cleanup-progress-bar').style.width = '50%';
+
+    XHR.post('<%=url("admin/services/outdoor-backup/api/cleanup/execute")%>',
+        JSON.stringify({confirm_text: confirmText}),
+        function(x, result) {
+            if (result && result.success) {
+                showCleanupComplete(result);
+            } else {
+                document.getElementById('cleanup-status-text').innerText = 'Cleanup failed: ' + (result ? result.error : 'Unknown error');
+                document.getElementById('cleanup-status-text').style.color = '#dc3545';
+            }
+        }
+    );
+}
+
+function showCleanupComplete(result) {
+    document.getElementById('cleanup-status-text').innerText = 'Cleanup completed successfully!';
+    document.getElementById('cleanup-status-text').style.color = '#28a745';
+    document.getElementById('cleanup-progress-bar').style.width = '100%';
+
+    setTimeout(function() {
+        closeModal('cleanup-progress-modal');
+        refreshData();
+    }, 2000);
+}
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', function() {
+    refreshData();
+
+    // Auto-refresh every 10 seconds
+    XHR.poll(10, '<%=url("admin/services/outdoor-backup/api/status")%>', null,
+        function(x, data) {
+            if (data) {
+                currentStatus = data;
+                updateCurrentBackup(data.current_backup);
+                updateStorageInfo(data.storage);
+                updateHistoryTable(data.history);
+            }
+        }
+    );
+});
+</script>
+
+<!-- HTML Content -->
+<h2 name="content"><%:Status%></h2>
+
+<!-- Current Backup Section -->
+<fieldset class="cbi-section">
+    <legend><%:Current Backup%></legend>
+    <div id="current-backup">
+        <p style="color: #888; font-style: italic;">Loading...</p>
+    </div>
+</fieldset>
+
+<!-- Storage Space Section -->
+<fieldset class="cbi-section">
+    <legend><%:Storage Space%></legend>
+    <div id="storage-info">
+        <p style="color: #888; font-style: italic;">Loading...</p>
+    </div>
+</fieldset>
+
+<!-- Backup History Section -->
+<fieldset class="cbi-section">
+    <legend><%:Backup History%></legend>
+    <table class="cbi-section-table">
+        <thead>
+            <tr class="cbi-section-table-titles">
+                <th class="cbi-section-table-cell"><%:Card Name%></th>
+                <th class="cbi-section-table-cell"><%:UUID%></th>
+                <th class="cbi-section-table-cell"><%:Last Backup%></th>
+                <th class="cbi-section-table-cell"><%:Size%></th>
+                <th class="cbi-section-table-cell"><%:Status%></th>
+                <th class="cbi-section-table-cell"><%:Actions%></th>
+            </tr>
+        </thead>
+        <tbody id="history-table">
+            <tr>
+                <td colspan="6" style="text-align: center; color: #888; font-style: italic;">Loading...</td>
+            </tr>
+        </tbody>
+    </table>
+</fieldset>
+
+<!-- Batch Cleanup Button -->
+<div style="margin-top: 20px;">
+    <button class="btn btn-danger" onclick="showCleanupPreview()">
+        ⚠️ <%:Batch Cleanup...%>
+    </button>
+    <p style="color: #666; font-size: 0.9em; margin-top: 10px;">
+        <%:Clean up all backup data while preserving alias mappings. Use this after backing up to NAS.%>
+    </p>
+</div>
+
+<!-- Alias Edit Modal -->
+<div id="alias-modal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3><%:Edit Card Alias%></h3>
+            <span class="modal-close" onclick="closeModal('alias-modal')">&times;</span>
+        </div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label><%:UUID%>:</label>
+                <div id="alias-uuid" style="font-family: monospace; color: #666;">N/A</div>
+                <input type="hidden" id="alias-uuid-hidden" value="">
+            </div>
+
+            <div class="form-group">
+                <label for="alias-input"><%:Alias%>:</label>
+                <input type="text" id="alias-input" placeholder="e.g., Samsung TF Card Pro 128GB">
+            </div>
+
+            <div class="form-group">
+                <label for="alias-notes"><%:Notes%>:</label>
+                <textarea id="alias-notes" placeholder="Optional notes about this card"></textarea>
+            </div>
+
+            <div class="alert-info">
+                <strong>Note:</strong> Deleting the alias mapping will NOT delete backup data. To clean up backup data, use the "Batch Cleanup" feature.
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-primary" onclick="saveAlias()"><%:Save Alias%></button>
+            <button class="btn btn-danger" onclick="deleteAlias()"><%:Delete Mapping%></button>
+            <button class="btn btn-secondary" onclick="closeModal('alias-modal')"><%:Cancel%></button>
+        </div>
+    </div>
+</div>
+
+<!-- Batch Cleanup Preview Modal (Step 1) -->
+<div id="cleanup-preview-modal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3>⚠️ <%:Batch Cleanup - Preview%></h3>
+            <span class="modal-close" onclick="closeModal('cleanup-preview-modal')">&times;</span>
+        </div>
+        <div class="modal-body">
+            <div class="alert-warning">
+                <strong>Warning:</strong> This operation will delete all backup data!
+            </div>
+
+            <h4><%:Data to be cleaned up%>:</h4>
+            <div id="cleanup-preview-cards"></div>
+
+            <div class="info-box">
+                <div class="info-box-row">
+                    <strong><%:Total Cards%>:</strong>
+                    <span id="cleanup-total-cards">0</span>
+                </div>
+                <div class="info-box-row">
+                    <strong><%:Total Size%>:</strong>
+                    <span id="cleanup-total-size">0 B</span>
+                </div>
+            </div>
+
+            <h4><%:Will be preserved%>:</h4>
+            <div class="alert-success">
+                ✓ Alias mappings (aliases.json)<br>
+                ✓ Configuration files<br>
+                ✓ Log files
+            </div>
+
+            <h4><%:Will be deleted%>:</h4>
+            <div class="alert-danger">
+                ✗ All backup data in subdirectories<br>
+                ✗ Cannot be undone
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-danger" onclick="showCleanupConfirm()"><%:Next Step%></button>
+            <button class="btn btn-secondary" onclick="closeModal('cleanup-preview-modal')"><%:Cancel%></button>
+        </div>
+    </div>
+</div>
+
+<!-- Batch Cleanup Confirm Modal (Step 2) -->
+<div id="cleanup-confirm-modal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3>⚠️ <%:Final Confirmation - Batch Cleanup%></h3>
+            <span class="modal-close" onclick="closeModal('cleanup-confirm-modal')">&times;</span>
+        </div>
+        <div class="modal-body">
+            <div class="alert-danger">
+                <strong>Last Warning:</strong> This operation CANNOT be undone!
+            </div>
+
+            <div class="info-box">
+                <div class="info-box-row">
+                    <strong><%:Will delete%>:</strong>
+                    <span id="confirm-total-size">0 B</span>
+                    (<span id="confirm-total-cards">0</span> cards)
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label><%:Please type the following text to confirm%>:</label>
+                <div style="text-align: center; font-size: 1.2em; font-weight: bold; padding: 10px; background-color: #f8d7da; border-radius: 5px; margin: 10px 0;">
+                    清空备份数据
+                </div>
+                <div class="confirm-input-wrapper">
+                    <input type="text" id="confirm-text-input" placeholder="Type here..." oninput="validateCleanupConfirm()">
+                </div>
+            </div>
+
+            <div class="confirm-checkbox">
+                <input type="checkbox" id="confirm-checkbox" onchange="validateCleanupConfirm()">
+                <label for="confirm-checkbox"><%:I have backed up the data to NAS and confirm the cleanup%></label>
+            </div>
+
+            <div class="alert-info">
+                <strong>Note:</strong> The "Confirm Cleanup" button will be enabled only after typing the correct text and checking the box.
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-danger" id="execute-cleanup-btn" onclick="executeCleanup()" disabled><%:Confirm Cleanup%></button>
+            <button class="btn btn-secondary" onclick="closeModal('cleanup-confirm-modal')"><%:Cancel%></button>
+        </div>
+    </div>
+</div>
+
+<!-- Batch Cleanup Progress Modal (Step 3) -->
+<div id="cleanup-progress-modal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3><%:Cleaning Up...%></h3>
+        </div>
+        <div class="modal-body">
+            <div id="cleanup-status-text" style="text-align: center; font-size: 1.1em; margin: 20px 0;">
+                Initializing cleanup...
+            </div>
+
+            <div class="progress-bar" style="margin: 20px 0;">
+                <div class="progress-bar-fill" id="cleanup-progress-bar" style="width: 0%;"></div>
+            </div>
+
+            <div class="alert-info">
+                <strong>Please wait...</strong> Do not close this window or navigate away.
+            </div>
+        </div>
+    </div>
+</div>
+
+<%+footer%>
