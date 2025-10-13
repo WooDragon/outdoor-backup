@@ -193,12 +193,13 @@ get_alias() {
 }
 
 # Update last_seen timestamp for a UUID
-# Args: $1 = UUID
-# Creates new entry if UUID doesn't exist (with empty alias/notes)
+# Args: $1 = UUID, $2 = initial_alias (optional, used on first creation)
+# Creates new entry if UUID doesn't exist (with optional initial alias)
 # Uses atomic write (tmp file + mv) for safety
 # Uses file lock to prevent concurrent write conflicts
 update_alias_last_seen() {
 	local uuid="$1"
+	local initial_alias="$2"  # Optional: set initial alias on first creation
 	local alias_file="/opt/outdoor-backup/conf/aliases.json"
 	local temp_file="${alias_file}.tmp"
 	local lock_file="${alias_file}.lock"
@@ -265,8 +266,10 @@ EOF
 		' "$alias_file" > "$temp_file"
 	else
 		# Add new entry before closing "aliases" object
-		# Find the last } before final }, insert new entry
-		awk -v uuid="$uuid" -v now="$now" '
+		# Use initial_alias if provided, otherwise empty string
+		local alias_value="${initial_alias:-}"
+
+		awk -v uuid="$uuid" -v now="$now" -v alias="$alias_value" '
 			# Track if we are in the aliases object
 			/"aliases"[[:space:]]*:[[:space:]]*\{/ {
 				in_aliases = 1
@@ -285,7 +288,8 @@ EOF
 					print ","
 					print "    \"" uuid "\": {"
 				}
-				print "      \"alias\": \"\","
+				# Use provided alias or empty string
+				print "      \"alias\": \"" alias "\","
 				print "      \"notes\": \"\","
 				print "      \"created_at\": " now ","
 				print "      \"last_seen\": " now
@@ -297,6 +301,11 @@ EOF
 				print
 			}
 		' "$alias_file" > "$temp_file"
+
+		# Log initial alias creation
+		if [ -n "$initial_alias" ]; then
+			log_info "Created alias entry with initial name: $initial_alias"
+		fi
 	fi
 
 	# Atomic replace

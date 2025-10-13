@@ -143,7 +143,10 @@ setup_sdcard_config() {
 # Unique identifier for this SD card
 SD_UUID="$SD_UUID"
 
-# Friendly name (can be edited)
+# Friendly name (DEPRECATED: for backward compatibility only)
+# NOTE: This field is no longer used for display in WebUI
+# Please use the WebUI to manage card aliases (this serves as initial value)
+# Editing this field will NOT change the display name
 SD_NAME="$SD_NAME"
 
 # Backup mode: PRIMARY (SD→SSD) or REPLICA (SSD→SD)
@@ -157,6 +160,10 @@ EOF
 
 		# Load the new config
 		. "$config_path"
+
+		# Create initial alias entry in aliases.json using SD_NAME
+		# This ensures first-time insertion shows a meaningful name in WebUI
+		update_alias_last_seen "$SD_UUID" "$SD_NAME" || log_warn "Failed to create initial alias"
 	fi
 
 	return 0
@@ -173,6 +180,7 @@ perform_backup() {
 	display_name=$(get_display_name "$SD_UUID")
 
 	# Update last_seen timestamp in aliases.json
+	# NOTE: Don't pass SD_NAME here to avoid overwriting existing alias
 	update_alias_last_seen "$SD_UUID" || log_warn "Failed to update alias timestamp"
 
 	# Determine backup direction
