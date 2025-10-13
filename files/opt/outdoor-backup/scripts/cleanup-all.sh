@@ -25,8 +25,15 @@
 set -e
 
 # Constants
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-BASE_DIR="$(dirname "$SCRIPT_DIR")"
+# Allow BASE_DIR to be overridden for testing
+if [ -z "$BASE_DIR" ]; then
+	SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+	BASE_DIR="$(dirname "$SCRIPT_DIR")"
+else
+	# BASE_DIR provided externally (for testing), derive SCRIPT_DIR
+	SCRIPT_DIR="$BASE_DIR/scripts"
+fi
+
 LOG_TAG="outdoor-backup-cleanup"
 
 # Load common functions
@@ -131,8 +138,9 @@ cleanup_all_backup_data() {
 	log_info "Freed space: ${freed_size} bytes"
 
 	# Handle aliases.json
+	local alias_file="$BASE_DIR/conf/aliases.json"
+
 	if [ "$KEEP_ALIASES" = "0" ]; then
-		local alias_file="/opt/outdoor-backup/conf/aliases.json"
 		if [ -f "$alias_file" ]; then
 			# Clear aliases but keep file structure
 			cat > "$alias_file" << 'EOF'

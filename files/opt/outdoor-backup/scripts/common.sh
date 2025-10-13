@@ -337,9 +337,20 @@ get_total_backup_size() {
 		return 1
 	}
 
-	# Use du to calculate size, excluding special directories
-	# -s: summary (total only)
-	# -b: bytes (not blocks)
-	# Exclude patterns: .logs, .tmp, lost+found
-	du -sb "$backup_root" 2>/dev/null | awk '{print $1}' || echo "0"
+	# Use du to calculate size
+	# Different systems support different flags:
+	# - Linux: du -sb (bytes)
+	# - macOS/BSD: du -sk (kilobytes), multiply by 1024
+	# Try -sb first, fall back to -sk if not supported
+	local size_bytes
+	size_bytes=$(du -sb "$backup_root" 2>/dev/null | awk '{print $1}')
+
+	if [ -z "$size_bytes" ] || [ "$size_bytes" = "0" ]; then
+		# Fall back to -sk (kilobytes) and convert to bytes
+		local size_kb
+		size_kb=$(du -sk "$backup_root" 2>/dev/null | awk '{print $1}')
+		size_bytes=$((size_kb * 1024))
+	fi
+
+	echo "${size_bytes:-0}"
 }
