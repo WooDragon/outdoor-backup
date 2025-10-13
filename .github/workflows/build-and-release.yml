@@ -37,27 +37,12 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Prepare package files
-        run: |
-          mkdir -p /tmp/packages/$PACKAGE_NAME
-          mkdir -p /tmp/packages/$LUCI_PACKAGE_NAME
-
-          # Copy outdoor-backup package
-          cp Makefile /tmp/packages/$PACKAGE_NAME/
-          cp -r files /tmp/packages/$PACKAGE_NAME/
-
-          # Copy luci-app package
-          cp -r $LUCI_PACKAGE_NAME/* /tmp/packages/$LUCI_PACKAGE_NAME/
-
-          echo "Package files prepared in /tmp/packages"
-          ls -la /tmp/packages/
-
-      - name: Build with OpenWrt SDK
+      - name: Build outdoor-backup with OpenWrt SDK
         uses: openwrt/gh-action-sdk@v7
         env:
           ARCH: ${{ matrix.arch.arch }}
-          FEEDNAME: packages_ci
-          PACKAGES: ${{ env.PACKAGE_NAME }} ${{ env.LUCI_PACKAGE_NAME }}
+          FEEDNAME: outdoor_backup_feed
+          PACKAGES: ${{ env.PACKAGE_NAME }}
           V: s
 
       - name: Run ShellCheck validation
