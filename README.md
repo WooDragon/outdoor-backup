@@ -307,12 +307,142 @@ Expected performance on NanoPi R5S (4-core ARM, SATA SSD):
   - NanoPi R5S (ARM64)
   - Other devices with internal storage
 
+## WebUI Management Interface
+
+### Overview
+
+A LuCI-based web interface for visual monitoring and management of the backup system.
+
+**Features**:
+- Real-time backup progress monitoring (progress bar, file count, speed, ETA)
+- Storage space visualization (pie chart, usage percentage)
+- Backup history viewer
+- SD card alias management (solve UUID readability issue)
+- Batch cleanup with multi-step confirmation
+- Log viewing and filtering
+
+### Installation
+
+```bash
+# Install WebUI package (requires outdoor-backup core package)
+opkg install luci-app-outdoor-backup_*.ipk
+```
+
+### Access
+
+After installation, access the WebUI at:
+
+```
+http://192.168.1.1/cgi-bin/luci/admin/services/outdoor-backup
+```
+
+**Navigation**: `LuCI Home → Services → Outdoor Backup`
+
+### Key Features
+
+#### 1. Status Monitoring
+- Current backup progress with real-time updates
+- Storage usage bar (color-coded: green → yellow → red)
+- Backup history table with status badges
+
+#### 2. Alias Management
+- Give SD cards human-readable names (e.g., "Canon_5D4_Card1")
+- Solve UUID readability problem (from `SD_550e8400` to custom names)
+- Add notes for each card
+- Alias mapping preserved after batch cleanup
+
+#### 3. Batch Cleanup
+Clear all backup data after backing up to NAS, with multi-layer protection:
+
+**Safety Mechanisms**:
+1. Preview dialog (shows cards and sizes)
+2. Confirmation text input (must type "清空备份数据")
+3. Checkbox confirmation ("I have backed up to NAS")
+4. Button disabled until all conditions met
+5. Shell script safety check (`--force` flag)
+
+**Preserved Data**:
+- Alias mappings (`aliases.json`)
+- Configuration files
+- Log files
+
+#### 4. Log Viewing
+- Last 100 lines with color highlighting
+- Log level filtering (ERROR/WARN/INFO/DEBUG)
+- Auto-refresh option (10 seconds)
+- Download full log
+
+### Quick Start
+
+**Set SD Card Alias**:
+1. Insert SD card and wait for backup completion
+2. Access Status page
+3. Click "Edit" in backup history table
+4. Enter alias (e.g., "Canon_5D4_Card1") and notes
+5. Click "Save Alias"
+6. Next insertion will automatically show alias
+
+**Batch Cleanup**:
+1. Click "⚠️ Batch Cleanup..." button at bottom of Status page
+2. Review preview dialog (cards, sizes)
+3. Click "Next Step"
+4. Type "清空备份数据" in input box
+5. Check "I have backed up to NAS"
+6. Click "Confirm Cleanup"
+7. Wait for completion (auto-refresh)
+
+### Documentation
+
+- **[docs/WEBUI_USER_GUIDE.md](docs/WEBUI_USER_GUIDE.md)** - User Manual
+  - Feature overview and screenshots
+  - Step-by-step usage guide
+  - Alias management workflow
+  - Batch cleanup safety measures
+  - Troubleshooting tips
+
+- **[docs/WEBUI_DEVELOPER_GUIDE.md](docs/WEBUI_DEVELOPER_GUIDE.md)** - Developer Guide
+  - Architecture overview
+  - API documentation (6 endpoints)
+  - Data structure specifications (status.json, aliases.json)
+  - Development workflow and code standards
+  - Security mechanisms (XSS, command injection, file locking)
+  - Known limitations and future improvements
+
+- **[docs/webui-design.md](docs/webui-design.md)** - Design Document
+  - UI wireframes
+  - Data structure design
+  - LuCI implementation details
+
+### Technical Stack
+
+| Component | Technology |
+|-----------|------------|
+| Backend | Lua 5.1, LuCI Framework |
+| Frontend | HTML5/CSS3, JavaScript (ES5, no framework) |
+| Data Format | JSON (status.json, aliases.json) |
+| Configuration | UCI (OpenWrt config system) |
+
+### Browser Compatibility
+
+| Browser | Support |
+|---------|---------|
+| Chrome 80+ | ✅ Fully supported (Recommended) |
+| Firefox 75+ | ✅ Fully supported (Recommended) |
+| Safari 13+ | ✅ Supported |
+| Edge 80+ | ✅ Supported |
+| IE 11 | ❌ Not supported |
+
+---
+
 ## Documentation
 
 - [BUILD.md](BUILD.md) - 构建指南（Lean's LEDE）
 - [IPK_PACKAGING.md](IPK_PACKAGING.md) - IPK 打包原理详解
 - [CLAUDE.md](CLAUDE.md) - 项目技术文档（Claude Code 使用）
 - [docs/](docs/) - 架构设计和组件实现文档
+  - [webui-design.md](docs/webui-design.md) - WebUI 设计文档
+  - [WEBUI_USER_GUIDE.md](docs/WEBUI_USER_GUIDE.md) - WebUI 用户手册
+  - [WEBUI_DEVELOPER_GUIDE.md](docs/WEBUI_DEVELOPER_GUIDE.md) - WebUI 开发者文档
 
 ## License
 
