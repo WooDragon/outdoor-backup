@@ -301,3 +301,45 @@ get_display_name() {
 	# Priority 2: Fallback to UUID prefix
 	echo "SD_${uuid:0:8}"
 }
+
+# Validate UUID format (RFC 4122 standard)
+# Args: $1 = UUID string
+# Returns: 0=valid, 1=invalid
+# Format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx (8-4-4-4-12 hex digits)
+is_valid_uuid() {
+	local uuid="$1"
+
+	# Check length (36 characters)
+	[ ${#uuid} -eq 36 ] || return 1
+
+	# Check format using case pattern matching
+	# Pattern: 8 hex - 4 hex - 4 hex - 4 hex - 12 hex
+	case "$uuid" in
+		[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F])
+			return 0
+			;;
+		*)
+			return 1
+			;;
+	esac
+}
+
+# Calculate total backup size (in bytes)
+# Args: $1 = backup_root path
+# Returns: total size in bytes (stdout)
+# Note: Excludes special directories (.logs, .tmp, etc.)
+get_total_backup_size() {
+	local backup_root="$1"
+
+	# Validate path
+	[ -d "$backup_root" ] || {
+		echo "0"
+		return 1
+	}
+
+	# Use du to calculate size, excluding special directories
+	# -s: summary (total only)
+	# -b: bytes (not blocks)
+	# Exclude patterns: .logs, .tmp, lost+found
+	du -sb "$backup_root" 2>/dev/null | awk '{print $1}' || echo "0"
+}
