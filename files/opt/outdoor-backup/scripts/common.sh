@@ -153,3 +153,151 @@ generate_uuid() {
 		echo "$(date +%s)-$(dd if=/dev/urandom bs=12 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n')"
 	fi
 }
+
+# Alias management functions (for WebUI support)
+# File: /opt/outdoor-backup/conf/aliases.json
+
+# Get alias for a given UUID
+# Args: $1 = UUID
+# Returns: alias string (empty if not found or no alias set)
+get_alias() {
+	local uuid="$1"
+	local alias_file="/opt/outdoor-backup/conf/aliases.json"
+
+	# Return empty if file doesn't exist
+	[ -f "$alias_file" ] || return 0
+
+	# Parse JSON using awk to extract alias field for the UUID
+	# JSON structure: "uuid": {"alias": "value", ...}
+	# We need to:
+	# 1. Find the line with "uuid":
+	# 2. Read forward to find "alias":
+	# 3. Extract the value between quotes
+	awk -v uuid="$uuid" '
+		/"'"$uuid"'"[[:space:]]*:[[:space:]]*\{/ {
+			in_uuid = 1
+			next
+		}
+		in_uuid && /"alias"[[:space:]]*:/ {
+			# Extract value between quotes after "alias":
+			match($0, /"alias"[[:space:]]*:[[:space:]]*"([^"]*)"/, arr)
+			if (arr[1] != "") {
+				print arr[1]
+			}
+			exit
+		}
+		in_uuid && /\}/ {
+			in_uuid = 0
+		}
+	' "$alias_file" 2>/dev/null
+}
+
+# Update last_seen timestamp for a UUID
+# Args: $1 = UUID
+# Creates new entry if UUID doesn't exist (with empty alias/notes)
+# Uses atomic write (tmp file + mv) for safety
+update_alias_last_seen() {
+	local uuid="$1"
+	local alias_file="/opt/outdoor-backup/conf/aliases.json"
+	local temp_file="${alias_file}.tmp"
+	local now=$(date +%s)
+
+	# Ensure directory exists
+	mkdir -p "$(dirname "$alias_file")"
+
+	# Initialize if file doesn't exist
+	if [ ! -f "$alias_file" ]; then
+		cat > "$alias_file" << 'EOF'
+{
+  "version": "1.0",
+  "aliases": {}
+}
+EOF
+		log_debug "Created aliases.json"
+	fi
+
+	# Check if UUID exists in file
+	if grep -q "\"$uuid\"" "$alias_file" 2>/dev/null; then
+		# Update existing entry: replace last_seen value
+		awk -v uuid="$uuid" -v now="$now" '
+			/"'"$uuid"'"[[:space:]]*:[[:space:]]*\{/ {
+				in_uuid = 1
+			}
+			in_uuid && /"last_seen"[[:space:]]*:/ {
+				# Replace the timestamp value
+				sub(/:[[:space:]]*[0-9]+/, ": " now)
+			}
+			in_uuid && /\}/ {
+				in_uuid = 0
+			}
+			{ print }
+		' "$alias_file" > "$temp_file"
+	else
+		# Add new entry before closing "aliases" object
+		# Find the last } before final }, insert new entry
+		awk -v uuid="$uuid" -v now="$now" '
+			# Track if we are in the aliases object
+			/"aliases"[[:space:]]*:[[:space:]]*\{/ {
+				in_aliases = 1
+				print
+				next
+			}
+			# Found closing brace of aliases, check if empty
+			in_aliases && /^[[:space:]]*\}/ {
+				# Check if aliases was empty by reading ahead
+				# If previous line was opening brace, no comma needed
+				if (prev_line ~ /\{[[:space:]]*$/) {
+					# Empty aliases, add first entry without comma
+					print "    \"" uuid "\": {"
+				} else {
+					# Non-empty, add comma and new entry
+					print ","
+					print "    \"" uuid "\": {"
+				}
+				print "      \"alias\": \"\","
+				print "      \"notes\": \"\","
+				print "      \"created_at\": " now ","
+				print "      \"last_seen\": " now
+				print "    }"
+				in_aliases = 0
+			}
+			{
+				prev_line = $0
+				print
+			}
+		' "$alias_file" > "$temp_file"
+	fi
+
+	# Atomic replace
+	if [ -f "$temp_file" ]; then
+		mv "$temp_file" "$alias_file" || {
+			log_error "Failed to update aliases.json"
+			rm -f "$temp_file"
+			return 1
+		}
+		log_debug "Updated last_seen for UUID: ${uuid:0:8}..."
+	else
+		log_error "Failed to generate temp file for aliases update"
+		return 1
+	fi
+
+	return 0
+}
+
+# Get display name for SD card (prioritized fallback)
+# Args: $1 = UUID
+# Priority: 1. Alias (from aliases.json) → 2. UUID prefix (SD_xxxxxxxx)
+# Returns: display name string
+get_display_name() {
+	local uuid="$1"
+
+	# Priority 1: Check for alias
+	local alias=$(get_alias "$uuid")
+	if [ -n "$alias" ]; then
+		echo "$alias"
+		return 0
+	fi
+
+	# Priority 2: Fallback to UUID prefix
+	echo "SD_${uuid:0:8}"
+}

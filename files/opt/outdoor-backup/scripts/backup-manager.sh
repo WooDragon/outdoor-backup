@@ -167,6 +167,13 @@ perform_backup() {
 	local source_dir=""
 	local target_dir=""
 	local log_file=""
+	local display_name=""
+
+	# Get display name with alias support
+	display_name=$(get_display_name "$SD_UUID")
+
+	# Update last_seen timestamp in aliases.json
+	update_alias_last_seen "$SD_UUID" || log_warn "Failed to update alias timestamp"
 
 	# Determine backup direction
 	if [ "$BACKUP_MODE" = "REPLICA" ]; then
@@ -175,14 +182,14 @@ perform_backup() {
 		target_dir="$MOUNT_POINT/"
 		log_file="$BACKUP_ROOT/.logs/replica_${SD_UUID}_$(date +%Y%m%d_%H%M%S).log"
 
-		log_info "Starting REPLICA backup: SSD → SD ($SD_NAME)"
+		log_info "Starting REPLICA backup: SSD → SD ($display_name)"
 	else
 		# Primary mode: SD → SSD
 		source_dir="$MOUNT_POINT/"
 		target_dir="$BACKUP_ROOT/$SD_UUID/"
 		log_file="$BACKUP_ROOT/.logs/backup_${SD_UUID}_$(date +%Y%m%d_%H%M%S).log"
 
-		log_info "Starting PRIMARY backup: SD → SSD ($SD_NAME)"
+		log_info "Starting PRIMARY backup: SD → SSD ($display_name)"
 	fi
 
 	# Check available space
@@ -240,7 +247,7 @@ perform_backup() {
 	cat >> "$log_file" << EOF
 
 === Backup Summary ===
-SD Card: $SD_NAME ($SD_UUID)
+SD Card: $display_name ($SD_UUID)
 Mode: $BACKUP_MODE
 Duration: ${duration} seconds
 Exit Code: $rsync_exit
