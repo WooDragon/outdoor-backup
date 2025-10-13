@@ -77,38 +77,41 @@ jobs:
       - name: Clone Lean's LEDE
         run: |
           echo "Cloning Lean's LEDE repository..."
+          cd ..
           git clone --depth 1 --branch $LEDE_BRANCH $LEDE_REPO lede
           echo "LEDE cloned: $(du -sh lede | cut -f1)"
 
       - name: Link packages to LEDE
         run: |
-          # Link outdoor-backup package
-          ln -s "$(pwd)" "lede/package/$PACKAGE_NAME"
-          echo "Linked $PACKAGE_NAME to lede/package/"
+          # Link outdoor-backup package (only Makefile and files/)
+          mkdir -p ../lede/package/$PACKAGE_NAME
+          ln -s "$(pwd)/Makefile" "../lede/package/$PACKAGE_NAME/Makefile"
+          ln -s "$(pwd)/files" "../lede/package/$PACKAGE_NAME/files"
+          echo "Linked $PACKAGE_NAME to ../lede/package/"
 
           # Link luci-app package
-          ln -s "$(pwd)/$LUCI_PACKAGE_NAME" "lede/package/$LUCI_PACKAGE_NAME"
-          echo "Linked $LUCI_PACKAGE_NAME to lede/package/"
+          ln -s "$(pwd)/$LUCI_PACKAGE_NAME" "../lede/package/$LUCI_PACKAGE_NAME"
+          echo "Linked $LUCI_PACKAGE_NAME to ../lede/package/"
 
           # Verify links
-          ls -la "lede/package/$PACKAGE_NAME"
-          ls -la "lede/package/$LUCI_PACKAGE_NAME"
+          ls -la "../lede/package/$PACKAGE_NAME"
+          ls -la "../lede/package/$LUCI_PACKAGE_NAME"
 
       - name: Update feeds
         run: |
-          cd lede
+          cd ../lede
           ./scripts/feeds update -a
           echo "Feeds updated successfully"
 
       - name: Install feeds
         run: |
-          cd lede
+          cd ../lede
           ./scripts/feeds install -a
           echo "Feeds installed successfully"
 
       - name: Configure packages
         run: |
-          cd lede
+          cd ../lede
 
           # Create minimal .config for package compilation
           cat > .config <<EOF
@@ -128,7 +131,7 @@ jobs:
 
       - name: Build outdoor-backup package
         run: |
-          cd lede
+          cd ../lede
           echo "Building $PACKAGE_NAME..."
           make package/$PACKAGE_NAME/compile V=s -j$(nproc)
 
@@ -142,7 +145,7 @@ jobs:
 
       - name: Build luci-app-outdoor-backup package
         run: |
-          cd lede
+          cd ../lede
           echo "Building $LUCI_PACKAGE_NAME..."
           make package/$LUCI_PACKAGE_NAME/compile V=s -j$(nproc)
 
@@ -177,18 +180,18 @@ jobs:
           mkdir -p artifacts
 
           # Find and copy IPK files
-          find lede/bin/packages/ -name "${PACKAGE_NAME}*.ipk" -exec cp {} artifacts/ \;
-          find lede/bin/packages/ -name "${LUCI_PACKAGE_NAME}*.ipk" -exec cp {} artifacts/ \;
+          find ../lede/bin/packages/ -name "${PACKAGE_NAME}*.ipk" -exec cp {} artifacts/ \;
+          find ../lede/bin/packages/ -name "${LUCI_PACKAGE_NAME}*.ipk" -exec cp {} artifacts/ \;
 
           echo "Collected artifacts:"
           ls -lh artifacts/
 
           # Verify both packages exist
-          if [ ! -f artifacts/${PACKAGE_NAME}*.ipk ]; then
+          if ! ls artifacts/${PACKAGE_NAME}*.ipk 1> /dev/null 2>&1; then
             echo "Error: outdoor-backup IPK not found in artifacts"
             exit 1
           fi
-          if [ ! -f artifacts/${LUCI_PACKAGE_NAME}*.ipk ]; then
+          if ! ls artifacts/${LUCI_PACKAGE_NAME}*.ipk 1> /dev/null 2>&1; then
             echo "Error: luci-app IPK not found in artifacts"
             exit 1
           fi
