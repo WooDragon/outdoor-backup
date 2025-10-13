@@ -292,14 +292,45 @@ uci commit
 logread -f | grep outdoor-backup
 ```
 
-## 后续改进（可选）
+## WebUI 管理界面（已完成）
 
-### 短期
-- LuCI Web 界面（备份状态查看）
+**luci-app-outdoor-backup** - LuCI 网页管理界面
+
+### 已实现功能
+- ✅ **实时状态监控**：进度条、文件数、速度、ETA
+- ✅ **别名管理系统**：解决 UUID 可读性问题（如 "三星TF卡Pro128G"）
+- ✅ **批量清理功能**：多重确认机制，防止误删
+- ✅ **日志查看**：过滤、高亮、下载
+- ✅ **RESTful API**：6 个端点，完整文档
+- ✅ **安全机制**：XSS 防护、命令注入防护、文件锁
+
+### 技术实现
+- **后端**：Lua 5.1 + LuCI Framework
+- **前端**：HTML5/CSS3 + JavaScript (ES5)
+- **数据格式**：JSON (status.json, aliases.json)
+- **配置系统**：UCI 集成
+- **文档**：2562 行完整文档（用户手册 + 开发者指南）
+
+### 代码规模
+- Controller: 420 行（API 路由）
+- Config CBI: 60 行（配置页面）
+- Status View: 893 行（状态页面）
+- Log View: 242 行（日志页面）
+- Shell 集成: ~800 行（别名支持 + 批量清理）
+
+### 文档
+- [docs/WEBUI_USER_GUIDE.md](docs/WEBUI_USER_GUIDE.md) - 用户手册（634 行）
+- [docs/WEBUI_DEVELOPER_GUIDE.md](docs/WEBUI_DEVELOPER_GUIDE.md) - 开发者文档（1466 行）
+- [docs/webui-design.md](docs/webui-design.md) - 设计文档
+
+## 后续改进方向
+
+### 短期（可选）
 - 备份完成推送通知（邮件/Telegram）
 - 多卡并发支持（配置开关）
+- 国际化支持（多语言）
 
-### 长期
+### 长期（未规划）
 - 云备份二级同步（rclone 集成）
 - 备份版本管理（增量快照）
 - 移动端控制 App
@@ -321,27 +352,61 @@ logread -f | grep outdoor-backup
   - 数据结构设计、安装脚本编写、调试方法
 
 ### 设计文档（docs/）
+
+**核心系统设计**：
 - **[docs/architecture-design.md](docs/architecture-design.md)**: 系统架构设计
   - 组件划分、数据流、接口定义
-
 - **[docs/component-implementation.md](docs/component-implementation.md)**: 组件实现细节
   - 核心脚本代码、函数说明
-
 - **[docs/technical-research.md](docs/technical-research.md)**: 技术调研
   - 待验证技术点、硬件兼容性
-
 - **[docs/deployment-guide.md](docs/deployment-guide.md)**: 部署指南
   - 生产环境部署、配置优化
-
 - **[docs/original-solution-analysis.md](docs/original-solution-analysis.md)**: 原始方案分析
   - FieldBackup 项目研究（仅作参考）
 
+**WebUI 系统文档**：
+- **[docs/webui-design.md](docs/webui-design.md)**: WebUI 设计文档（1400 行）⭐
+  - UI 界面设计（状态/配置/日志三页面）
+  - UUID 别名管理系统（解决 UUID 可读性问题）
+  - 批量清理功能（多重确认机制，防误触发）
+  - API 接口定义、数据结构设计、代码示例
+- **[docs/WEBUI_USER_GUIDE.md](docs/WEBUI_USER_GUIDE.md)**: WebUI 用户手册（634 行）
+  - 功能概览、访问方式、使用指南
+  - 别名管理操作步骤、批量清理流程
+  - 故障排查、FAQ、性能说明
+- **[docs/WEBUI_DEVELOPER_GUIDE.md](docs/WEBUI_DEVELOPER_GUIDE.md)**: WebUI 开发者文档（1466 行）
+  - 架构概述、技术栈、目录结构
+  - API 完整文档（6 个端点，含请求/响应示例）
+  - 数据结构规范（status.json, aliases.json）
+  - 开发指南（添加新功能示例）
+  - 安全机制（XSS 防护、命令注入防护、文件锁）
+  - 部署指南、已知限制、改进方向
+
 ### 核心代码
-- **[files/opt/outdoor-backup/scripts/backup-manager.sh](files/opt/outdoor-backup/scripts/backup-manager.sh)**: 主备份逻辑（303 行）
-- **[files/opt/outdoor-backup/scripts/common.sh](files/opt/outdoor-backup/scripts/common.sh)**: 公共函数库（155 行）
+
+**Shell 脚本（核心备份系统）**：
+- **[files/opt/outdoor-backup/scripts/backup-manager.sh](files/opt/outdoor-backup/scripts/backup-manager.sh)**: 主备份逻辑（310 行）
+  - 包含别名集成、状态更新
+- **[files/opt/outdoor-backup/scripts/common.sh](files/opt/outdoor-backup/scripts/common.sh)**: 公共函数库（420 行）
+  - 包含别名支持函数、批量清理辅助函数
+- **[files/opt/outdoor-backup/scripts/cleanup-all.sh](files/opt/outdoor-backup/scripts/cleanup-all.sh)**: 批量清理脚本（165 行）
+  - 独立可执行，带 --force 安全检查
 - **[files/etc/hotplug.d/block/90-outdoor-backup](files/etc/hotplug.d/block/90-outdoor-backup)**: 热插拔触发器（82 行）
 - **[files/etc/init.d/outdoor-backup](files/etc/init.d/outdoor-backup)**: 服务管理脚本（41 行）
 - **[Makefile](Makefile)**: OpenWrt 包定义（128 行）
+
+**WebUI 应用（luci-app-outdoor-backup）**：
+- **[luci-app-outdoor-backup/luasrc/controller/outdoor-backup.lua](luci-app-outdoor-backup/luasrc/controller/outdoor-backup.lua)**: Controller（420 行）
+  - 路由定义、6 个 API 端点
+- **[luci-app-outdoor-backup/luasrc/model/cbi/outdoor-backup/config.lua](luci-app-outdoor-backup/luasrc/model/cbi/outdoor-backup/config.lua)**: 配置页面（60 行）
+  - CBI 表单，UCI 绑定
+- **[luci-app-outdoor-backup/luasrc/view/outdoor-backup/status.htm](luci-app-outdoor-backup/luasrc/view/outdoor-backup/status.htm)**: 状态页面（893 行）
+  - 实时监控、别名管理、批量清理
+- **[luci-app-outdoor-backup/luasrc/view/outdoor-backup/log.htm](luci-app-outdoor-backup/luasrc/view/outdoor-backup/log.htm)**: 日志页面（242 行）
+  - 日志查看、过滤、高亮、下载
+- **[luci-app-outdoor-backup/Makefile](luci-app-outdoor-backup/Makefile)**: LuCI 包定义（24 行）
+- **[luci-app-outdoor-backup/root/usr/share/rpcd/acl.d/outdoor-backup.json](luci-app-outdoor-backup/root/usr/share/rpcd/acl.d/outdoor-backup.json)**: RPCD 权限配置（24 行）
 
 ### 配置文件
 - **[files/opt/outdoor-backup/conf/backup.conf](files/opt/outdoor-backup/conf/backup.conf)**: 全局配置模板
