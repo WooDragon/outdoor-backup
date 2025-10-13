@@ -58,17 +58,19 @@ jobs:
 
       - name: Prepare package
         run: |
-          # Copy outdoor-backup to SDK package directory
+          # Copy outdoor-backup to SDK package directory (standard package location)
           mkdir -p sdk/package/$PACKAGE_NAME
           cp Makefile sdk/package/$PACKAGE_NAME/
           cp -r files sdk/package/$PACKAGE_NAME/
 
-          # Copy luci-app to SDK package directory
-          mkdir -p sdk/package/$LUCI_PACKAGE_NAME
-          cp -r $LUCI_PACKAGE_NAME/* sdk/package/$LUCI_PACKAGE_NAME/
+          # Copy luci-app to feeds/luci/applications/ (LuCI app standard location)
+          mkdir -p sdk/feeds/luci/applications/$LUCI_PACKAGE_NAME
+          cp -r $LUCI_PACKAGE_NAME/* sdk/feeds/luci/applications/$LUCI_PACKAGE_NAME/
 
-          echo "Packages prepared:"
-          ls -la sdk/package/
+          echo "Core package prepared:"
+          ls -la sdk/package/$PACKAGE_NAME
+          echo "LuCI app prepared:"
+          ls -la sdk/feeds/luci/applications/$LUCI_PACKAGE_NAME
 
       - name: Update and install feeds
         run: |
@@ -89,7 +91,7 @@ jobs:
       - name: Build luci-app-outdoor-backup
         run: |
           cd sdk
-          make package/$LUCI_PACKAGE_NAME/compile V=s -j$(nproc)
+          make package/feeds/luci/$LUCI_PACKAGE_NAME/compile V=s -j$(nproc)
 
       - name: Run ShellCheck validation
         run: |
@@ -162,10 +164,9 @@ jobs:
           ### 📦 Packages
 
           Built for multiple architectures:
-          - `outdoor-backup_*_x86-64.ipk` - x86_64 architecture
-          - `outdoor-backup_*_aarch64_cortex-a53.ipk` - ARM64 architecture (NanoPi R5S, etc.)
-          - `luci-app-outdoor-backup_*_x86-64.ipk` - WebUI for x86_64
-          - `luci-app-outdoor-backup_*_aarch64_cortex-a53.ipk` - WebUI for ARM64
+          - `outdoor-backup_*_x86-64.ipk` - x86_64 architecture (Core system)
+          - `outdoor-backup_*_aarch64_cortex-a53.ipk` - ARM64 architecture (Core system)
+          - `luci-app-outdoor-backup_*_all.ipk` - WebUI (architecture-independent)
 
           ### ✅ Supported Architectures
 
@@ -180,14 +181,14 @@ jobs:
           opkg install rsync block-mount kmod-usb-storage \
                        kmod-fs-ext4 kmod-fs-vfat kmod-fs-exfat kmod-fs-ntfs3
 
-          # Step 2: Install packages (choose your architecture)
+          # Step 2: Install core package (choose your architecture)
           # For ARM64 (R5S, R4S, etc.):
           opkg install outdoor-backup_*_aarch64_cortex-a53.ipk
-          opkg install luci-app-outdoor-backup_*_aarch64_cortex-a53.ipk
-
           # For x86_64:
           opkg install outdoor-backup_*_x86-64.ipk
-          opkg install luci-app-outdoor-backup_*_x86-64.ipk
+
+          # Step 3: Install WebUI (architecture-independent)
+          opkg install luci-app-outdoor-backup_*_all.ipk
           ```
 
           ### 🔍 Verification
