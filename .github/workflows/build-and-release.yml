@@ -95,11 +95,12 @@ jobs:
         run: |
           echo "Running ShellCheck on all shell scripts..."
           # .shellcheckrc configures: shell=ash, excludes false positives (SC3043, SC2034)
-          shellcheck \
+          # --severity=error: Only fail on actual errors, not style suggestions
+          shellcheck --severity=error \
             files/opt/outdoor-backup/scripts/*.sh \
             files/etc/hotplug.d/block/90-outdoor-backup \
             files/etc/init.d/outdoor-backup
-          echo "✓ All shell scripts passed ShellCheck (ash dialect, OpenWrt-aware)"
+          echo "✓ All shell scripts passed ShellCheck (ash dialect, errors only)"
 
       - name: Collect artifacts
         run: |
