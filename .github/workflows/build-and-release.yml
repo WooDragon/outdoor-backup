@@ -56,21 +56,19 @@ jobs:
           echo "SDK extracted to: sdk/"
           ls -la sdk/
 
-      - name: Prepare package
+      - name: Prepare packages
         run: |
-          # Copy outdoor-backup to SDK package directory (standard package location)
+          # Copy both packages to SDK package directory
+          # Both are now standard packages (luci-app no longer uses luci.mk)
           mkdir -p sdk/package/$PACKAGE_NAME
           cp Makefile sdk/package/$PACKAGE_NAME/
           cp -r files sdk/package/$PACKAGE_NAME/
 
-          # Copy luci-app to feeds/luci/applications/ (LuCI app standard location)
-          mkdir -p sdk/feeds/luci/applications/$LUCI_PACKAGE_NAME
-          cp -r $LUCI_PACKAGE_NAME/* sdk/feeds/luci/applications/$LUCI_PACKAGE_NAME/
+          mkdir -p sdk/package/$LUCI_PACKAGE_NAME
+          cp -r $LUCI_PACKAGE_NAME/* sdk/package/$LUCI_PACKAGE_NAME/
 
-          echo "Core package prepared:"
-          ls -la sdk/package/$PACKAGE_NAME
-          echo "LuCI app prepared:"
-          ls -la sdk/feeds/luci/applications/$LUCI_PACKAGE_NAME
+          echo "Packages prepared:"
+          ls -la sdk/package/
 
       - name: Update and install feeds
         run: |
@@ -91,7 +89,7 @@ jobs:
       - name: Build luci-app-outdoor-backup
         run: |
           cd sdk
-          make package/feeds/luci/$LUCI_PACKAGE_NAME/compile V=s -j$(nproc)
+          make package/$LUCI_PACKAGE_NAME/compile V=s -j$(nproc)
 
       - name: Run ShellCheck validation
         run: |
