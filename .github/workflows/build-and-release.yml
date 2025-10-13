@@ -18,6 +18,7 @@ on:
 env:
   PACKAGE_NAME: outdoor-backup
   LUCI_PACKAGE_NAME: luci-app-outdoor-backup
+  OPENWRT_VERSION: 23.05.5
 
 jobs:
   build:
@@ -25,11 +26,13 @@ jobs:
     runs-on: ubuntu-22.04
     strategy:
       matrix:
-        arch:
-          - arch: x86_64
-            sdk_url_path: x86/64
-          - arch: aarch64_generic
-            sdk_url_path: rockchip/armv8
+        include:
+          - arch: x86-64
+            target: x86
+            subtarget: 64
+          - arch: aarch64_cortex-a53
+            target: rockchip
+            subtarget: armv8
 
     steps:
       - name: Checkout code
@@ -37,58 +40,85 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Build outdoor-backup with OpenWrt SDK
-        uses: openwrt/gh-action-sdk@v7
-        env:
-          ARCH: ${{ matrix.arch.arch }}
-          PACKAGES: ${{ env.PACKAGE_NAME }}
-          V: s
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libncurses5-dev gawk git libssl-dev gettext unzip file wget
+
+      - name: Download OpenWrt SDK
+        run: |
+          SDK_URL="https://downloads.openwrt.org/releases/${{ env.OPENWRT_VERSION }}/targets/${{ matrix.target }}/${{ matrix.subtarget }}/openwrt-sdk-${{ env.OPENWRT_VERSION }}-${{ matrix.target }}-${{ matrix.subtarget}}_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+          echo "Downloading SDK from: $SDK_URL"
+          wget -q "$SDK_URL" -O sdk.tar.xz
+          tar -xf sdk.tar.xz
+          SDK_DIR=$(ls -d openwrt-sdk-* | head -1)
+          mv "$SDK_DIR" sdk
+          echo "SDK extracted to: sdk/"
+          ls -la sdk/
+
+      - name: Prepare package
+        run: |
+          # Copy outdoor-backup to SDK package directory
+          mkdir -p sdk/package/$PACKAGE_NAME
+          cp Makefile sdk/package/$PACKAGE_NAME/
+          cp -r files sdk/package/$PACKAGE_NAME/
+
+          # Copy luci-app to SDK package directory
+          mkdir -p sdk/package/$LUCI_PACKAGE_NAME
+          cp -r $LUCI_PACKAGE_NAME/* sdk/package/$LUCI_PACKAGE_NAME/
+
+          echo "Packages prepared:"
+          ls -la sdk/package/
+
+      - name: Update and install feeds
+        run: |
+          cd sdk
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Configure SDK
+        run: |
+          cd sdk
+          make defconfig
+
+      - name: Build outdoor-backup
+        run: |
+          cd sdk
+          make package/$PACKAGE_NAME/compile V=s -j$(nproc)
+
+      - name: Build luci-app-outdoor-backup
+        run: |
+          cd sdk
+          make package/$LUCI_PACKAGE_NAME/compile V=s -j$(nproc)
 
       - name: Run ShellCheck validation
         run: |
           echo "Running ShellCheck on all shell scripts..."
-
-          # Check main scripts
           shellcheck --shell=sh --severity=warning \
-            files/opt/outdoor-backup/scripts/*.sh
-
-          # Check hotplug script
-          shellcheck --shell=sh --severity=warning \
-            files/etc/hotplug.d/block/90-outdoor-backup
-
-          # Check init script
-          shellcheck --shell=sh --severity=warning \
+            files/opt/outdoor-backup/scripts/*.sh \
+            files/etc/hotplug.d/block/90-outdoor-backup \
             files/etc/init.d/outdoor-backup
-
           echo "✓ All shell scripts passed ShellCheck"
-
-      - name: Move created packages to project dir
-        run: |
-          mkdir -p bin/packages
-          cp -r bin/targets/*/*/packages/*.ipk bin/packages/ || true
-          ls -la bin/packages/
 
       - name: Collect artifacts
         run: |
           mkdir -p artifacts
-
-          # Copy IPK files with architecture info
-          for ipk in bin/packages/*.ipk; do
-            if [ -f "$ipk" ]; then
-              basename=$(basename "$ipk")
-              # Add architecture to filename
-              new_name="${basename%.ipk}_${{ matrix.arch.arch }}.ipk"
-              cp "$ipk" "artifacts/$new_name"
-            fi
-          done
+          find sdk/bin/packages/ -name "*.ipk" -exec cp {} artifacts/ \;
 
           echo "Collected artifacts:"
           ls -lh artifacts/
 
+          # Rename with architecture
+          cd artifacts
+          for ipk in *.ipk; do
+            mv "$ipk" "${ipk%.ipk}_${{ matrix.arch }}.ipk"
+          done
+          ls -lh
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: openwrt-packages-${{ matrix.arch.arch }}
+          name: openwrt-packages-${{ matrix.arch }}
           path: artifacts/*.ipk
           retention-days: 30
 
@@ -123,7 +153,6 @@ jobs:
           echo "Extracted version: $FULL_VERSION"
 
       - name: Generate release notes
-        id: release_notes
         run: |
           cat > release_notes.md <<'EOF'
           ## OpenWrt SD Card Backup System
@@ -133,15 +162,15 @@ jobs:
           ### 📦 Packages
 
           Built for multiple architectures:
-          - `outdoor-backup_*_x86_64.ipk` - x86_64 architecture
-          - `outdoor-backup_*_aarch64_generic.ipk` - ARM64 architecture (NanoPi R5S, etc.)
-          - `luci-app-outdoor-backup_*_x86_64.ipk` - WebUI for x86_64
-          - `luci-app-outdoor-backup_*_aarch64_generic.ipk` - WebUI for ARM64
+          - `outdoor-backup_*_x86-64.ipk` - x86_64 architecture
+          - `outdoor-backup_*_aarch64_cortex-a53.ipk` - ARM64 architecture (NanoPi R5S, etc.)
+          - `luci-app-outdoor-backup_*_x86-64.ipk` - WebUI for x86_64
+          - `luci-app-outdoor-backup_*_aarch64_cortex-a53.ipk` - WebUI for ARM64
 
           ### ✅ Supported Architectures
 
-          - **ARM64** (NanoPi R5S, R4S, R6S, etc.) - Use `*_aarch64_generic.ipk`
-          - **x86_64** (Soft routers, VMs) - Use `*_x86_64.ipk`
+          - **ARM64** (NanoPi R5S, R4S, R6S, etc.) - Use `*_aarch64_cortex-a53.ipk`
+          - **x86_64** (Soft routers, VMs) - Use `*_x86-64.ipk`
 
           ### 📥 Installation
 
@@ -153,12 +182,12 @@ jobs:
 
           # Step 2: Install packages (choose your architecture)
           # For ARM64 (R5S, R4S, etc.):
-          opkg install outdoor-backup_*_aarch64_generic.ipk
-          opkg install luci-app-outdoor-backup_*_aarch64_generic.ipk
+          opkg install outdoor-backup_*_aarch64_cortex-a53.ipk
+          opkg install luci-app-outdoor-backup_*_aarch64_cortex-a53.ipk
 
           # For x86_64:
-          opkg install outdoor-backup_*_x86_64.ipk
-          opkg install luci-app-outdoor-backup_*_x86_64.ipk
+          opkg install outdoor-backup_*_x86-64.ipk
+          opkg install luci-app-outdoor-backup_*_x86-64.ipk
           ```
 
           ### 🔍 Verification
@@ -193,18 +222,16 @@ jobs:
 
           ### 📝 Build Info
 
-          - Built with: OpenWrt SDK (official)
+          - Built with: OpenWrt SDK ${{ env.OPENWRT_VERSION }}
           - ShellCheck: Passed
           - Version: ${{ steps.version.outputs.version }}
           - Commit: ${{ github.sha }}
-          - Architectures: x86_64, aarch64_generic
+          - Architectures: x86-64, aarch64_cortex-a53
 
           ---
 
           For documentation, visit: https://github.com/${{ github.repository }}
           EOF
-
-          echo "Release notes generated"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
