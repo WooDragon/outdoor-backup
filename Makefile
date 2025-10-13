@@ -92,6 +92,17 @@ chmod 755 /opt/outdoor-backup/scripts/*.sh
 chmod 755 /etc/hotplug.d/block/90-outdoor-backup
 chmod 644 /opt/outdoor-backup/conf/backup.conf
 
+# Create aliases.json if not exists
+if [ ! -f "/opt/outdoor-backup/conf/aliases.json" ]; then
+    cat > /opt/outdoor-backup/conf/aliases.json <<'EOF'
+{
+  "version": "1.0",
+  "aliases": {}
+}
+EOF
+    chmod 644 /opt/outdoor-backup/conf/aliases.json
+fi
+
 # Enable service
 /etc/init.d/outdoor-backup enable
 
