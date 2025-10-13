@@ -1,0 +1,22 @@
+{
+  "outdoor-backup": {
+    "description": "Outdoor backup management",
+    "read": {
+      "uci": ["outdoor-backup"],
+      "file": {
+        "/opt/outdoor-backup/var/status.json": ["read"],
+        "/opt/outdoor-backup/conf/aliases.json": ["read"],
+        "/opt/outdoor-backup/log/backup.log": ["read"]
+      }
+    },
+    "write": {
+      "uci": ["outdoor-backup"],
+      "file": {
+        "/opt/outdoor-backup/conf/aliases.json": ["write"]
+      }
+    },
+    "exec": {
+      "outdoor-backup": ["cleanup"]
+    }
+  }
+}
