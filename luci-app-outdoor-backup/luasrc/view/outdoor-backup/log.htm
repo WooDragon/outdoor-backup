@@ -1,0 +1,242 @@
+<%+header%>
+
+<style>
+/* Log container styling */
+#log-container {
+    background-color: #f5f5f5;
+    padding: 15px;
+    border-radius: 5px;
+    font-family: 'Courier New', Consolas, monospace;
+    font-size: 0.9em;
+    max-height: 600px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    border: 1px solid #ddd;
+}
+
+#log-content {
+    margin: 0;
+    line-height: 1.5;
+}
+
+/* Log level color highlighting */
+.log-error {
+    color: #d9534f;
+    font-weight: bold;
+}
+
+.log-warn {
+    color: #f0ad4e;
+    font-weight: 600;
+}
+
+.log-info {
+    color: #5bc0de;
+}
+
+.log-debug {
+    color: #888;
+}
+
+/* Control buttons */
+.log-controls {
+    margin-bottom: 15px;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.log-filter {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+/* Dark mode friendly */
+@media (prefers-color-scheme: dark) {
+    #log-container {
+        background-color: #2b2b2b;
+        color: #e0e0e0;
+        border-color: #444;
+    }
+
+    .log-error {
+        color: #ff6b6b;
+    }
+
+    .log-warn {
+        color: #ffd93d;
+    }
+
+    .log-info {
+        color: #6bcfff;
+    }
+
+    .log-debug {
+        color: #999;
+    }
+}
+</style>
+
+<h2 name="content"><%:Logs%></h2>
+
+<fieldset class="cbi-section">
+    <legend><%:System Logs%> (<%:Last 100 Lines%>)</legend>
+
+    <!-- Control Buttons -->
+    <div class="log-controls">
+        <button class="cbi-button cbi-button-apply" onclick="refreshLog()">
+            &#x1F504; <%:Refresh%>
+        </button>
+
+        <a href="/opt/outdoor-backup/log/backup.log" download class="cbi-button cbi-button-save">
+            &#x2B07; <%:Download Full Log%>
+        </a>
+
+        <div class="log-filter">
+            <label>
+                <input type="checkbox" id="auto-refresh" onchange="toggleAutoRefresh()">
+                <%:Auto Refresh (10s)%>
+            </label>
+        </div>
+
+        <div class="log-filter">
+            <label for="log-level-filter"><%:Filter%>:</label>
+            <select id="log-level-filter" class="cbi-input-select" onchange="filterLogLevel()">
+                <option value="all"><%:All Levels%></option>
+                <option value="info">INFO</option>
+                <option value="warn">WARN</option>
+                <option value="error">ERROR</option>
+                <option value="debug">DEBUG</option>
+            </select>
+        </div>
+    </div>
+
+    <!-- Log Display -->
+    <div id="log-container">
+        <pre id="log-content"><%= log_content %></pre>
+    </div>
+
+    <div style="margin-top: 10px; color: #666; font-size: 0.9em;">
+        <strong><%:Note%>:</strong> <%:Log entries are color-coded by level%> -
+        <span class="log-error">ERROR</span>,
+        <span class="log-warn">WARN</span>,
+        <span class="log-info">INFO</span>,
+        <span class="log-debug">DEBUG</span>
+    </div>
+</fieldset>
+
+<script type="text/javascript">
+    // Global state
+    var autoRefreshInterval = null;
+    var originalLogContent = '<%= log_content %>';
+
+    /**
+     * Refresh the entire page to reload log content
+     */
+    function refreshLog() {
+        window.location.reload();
+    }
+
+    /**
+     * Toggle automatic refresh every 10 seconds
+     */
+    function toggleAutoRefresh() {
+        var enabled = document.getElementById('auto-refresh').checked;
+
+        if (enabled) {
+            autoRefreshInterval = setInterval(function() {
+                refreshLog();
+            }, 10000);  // 10 seconds
+        } else {
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+                autoRefreshInterval = null;
+            }
+        }
+    }
+
+    /**
+     * Filter log entries by level (INFO, ERROR, WARN, DEBUG)
+     */
+    function filterLogLevel() {
+        var level = document.getElementById('log-level-filter').value;
+        var logContent = document.getElementById('log-content');
+
+        // Reset to original content
+        logContent.innerHTML = originalLogContent;
+
+        if (level === 'all') {
+            // Re-apply highlighting
+            highlightLog();
+            return;
+        }
+
+        // Filter by level
+        var lines = originalLogContent.split('\n');
+        var levelPattern = new RegExp('\\[' + level.toUpperCase() + '\\]', 'i');
+
+        var filtered = lines.filter(function(line) {
+            return levelPattern.test(line);
+        });
+
+        logContent.textContent = filtered.join('\n');
+
+        // Re-apply highlighting to filtered content
+        highlightLog();
+
+        // Auto-scroll to bottom
+        scrollToBottom();
+    }
+
+    /**
+     * Apply syntax highlighting to log entries based on level
+     */
+    function highlightLog() {
+        var logContent = document.getElementById('log-content');
+        var text = logContent.textContent;
+
+        // Replace log level patterns with colored spans
+        var html = text
+            // ERROR - red + bold
+            .replace(/(\[ERROR\][^\n]*)/g, '<span class="log-error">$1</span>')
+            // WARN - yellow
+            .replace(/(\[WARN\][^\n]*)/g, '<span class="log-warn">$1</span>')
+            // INFO - blue
+            .replace(/(\[INFO\][^\n]*)/g, '<span class="log-info">$1</span>')
+            // DEBUG - gray
+            .replace(/(\[DEBUG\][^\n]*)/g, '<span class="log-debug">$1</span>');
+
+        logContent.innerHTML = html;
+    }
+
+    /**
+     * Scroll log container to bottom (show latest logs)
+     */
+    function scrollToBottom() {
+        var logContainer = document.getElementById('log-container');
+        logContainer.scrollTop = logContainer.scrollHeight;
+    }
+
+    /**
+     * Initialize page
+     */
+    document.addEventListener('DOMContentLoaded', function() {
+        // Apply syntax highlighting
+        highlightLog();
+
+        // Auto-scroll to bottom on page load
+        scrollToBottom();
+
+        // Clean up interval on page unload
+        window.addEventListener('beforeunload', function() {
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+            }
+        });
+    });
+</script>
+
+<%+footer%>
