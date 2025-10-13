@@ -41,7 +41,6 @@ jobs:
         uses: openwrt/gh-action-sdk@v7
         env:
           ARCH: ${{ matrix.arch.arch }}
-          FEEDNAME: outdoor_backup_feed
           PACKAGES: ${{ env.PACKAGE_NAME }}
           V: s
 
