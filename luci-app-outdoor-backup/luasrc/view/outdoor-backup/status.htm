@@ -340,6 +340,23 @@
 // Global state
 var currentStatus = null;
 
+// Security Functions - Escape user input before inserting into HTML/JS
+function escapeHtml(str) {
+    if (!str) return '';
+    var div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
+function escapeJs(str) {
+    if (!str) return '';
+    return str.replace(/\\/g, '\\\\')
+              .replace(/'/g, "\\'")
+              .replace(/"/g, '\\"')
+              .replace(/\n/g, '\\n')
+              .replace(/\r/g, '\\r');
+}
+
 // Utility Functions
 function formatBytes(bytes) {
     if (bytes === 0) return '0 B';
@@ -407,9 +424,9 @@ function updateCurrentBackup(backup) {
 
     var html = '<div>';
     html += '<div class="info-box">';
-    html += '<div class="info-box-row"><strong>Card Name:</strong> <span>' + (backup.name || 'Unknown') + '</span></div>';
-    html += '<div class="info-box-row"><strong>UUID:</strong> <span style="font-family: monospace;">' + (backup.uuid || 'N/A') + '</span></div>';
-    html += '<div class="info-box-row"><strong>Device:</strong> <span>/dev/' + (backup.device || 'N/A') + '</span></div>';
+    html += '<div class="info-box-row"><strong>Card Name:</strong> <span>' + escapeHtml(backup.name || 'Unknown') + '</span></div>';
+    html += '<div class="info-box-row"><strong>UUID:</strong> <span style="font-family: monospace;">' + escapeHtml(backup.uuid || 'N/A') + '</span></div>';
+    html += '<div class="info-box-row"><strong>Device:</strong> <span>/dev/' + escapeHtml(backup.device || 'N/A') + '</span></div>';
     html += '<div class="info-box-row"><strong>Started:</strong> <span>' + (backup.started_at ? formatRelativeTime(backup.started_at) : 'N/A') + '</span></div>';
     html += '</div>';
 
@@ -443,7 +460,7 @@ function updateStorageInfo(storage) {
 
     var html = '<div>';
     html += '<div class="info-box">';
-    html += '<div class="info-box-row"><strong>Backup Root:</strong> <span>' + (storage.root || 'N/A') + '</span></div>';
+    html += '<div class="info-box-row"><strong>Backup Root:</strong> <span>' + escapeHtml(storage.root || 'N/A') + '</span></div>';
     html += '<div class="info-box-row"><strong>Used:</strong> <span>' + formatBytes(used) + ' / ' + formatBytes(total) + ' (' + percent.toFixed(1) + '%)</span></div>';
     html += '<div class="info-box-row"><strong>Available:</strong> <span>' + formatBytes(free) + '</span></div>';
     html += '</div>';
@@ -476,12 +493,12 @@ function updateHistoryTable(history) {
         var statusText = status.charAt(0).toUpperCase() + status.slice(1);
 
         html += '<tr>';
-        html += '<td>' + name + '</td>';
-        html += '<td style="font-family: monospace; font-size: 0.9em;">' + uuid.substring(0, 8) + '...</td>';
+        html += '<td>' + escapeHtml(name) + '</td>';
+        html += '<td style="font-family: monospace; font-size: 0.9em;">' + escapeHtml(uuid.substring(0, 8)) + '...</td>';
         html += '<td>' + lastBackup + '</td>';
         html += '<td>' + size + '</td>';
         html += '<td><span class="status-badge ' + statusClass + '">' + statusText + '</span></td>';
-        html += '<td><a class="action-link" onclick="showAliasModal(\'' + uuid + '\', \'' + name + '\', \'\')">Edit</a></td>';
+        html += '<td><a class="action-link" onclick="showAliasModal(\'' + escapeJs(uuid) + '\', \'' + escapeJs(name) + '\', \'\')">Edit</a></td>';
         html += '</tr>';
     }
 
@@ -584,8 +601,8 @@ function renderCleanupPreview(data) {
         for (var i = 0; i < cards.length; i++) {
             var card = cards[i];
             html += '<tr>';
-            html += '<td>' + card.display_name + '</td>';
-            html += '<td style="font-family: monospace;">' + card.uuid.substring(0, 8) + '...</td>';
+            html += '<td>' + escapeHtml(card.display_name) + '</td>';
+            html += '<td style="font-family: monospace;">' + escapeHtml(card.uuid.substring(0, 8)) + '...</td>';
             html += '<td>' + formatBytes(card.size_bytes) + '</td>';
             html += '</tr>';
         }

@@ -7,6 +7,9 @@ License: GPL-2.0-only
 
 module("luci.controller.outdoor-backup", package.seeall)
 
+-- Load UCI module globally
+local uci = require "luci.model.uci".cursor()
+
 function index()
     -- Main menu entry: Services > Outdoor Backup
     entry({"admin", "services", "outdoor-backup"}, firstchild(), _("Outdoor Backup"), 60).dependent = false
@@ -52,10 +55,30 @@ action_log - Display recent backup logs
 Reads last 100 lines from backup.log and renders log page template
 ]]--
 function action_log()
+    local fs = require "nixio.fs"
     local log_file = "/opt/outdoor-backup/log/backup.log"
-    local cmd = string.format("tail -n 100 '%s' 2>/dev/null || echo 'Log file not found'", log_file)
+
+    local content = fs.readfile(log_file)
+    local log_content = "Log file not found"
+
+    if content then
+        -- Extract last 100 lines
+        local lines = {}
+        for line in content:gmatch("[^\n]+") do
+            table.insert(lines, line)
+        end
+
+        local start = math.max(1, #lines - 99)
+        local tail_lines = {}
+        for i = start, #lines do
+            table.insert(tail_lines, lines[i])
+        end
+
+        log_content = table.concat(tail_lines, "\n")
+    end
+
     luci.template.render("outdoor-backup/log", {
-        log_content = luci.sys.exec(cmd)
+        log_content = log_content
     })
 end
 
@@ -181,21 +204,24 @@ function api_update_alias()
         aliases = aliases
     }, true)  -- true = pretty print
 
-    if not fs.writefile(temp_file, new_content) then
-        luci.http.status(500)
-        luci.http.prepare_content("application/json")
-        return luci.http.write_json({error = "Failed to write alias file"})
+    local success = false
+    if fs.writefile(temp_file, new_content) then
+        if fs.rename(temp_file, alias_file) then
+            success = true
+        else
+            fs.unlink(temp_file)  -- Clean up temp file on rename failure
+        end
     end
 
-    -- Atomic rename
-    if not fs.rename(temp_file, alias_file) then
+    if success then
+        luci.http.prepare_content("application/json")
+        luci.http.write_json({success = true})
+    else
+        fs.unlink(temp_file)  -- Ensure cleanup
         luci.http.status(500)
         luci.http.prepare_content("application/json")
-        return luci.http.write_json({error = "Failed to rename alias file"})
+        luci.http.write_json({error = "Failed to write alias file"})
     end
-
-    luci.http.prepare_content("application/json")
-    luci.http.write_json({success = true})
 end
 
 --[[
@@ -244,20 +270,24 @@ function api_delete_alias()
         aliases = aliases
     }, true)
 
-    if not fs.writefile(temp_file, new_content) then
-        luci.http.status(500)
-        luci.http.prepare_content("application/json")
-        return luci.http.write_json({error = "Failed to write alias file"})
+    local success = false
+    if fs.writefile(temp_file, new_content) then
+        if fs.rename(temp_file, alias_file) then
+            success = true
+        else
+            fs.unlink(temp_file)  -- Clean up temp file on rename failure
+        end
     end
 
-    if not fs.rename(temp_file, alias_file) then
+    if success then
+        luci.http.prepare_content("application/json")
+        luci.http.write_json({success = true})
+    else
+        fs.unlink(temp_file)  -- Ensure cleanup
         luci.http.status(500)
         luci.http.prepare_content("application/json")
-        return luci.http.write_json({error = "Failed to rename alias file"})
+        luci.http.write_json({error = "Failed to write alias file"})
     end
-
-    luci.http.prepare_content("application/json")
-    luci.http.write_json({success = true})
 end
 
 -------------------------------------------------------------------------------
@@ -275,11 +305,8 @@ function api_cleanup_preview()
     local fs = require "nixio.fs"
     local util = require "luci.util"
 
-    -- Get backup root directory from UCI
-    local backup_root = luci.sys.exec("uci get outdoor-backup.config.backup_root 2>/dev/null"):gsub("%s+", "")
-    if backup_root == "" then
-        backup_root = "/mnt/ssd/SDMirrors"
-    end
+    -- Get backup root directory from UCI using Lua API
+    local backup_root = uci:get("outdoor-backup", "config", "backup_root") or "/mnt/ssd/SDMirrors"
 
     -- Check if backup root exists
     local stat = fs.stat(backup_root)
@@ -300,6 +327,25 @@ function api_cleanup_preview()
         end
     end
 
+    -- Helper function for calculating directory size recursively
+    local function calculate_dir_size(path)
+        local total = 0
+        local stat = fs.stat(path)
+        if not stat then return 0 end
+
+        if stat.type == "dir" then
+            for entry in fs.dir(path) do
+                if entry ~= "." and entry ~= ".." then
+                    total = total + calculate_dir_size(path .. "/" .. entry)
+                end
+            end
+        else
+            total = stat.size or 0
+        end
+
+        return total
+    end
+
     -- Scan backup directory for UUID directories
     local cards = {}
     local total_size = 0
@@ -310,10 +356,8 @@ function api_cleanup_preview()
 
         -- Check if it's a directory and looks like a UUID
         if entry_stat and entry_stat.type == "dir" and entry:match("^%x%x%x%x%x%x%x%x%-") then
-            -- Calculate directory size using du command
-            local size_cmd = string.format("du -sb '%s' 2>/dev/null | awk '{print $1}'", full_path)
-            local size_str = luci.sys.exec(size_cmd):gsub("%s+", "")
-            local size = tonumber(size_str) or 0
+            -- Calculate directory size using Lua recursion
+            local size = calculate_dir_size(full_path)
 
             -- Get display name (alias or UUID prefix)
             local display_name = "SD_" .. entry:sub(1, 8)
@@ -351,6 +395,7 @@ NOTE: Always preserves aliases.json
 function api_cleanup_execute()
     local json = require "luci.jsonc"
     local fs = require "nixio.fs"
+    local util = require "luci.util"
 
     -- Read POST data
     luci.http.setfilehandler()
@@ -371,11 +416,8 @@ function api_cleanup_execute()
         return luci.http.write_json({error = "Invalid confirmation text"})
     end
 
-    -- Get backup root directory
-    local backup_root = luci.sys.exec("uci get outdoor-backup.config.backup_root 2>/dev/null"):gsub("%s+", "")
-    if backup_root == "" then
-        backup_root = "/mnt/ssd/SDMirrors"
-    end
+    -- Get backup root directory using UCI Lua API
+    local backup_root = uci:get("outdoor-backup", "config", "backup_root") or "/mnt/ssd/SDMirrors"
 
     -- Check if backup root exists
     local stat = fs.stat(backup_root)
@@ -399,16 +441,22 @@ function api_cleanup_execute()
 
     -- Execute cleanup (preserve aliases)
     -- IMPORTANT: Must use --force flag to pass safety check in cleanup-all.sh
-    local cmd = string.format("%s --force '%s' 1 2>&1", cleanup_script, backup_root)
-    local result = luci.sys.exec(cmd)
+    -- Use luci.util.shellquote to properly escape backup_root
+    local cmd = string.format("%s --force %s 1 2>&1",
+                              cleanup_script,
+                              util.shellquote(backup_root))
+
+    -- CRITICAL FIX: Only call once, not twice!
+    -- Use luci.sys.call to get exit code directly
     local exit_code = luci.sys.call(cmd)
 
     if exit_code ~= 0 then
         luci.http.status(500)
         luci.http.prepare_content("application/json")
         return luci.http.write_json({
+            success = false,
             error = "Cleanup failed",
-            details = result
+            exit_code = exit_code
         })
     end
 
