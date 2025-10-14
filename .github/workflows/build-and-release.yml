@@ -129,6 +129,8 @@ jobs:
     needs: build
     if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.create_release == 'true'
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write  # Required to create releases and delete old releases
 
     steps:
       - name: Checkout code
