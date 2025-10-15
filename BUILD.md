@@ -212,176 +212,84 @@ make -j$(nproc) package/outdoor-backup/compile
 
 ### GitHub Actions 自动构建和发布
 
-项目已集成完整的 GitHub Actions 工作流，实现自动构建、质量检查和发布管理。
+项目已集成完整的 GitHub Actions 工作流，基于 **OpenWrt SDK**（而非完整源码）实现自动构建、质量检查和发布管理。
 
-**工作流文件**：`.github/workflows/build-and-release.yml`
+**完整指南**：详见 [GitHub Actions CI/CD 指南](docs/github-actions-ci-cd.md)（通用流程，适用于所有 OpenWrt 包项目）
 
-#### 触发条件
+#### 快速开始
 
-1. **自动触发**（推荐）：
-   ```bash
-   # 推送版本 tag 时自动构建和发布
-   git tag v1.0.0
-   git push origin v1.0.0
-   ```
-
-2. **手动触发**：
-   - GitHub 仓库页面 → Actions → Build and Release IPK → Run workflow
-   - 可选择是否创建 Release
-
-#### 构建流程
-
-```
-1. 代码检出和环境准备
-   ├─ Checkout 代码
-   ├─ 清理磁盘空间（删除 .NET/Android SDK）
-   └─ 安装依赖（build-essential, shellcheck, etc.）
-
-2. LEDE 源码准备
-   ├─ Clone Lean's LEDE (--depth 1)
-   ├─ 链接 outdoor-backup 包
-   ├─ 链接 luci-app-outdoor-backup 包
-   ├─ 更新 feeds
-   └─ 安装 feeds
-
-3. 编译包
-   ├─ 配置包选项（.config）
-   ├─ 编译 outdoor-backup
-   └─ 编译 luci-app-outdoor-backup
-
-4. 质量检查
-   └─ ShellCheck 验证所有脚本
-
-5. 发布（仅 tag 触发）
-   ├─ 生成 Release Notes
-   ├─ 创建 GitHub Release
-   ├─ 上传 IPK 文件
-   └─ 清理旧 Release（保留最新 5 个）
-```
-
-#### 如何发布新版本
-
-**完整流程**（3 步）：
+**发布新版本**（3 步）：
 
 ```bash
 # 1. 更新版本号
 vim Makefile
-# 修改 PKG_VERSION 或 PKG_RELEASE
-
-# 示例：
-# PKG_VERSION:=1.1.0    # 新功能
-# PKG_RELEASE:=1        # 重置为 1
+# PKG_VERSION:=1.1.0  # 新功能
+# PKG_RELEASE:=1      # 重置为 1
 
 # 2. 提交变更
 git add Makefile
 git commit -m "Bump version to 1.1.0"
+git push
 
 # 3. 创建并推送 tag（触发自动构建）
 git tag v1.1.0
-git push origin main
 git push origin v1.1.0
-
-# GitHub Actions 会自动：
-# - 构建两个 IPK 包
-# - 运行 ShellCheck
-# - 创建 GitHub Release
-# - 上传 IPK 文件
-# - 清理旧 Release
 ```
 
-#### Release 管理
-
-**自动清理策略**：
-- **保留数量**：最新 5 个 release
-- **清理范围**：Release 本身 + 资产 + Git tag
-- **清理时机**：新 Release 创建成功后
-- **匹配模式**：只清理 `v*.*.*` 格式的 tag
-
-**手动管理**（如果需要）：
-```bash
-# 删除本地 tag
-git tag -d v1.0.0
-
-# 删除远程 tag
-git push origin :refs/tags/v1.0.0
-
-# 重新打 tag（比如修复错误）
-git tag v1.0.0 <commit-hash>
-git push origin v1.0.0 --force
-```
+**GitHub Actions 会自动**：
+- 使用 OpenWrt SDK 构建两个架构的 IPK 包（ARM64, x86_64）
+- 运行 ShellCheck 验证所有脚本
+- 创建 GitHub Release 并上传 IPK 文件
+- 清理旧 Release（保留最新 5 个）
 
 #### 构建输出
 
-**生成的包**：
+**生成的包**（每个架构）：
 ```
-artifacts/
-├── outdoor-backup_1.0.0-1_all.ipk           # 核心备份系统
-└── luci-app-outdoor-backup_1.0.0-1_all.ipk  # WebUI 管理界面
+- outdoor-backup_1.0.0-1_aarch64_cortex-a53.ipk  # ARM64 核心包
+- outdoor-backup_1.0.0-1_x86-64.ipk              # x86_64 核心包
+- luci-app-outdoor-backup_1.0.0-1_all.ipk        # WebUI（架构无关）
 ```
 
-**包特性**：
-- `PKGARCH:=all`：架构无关，支持 ARM64/x86_64/MIPS
-- 大小：约 10-20 KB（纯脚本）
-- 依赖：自动声明，由 opkg 解析
+#### 关键配置
 
-#### 架构支持说明
+**构建策略**：
+- ✅ 使用 **OpenWrt SDK**（~50MB, 5-10 分钟）
+- ❌ ~~完整源码~~（3GB+, 50+ 分钟，已弃用）
 
-虽然包是 `PKGARCH:=all`，但依赖的内核模块是架构相关的：
+**权限配置**（必需）：
+```yaml
+release:
+  permissions:
+    contents: write  # 创建 Release 和删除旧 Release
+```
 
-| 架构 | 状态 | 说明 |
-|------|------|------|
-| ARM64 | ✅ 完全支持 | NanoPi R5S/R4S/R6S 等 |
-| x86_64 | ✅ 完全支持 | 软路由、虚拟机 |
-| MIPS | ⚠️ 理论支持 | 未测试，但应该可用 |
-
-**安装时**，opkg 会自动从对应架构的 feeds 下载依赖：
+**Artifacts 过滤**（避免 rate limit）：
 ```bash
-opkg install outdoor-backup_1.0.0-1_all.ipk
-# ↓ 自动解析
-# - rsync (架构相关)
-# - kmod-usb-storage-aarch64 (ARM64)
-# - kmod-fs-ntfs3-aarch64 (ARM64)
-# - ...
+# 只收集目标包，不收集依赖（避免 94MB+ 文件上传）
+find sdk/bin/packages/ \( -name "outdoor-backup_*.ipk" -o -name "luci-app-outdoor-backup_*.ipk" \) -exec cp {} artifacts/ \;
 ```
 
-#### CI 故障排查
-
-**构建失败**：
-```bash
-# 1. 查看 Actions 日志
-GitHub → Actions → 失败的工作流 → 查看详细日志
-
-# 2. 常见问题
-- ShellCheck 失败 → 修复脚本语法错误
-- LEDE 克隆超时 → 重新运行 workflow
-- 编译错误 → 检查 Makefile 语法
-- 找不到 IPK → 检查编译日志，确认包名
+**ShellCheck 配置**：
+```ini
+# .shellcheckrc - BusyBox ash 使用 bash 模式
+shell=bash          # 不是 ash（基于 dash，太严格）
+disable=SC2034      # OpenWrt init 变量
+disable=SC1090,SC1091  # 动态 source
 ```
 
-**Release 未创建**：
-```bash
-# 确认触发条件
-git tag -l  # 查看本地 tag
-git ls-remote --tags origin  # 查看远程 tag
+#### 故障排查
 
-# 确保 tag 格式正确
-git tag v1.0.0  # ✅ 正确
-git tag 1.0.0   # ❌ 不触发（缺少 v 前缀）
-```
+**常见问题速查**：
 
-**手动重新构建**：
-```bash
-# 删除失败的 Release
-gh release delete v1.0.0 --yes
+| 错误 | 原因 | 解决方案 |
+|------|------|---------|
+| `403 Forbidden` | 权限不足或 rate limit | 添加 `contents: write`；过滤 artifacts |
+| `SC3023/SC3057` | ShellCheck ash 模式太严格 | 改用 `shell=bash` |
+| 构建超时 (>50分钟) | 使用完整源码 | 改用 OpenWrt SDK |
+| `No rule to make target 'luci.mk'` | LuCI 应用依赖不存在 | 使用标准 `package.mk` |
 
-# 删除 tag
-git push origin :refs/tags/v1.0.0
-git tag -d v1.0.0
-
-# 重新打 tag
-git tag v1.0.0
-git push origin v1.0.0
-```
+**详细故障排查**：见 [CI/CD 指南 - 常见问题](docs/github-actions-ci-cd.md#常见问题解决)
 
 ## 分发
 

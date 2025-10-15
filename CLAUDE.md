@@ -203,6 +203,14 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 - **版本递增**: 功能变更递增 `PKG_VERSION`，打包变更递增 `PKG_RELEASE`
 - **安装脚本**: postinst 创建目录，prerm 清理进程
 
+### GitHub Workflow 规范
+- **构建策略**: 使用 OpenWrt SDK，不使用完整源码（避免超时）
+- **权限配置**: release job 必须声明 `permissions: contents: write`
+- **Artifacts 过滤**: 只收集目标包，不收集依赖包（避免 rate limit）
+- **ShellCheck 配置**: 使用 `shell=bash` 模式（BusyBox ash 支持 bash 特性）
+- **多架构构建**: 使用 matrix 策略并行构建 ARM64 和 x86_64
+- **详细指南**: [docs/github-actions-ci-cd.md](docs/github-actions-ci-cd.md)
+
 ## 性能指标
 
 **目标硬件**: NanoPi R5S (ARM64, 4核, 4GB RAM, SATA SSD)
@@ -313,6 +321,11 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 - 必读: CLAUDE.md 本文件 - 维护指南和日志位置
 - 参考: [docs/WEBUI_USER_GUIDE.md](docs/WEBUI_USER_GUIDE.md) - WebUI 故障排查
 
+**场景 7: GitHub Actions CI/CD**
+- 必读: [docs/github-actions-ci-cd.md](docs/github-actions-ci-cd.md) - 完整 CI/CD 指南
+- 必读: [BUILD.md](BUILD.md) - CI/CD 章节（快速参考）
+- 参考: [.github/workflows/build-and-release.yml](.github/workflows/build-and-release.yml) - Workflow 配置
+
 ## 后续改进方向
 
 ### 短期（可选）
@@ -335,13 +348,18 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
   - 所有版本的功能更新和 bug 修复记录
 
 ### 开发文档
-- **[BUILD.md](BUILD.md)**: 构建指南（Lean's LEDE）
+- **[BUILD.md](BUILD.md)**: 构建指南（本地开发）
   - 编译流程、开发工作流、调试技巧
-  - 版本管理、CI/CD 集成、常见问题
+  - 版本管理、CI/CD 快速参考、常见问题
 
 - **[IPK_PACKAGING.md](IPK_PACKAGING.md)**: IPK 打包原理详解
   - OpenWrt 包结构、Makefile 语法、最佳实践
   - 数据结构设计、安装脚本编写、调试方法
+
+- **[docs/github-actions-ci-cd.md](docs/github-actions-ci-cd.md)**: GitHub Actions CI/CD 完整指南⭐
+  - OpenWrt SDK 构建策略、ShellCheck 配置、权限管理
+  - Artifacts 过滤避免 rate limit、多架构构建
+  - 完整 workflow 示例、故障排查（通用流程，适用于所有 OpenWrt 包项目）
 
 ### 设计文档（docs/）
 
