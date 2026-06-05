@@ -10,35 +10,124 @@
 
 # Configuration
 BACKUP_MANAGER="/opt/outdoor-backup/scripts/backup-manager.sh"
+CONFIG_FILE="${OUTDOOR_BACKUP_CONFIG:-/opt/outdoor-backup/conf/backup.conf}"
 LOG_TAG="outdoor-backup-hotplug"
+# SYSFS_ROOT prefixes all /sys reads. Empty in production (real /sys); the test
+# suite points it at a fixture tree. No behavior change when unset.
+SYSFS_ROOT="${SYSFS_ROOT:-}"
+
+# Load card-reader whitelist settings (issue #2). Kept lightweight: we source
+# only the small config file, NOT common.sh, because this trigger fires on
+# every block event system-wide and must stay fast.
+CARD_READER_USB_IDS=""
+CARD_READER_PATH_PREFIXES=""
+CARD_READER_HEURISTIC_FALLBACK="yes"
+# shellcheck disable=SC1090
+[ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
 
 # Log function
 log_message() {
 	logger -t "$LOG_TAG" "$1"
 }
 
-# Check if device is an SD card
-is_sdcard() {
-	local dev_path="$1"
-	local dev_base="${DEVNAME%%[0-9]*}"
+# Resolve the USB VID:PID for the device behind a hotplug DEVPATH.
+# Walks up the sysfs tree from the block device to the first USB device node
+# that exposes idVendor/idProduct, and echoes "vvvv:pppp" (lowercase) or
+# nothing. Uses `readlink -f` (present in BusyBox/OpenWrt) to canonicalize the
+# device symlink; if it is ever unavailable the function returns empty, so a
+# VID:PID whitelist simply won't match (with FALLBACK=yes the heuristic still
+# runs; with FALLBACK=no nothing matches — document this for operators).
+get_usb_id_for_device() {
+	local dev_base="$1"
+	# /sys/block/<dev>/device resolves into the USB device chain.
+	local node="$SYSFS_ROOT/sys/block/$dev_base/device"
+	[ -e "$node" ] || return 0
 
-	# Check multiple indicators for SD card
+	# Canonicalize, then climb parents looking for idVendor + idProduct.
+	node=$(readlink -f "$node" 2>/dev/null) || node=""
+	while [ -n "$node" ] && [ "$node" != "/" ]; do
+		if [ -r "$node/idVendor" ] && [ -r "$node/idProduct" ]; then
+			local vid pid
+			vid=$(cat "$node/idVendor" 2>/dev/null)
+			pid=$(cat "$node/idProduct" 2>/dev/null)
+			if [ -n "$vid" ] && [ -n "$pid" ]; then
+				# Normalize to lowercase for stable comparison.
+				printf '%s:%s' "$vid" "$pid" | tr 'A-Z' 'a-z'
+				return 0
+			fi
+		fi
+		node=$(dirname "$node")
+	done
+	return 0
+}
+
+# Whitelist check: does this device match a configured reader? (issue #2)
+# Returns 0 on an explicit whitelist hit, 1 otherwise.
+is_card_reader_by_config() {
+	local dev_path="$1"
+	local dev_base="$2"
+	local matched=1
+
+	# Disable pathname expansion while iterating the config lists: the `for`
+	# loops split unquoted vars on whitespace (intended), but without `set -f`
+	# a stray glob char in a configured path prefix (e.g. "/sys/devices/*")
+	# would expand against the real filesystem. Restore globbing on exit.
+	set -f
+
+	# 1. USB VID:PID whitelist (most precise).
+	if [ -n "$CARD_READER_USB_IDS" ]; then
+		local usb_id
+		usb_id=$(get_usb_id_for_device "$dev_base")
+		if [ -n "$usb_id" ]; then
+			local want
+			for want in $CARD_READER_USB_IDS; do
+				# Compare case-insensitively against the normalized id.
+				if [ "$usb_id" = "$(printf '%s' "$want" | tr 'A-Z' 'a-z')" ]; then
+					matched=0
+					break
+				fi
+			done
+		fi
+	fi
+
+	# 2. Device-path prefix whitelist.
+	if [ "$matched" != "0" ] && [ -n "$CARD_READER_PATH_PREFIXES" ]; then
+		local prefix
+		for prefix in $CARD_READER_PATH_PREFIXES; do
+			case "$dev_path" in
+				"$prefix"*) matched=0; break ;;
+			esac
+		done
+	fi
+
+	set +f
+	return "$matched"
+}
+
+# Heuristic check: the original best-effort detection (path + model + size).
+# Kept as a fallback; see is_sdcard for the dispatch order.
+is_card_reader_by_heuristic() {
+	local dev_path="$1"
+	local dev_base="$2"
+
 	# 1. USB card reader pattern in device path
 	if echo "$dev_path" | grep -q "usb.*card\|reader\|SD\|mmc"; then
 		return 0
 	fi
 
 	# 2. Check device model
-	if [ -f "/sys/block/$dev_base/device/model" ]; then
-		local model=$(cat "/sys/block/$dev_base/device/model" 2>/dev/null)
+	if [ -f "$SYSFS_ROOT/sys/block/$dev_base/device/model" ]; then
+		local model
+		model=$(cat "$SYSFS_ROOT/sys/block/$dev_base/device/model" 2>/dev/null)
 		if echo "$model" | grep -iq "card\|reader\|SD\|mmc"; then
 			return 0
 		fi
 	fi
 
 	# 3. Size check - SD cards typically ≤512GB
-	if [ -f "/sys/block/$dev_base/size" ]; then
-		local size=$(cat "/sys/block/$dev_base/size" 2>/dev/null)
+	if [ -f "$SYSFS_ROOT/sys/block/$dev_base/size" ]; then
+		local size
+		size=$(cat "$SYSFS_ROOT/sys/block/$dev_base/size" 2>/dev/null)
 		# Size in 512-byte sectors, 512GB = 1073741824 sectors
 		if [ "$size" -le 1073741824 ] 2>/dev/null; then
 			return 0
@@ -48,7 +137,34 @@ is_sdcard() {
 	return 1
 }
 
-# Main logic
+# Check if device is an SD card / reader.
+# Order (issue #2): explicit whitelist first (authoritative), then the
+# heuristic as fallback unless the operator disabled it.
+is_sdcard() {
+	local dev_path="$1"
+	local dev_base="${DEVNAME%%[0-9]*}"
+
+	# 1. Whitelist match wins immediately.
+	if is_card_reader_by_config "$dev_path" "$dev_base"; then
+		return 0
+	fi
+
+	# 2. Heuristic fallback (default on; set CARD_READER_HEURISTIC_FALLBACK=no
+	#    to require an explicit whitelist match and ignore everything else).
+	if [ "$CARD_READER_HEURISTIC_FALLBACK" = "no" ]; then
+		return 1
+	fi
+
+	is_card_reader_by_heuristic "$dev_path" "$dev_base"
+}
+
+# Main logic.
+# Guard lets the test suite source this file to exercise the detection
+# functions without firing the hotplug action. Production is unchanged.
+if [ "${OUTDOOR_BACKUP_HOTPLUG_SOURCED:-0}" = "1" ]; then
+	return 0 2>/dev/null || exit 0
+fi
+
 case "$ACTION" in
 	add)
 		# Only process partitions, not whole disks

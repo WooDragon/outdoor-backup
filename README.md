@@ -138,6 +138,42 @@ BACKUP_MODE="PRIMARY"                # PRIMARY or REPLICA
 CREATED_AT="2024-01-15 10:30:00"
 ```
 
+### Card Reader Whitelist (optional)
+
+By default the system guesses which devices are SD cards/readers from their
+path, model string, and size (≤512GB). That heuristic mis-fires on 1TB+ cards
+and on readers with unusual sysfs paths. For reliable, unattended operation you
+can whitelist your exact reader in `backup.conf`:
+
+```bash
+# USB VID:PID whitelist (most precise), space-separated lowercase hex
+CARD_READER_USB_IDS="05e3:0749 14cd:1212"
+
+# Device-path prefix whitelist (when a reader has a stable path)
+CARD_READER_PATH_PREFIXES="/devices/platform/soc/usb1"
+
+# Keep heuristic as fallback (default "yes"); set "no" for strict whitelist-only
+CARD_READER_HEURISTIC_FALLBACK="yes"
+```
+
+**Finding your reader's VID:PID** — insert the reader and run:
+
+```bash
+lsusb
+# e.g. "Bus 001 Device 005: ID 05e3:0749 Genesys Logic, Inc. Card Reader"
+#                              ^^^^^^^^^ this is VID:PID
+
+# Or directly from sysfs:
+for d in /sys/bus/usb/devices/*; do
+    [ -r "$d/idVendor" ] && echo "$(cat "$d/idVendor"):$(cat "$d/idProduct")  $(cat "$d/product" 2>/dev/null)"
+done
+```
+
+A whitelist match is authoritative and checked first; the heuristic runs only
+when nothing matches (and `CARD_READER_HEURISTIC_FALLBACK="yes"`). An empty
+whitelist with fallback on behaves exactly like previous versions.
+
+
 **Note**: To set a friendly name for your SD card, use the WebUI alias management feature instead of editing this file.
 
 **Modes**:

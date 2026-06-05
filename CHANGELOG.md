@@ -40,12 +40,22 @@ All notable changes to this project will be documented in this file.
   countable red-flash pattern for unattended field diagnostics —
   device-unknown (1 flash), lock-timeout (2), no-space (3), rsync-failure (slow
   blink), verify-failed (red/green alternating). See README LED reference.
+- **Configurable card-reader whitelist** (#2): SD card/reader detection can now
+  be pinned to specific devices instead of relying solely on the brittle
+  heuristic (device path + model + ≤512GB size cap, which mis-fires on 1TB+
+  cards and unusual reader paths). New `backup.conf` options
+  `CARD_READER_USB_IDS` (VID:PID), `CARD_READER_PATH_PREFIXES`, and
+  `CARD_READER_HEURISTIC_FALLBACK`. A whitelist match is authoritative and
+  checked first; the heuristic remains as fallback (default on), so existing
+  deployments behave identically with an empty whitelist. README documents how
+  to find a reader's VID:PID.
 
 ### Internal
 - Added testability seams (`SCRIPT_DIR`/`BASE_DIR`/`STATUS_FILE`/`ALIASES_FILE`
   overrides, `OUTDOOR_BACKUP_SOURCED` guard) — no production behavior change.
-- New BDD suites `test-backup-core.sh` (34 cases, mock-rsync E2E) and
-  `test-lock.sh` (12 cases incl. concurrency smoke test).
+- New BDD suites `test-backup-core.sh` (34 cases, mock-rsync E2E),
+  `test-lock.sh` (12 cases incl. concurrency smoke test) and
+  `test-card-reader.sh` (9 cases, mocked sysfs).
 
 ## [v1.1.0] - 2025-01
 
