@@ -8,10 +8,13 @@
 set -e
 
 # Constants
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-BASE_DIR="$(dirname "$SCRIPT_DIR")"
-MOUNT_POINT="/mnt/sdcard"
-BACKUP_ROOT="/mnt/ssd/SDMirrors"
+# SCRIPT_DIR/BASE_DIR honor a pre-set value so the test suite can source this
+# file with paths pointed at a fixture dir. In production both are unset, so
+# they are computed from $0 exactly as before — no behavior change.
+SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "$0")" && pwd)}"
+BASE_DIR="${BASE_DIR:-$(dirname "$SCRIPT_DIR")}"
+MOUNT_POINT="${MOUNT_POINT:-/mnt/sdcard}"
+BACKUP_ROOT="${BACKUP_ROOT:-/mnt/ssd/SDMirrors}"
 LOCK_FILE="$BASE_DIR/var/lock/backup.pid"
 CONFIG_FILE="FieldBackup.conf"
 LOG_TAG="outdoor-backup"
@@ -27,6 +30,11 @@ LOG_TAG="outdoor-backup"
 ACTION="$1"
 DEVNAME="$2"
 DEVPATH="$3"
+
+# Error classification for differentiated LED feedback (issue #4).
+# Set by the failing stage before it exits; consumed by cleanup() to pick the
+# matching LED pattern. Empty means "generic / rsync failure".
+ERROR_TYPE=""
 
 # Cleanup function
 cleanup() {
@@ -55,8 +63,16 @@ cleanup() {
 		led_backup_done
 		log_info "Backup completed successfully"
 	else
-		led_backup_error
-		log_error "Backup failed with code $exit_code"
+		# Dispatch to the LED pattern matching the failure type (issue #4).
+		# Each error stage sets ERROR_TYPE before exiting non-zero.
+		case "$ERROR_TYPE" in
+			no_space)      led_err_no_space ;;
+			lock_timeout)  led_err_lock_timeout ;;
+			device_unknown) led_err_device_unknown ;;
+			verify_failed) led_err_verify_failed ;;
+			rsync|*)       led_err_rsync ;;
+		esac
+		log_error "Backup failed with code $exit_code (type: ${ERROR_TYPE:-rsync})"
 	fi
 
 	exit $exit_code
@@ -194,12 +210,21 @@ perform_backup() {
 		log_info "Starting PRIMARY backup: SD → SSD ($display_name)"
 	fi
 
-	# Check available space
-	local source_size=$(get_dir_size_mb "$source_dir")
-	local target_free=$(get_available_space_mb "$target_dir")
-
-	if [ "$source_size" -gt "$target_free" ]; then
-		log_error "Insufficient space: need ${source_size}MB, available ${target_free}MB"
+	# Check minimum free space on the TARGET (issue #5).
+	#
+	# The old code ran `du -sm` over the whole card and compared the card's
+	# TOTAL size against target free space. That was both slow (full-tree walk
+	# duplicating rsync's own scan) and wrong (an incremental re-backup of a
+	# 100GB card was rejected whenever the SSD had <100GB free, even though only
+	# a few GB of delta needed copying). We let rsync handle the real delta and
+	# only guard against a target that is already critically full — an O(1) df
+	# check using MIN_FREE_SPACE (MB) from backup.conf.
+	local min_free="${MIN_FREE_SPACE:-1024}"
+	local target_free
+	target_free=$(get_available_space_mb "$target_dir")
+	if [ -n "$target_free" ] && [ "$target_free" -lt "$min_free" ] 2>/dev/null; then
+		log_error "Insufficient free space on target: ${target_free}MB < ${min_free}MB minimum"
+		ERROR_TYPE="no_space"
 		return 1
 	fi
 
@@ -208,39 +233,132 @@ perform_backup() {
 	mkdir -p "$(dirname "$log_file")"
 
 	# Record start time
-	local start_time=$(date +%s)
+	local start_time
+	start_time=$(date +%s)
+
+	# Publish initial "running" status so the WebUI shows the backup immediately
+	# (issue #7). bytes_total/files_total are unknown until rsync --stats
+	# completes, so they start at 0 and are filled in on completion.
+	write_status "running" "$SD_UUID" "$display_name" "$DEVNAME" \
+		"$start_time" 0 0 0 0 0 0 "$target_dir" "" "" \
+		|| log_warn "Failed to write initial status.json"
 
 	# Perform rsync
 	log_info "Executing rsync from $source_dir to $target_dir"
 
-	rsync \
-		--archive \
-		--recursive \
-		--times \
-		--prune-empty-dirs \
-		--ignore-existing \
-		--stats \
-		--human-readable \
-		--progress \
-		--log-file="$log_file" \
-		--exclude="$CONFIG_FILE" \
-		--exclude=".Trash*" \
-		--exclude=".Spotlight*" \
-		--exclude=".fseventsd" \
-		--exclude="System Volume Information" \
-		--exclude="\$RECYCLE.BIN" \
-		"$source_dir" "$target_dir" 2>&1 | while read -r line; do
-			# Parse progress for logging (optional)
-			case "$line" in
-				*%*)
-					log_debug "Progress: $line"
-					;;
-			esac
-		done
+	# Run rsync and capture its TRUE exit code (issue #6).
+	#
+	# The old `rsync ... | while read` ate the exit code: $? reflected the
+	# while loop (always 0), so every failure was reported as success and lit
+	# the green LED — a data-integrity bug. We capture rsync's real status via
+	# a temp file written inside the subshell, while the pipe still streams
+	# output for throttled progress parsing feeding status.json (issue #7).
+	local rsync_status_file="$BASE_DIR/var/.rsync_exit.$$"
+	local rsync_bytes_file="$BASE_DIR/var/.rsync_bytes.$$"
+	rm -f "$rsync_status_file" "$rsync_bytes_file"
 
-	local rsync_exit=$?
-	local end_time=$(date +%s)
+	# --partial (issue #1): keep partially-transferred files on interruption so
+	# the NEXT backup resumes/repairs them via rsync's normal delta algorithm,
+	# instead of the old --ignore-existing which skipped any same-named file
+	# forever (leaving interrupted partials permanently truncated).
+	#
+	# We deliberately do NOT use --append/--append-verify: those decide by SIZE
+	# only and blindly append to existing bytes. Cameras reuse filenames
+	# (DSC_9999 -> DSC_0001, reformat-and-reshoot), so a same-named-but-changed
+	# file would be corrupted by a blind append. Plain rsync (size+mtime quick
+	# check + delta) correctly re-sends changed files and skips unchanged ones,
+	# fixing the partial-resume bug without any corruption risk.
+	local throttle_interval=5   # seconds between status.json progress writes
+	local last_write=0
+	local bytes_done=0
+
+	{
+		# Wrap in if/else so `set -e` does not abort the subshell on rsync
+		# failure before we record the exit code. The else branch runs with
+		# $? still holding rsync's real status (used for #4 disk-full LED).
+		if rsync \
+			--archive \
+			--recursive \
+			--times \
+			--prune-empty-dirs \
+			--partial \
+			--stats \
+			--info=progress2 \
+			--log-file="$log_file" \
+			--exclude="$CONFIG_FILE" \
+			--exclude=".Trash*" \
+			--exclude=".Spotlight*" \
+			--exclude=".fseventsd" \
+			--exclude="System Volume Information" \
+			--exclude="\$RECYCLE.BIN" \
+			"$source_dir" "$target_dir"
+		then
+			echo 0 > "$rsync_status_file"
+		else
+			echo $? > "$rsync_status_file"
+		fi
+	} 2>&1 | tr '\r' '\n' | while IFS= read -r line; do
+		# --info=progress2 emits a single rolling summary line (raw bytes, no
+		# --human-readable so the numbers stay machine-parseable):
+		#   <bytes-done> <percent>% <speed> <eta> (xfr#N, to-chk=...)
+		# Throttle status.json writes so I/O does not scale with file count.
+		case "$line" in
+			*%*)
+				now=$(date +%s)
+				if [ $((now - last_write)) -ge "$throttle_interval" ]; then
+					last_write=$now
+					# First whitespace-delimited field = bytes transferred.
+					bytes_done=$(printf '%s' "$line" | awk '{print $1}' | tr -d ',')
+					pct=$(printf '%s' "$line" | grep -o '[0-9]\{1,3\}%' | head -1 | tr -d '%')
+					case "$pct" in ''|*[!0-9]*) pct=0 ;; esac
+					case "$bytes_done" in ''|*[!0-9]*) bytes_done=0 ;; esac
+					# Persist the latest byte count so the post-loop code can use
+					# it as a fallback total (the loop runs in a pipe subshell;
+					# its variables can't propagate back via the shell).
+					echo "$bytes_done" > "$rsync_bytes_file" 2>/dev/null || true
+					# files_total/files_done are unknown mid-transfer with
+					# progress2; report 0 and let the completed entry fill the
+					# real count from --stats rather than showing a fake number.
+					write_status "running" "$SD_UUID" "$display_name" \
+						"$DEVNAME" "$start_time" "$pct" 0 0 \
+						0 "$bytes_done" 0 "$target_dir" "" "" 2>/dev/null || true
+				fi
+				;;
+		esac
+	done
+
+	# Read the captured rsync exit code; default to failure if the file is
+	# missing (subshell never reached the echo => rsync was killed).
+	local rsync_exit=1
+	if [ -f "$rsync_status_file" ]; then
+		rsync_exit=$(cat "$rsync_status_file" 2>/dev/null)
+		case "$rsync_exit" in ''|*[!0-9]*) rsync_exit=1 ;; esac
+		rm -f "$rsync_status_file"
+	fi
+
+	local end_time
+	end_time=$(date +%s)
 	local duration=$((end_time - start_time))
+
+	# Parse final transfer stats from rsync --stats output in the log file.
+	# These feed the completed history entry and give the WebUI a real file
+	# count and byte total once the transfer is done. If a given rsync build
+	# doesn't route --stats to the log file, fall back to the last byte count
+	# captured from the progress stream (via the temp file) so the total isn't
+	# silently zero.
+	local stat_files stat_bytes progress_bytes
+	stat_files=$(grep -i "Number of regular files transferred" "$log_file" 2>/dev/null \
+		| tail -1 | grep -o '[0-9,]*$' | tr -d ',')
+	stat_bytes=$(grep -i "Total transferred file size" "$log_file" 2>/dev/null \
+		| tail -1 | grep -o '[0-9,]*' | tail -1 | tr -d ',')
+	progress_bytes=0
+	if [ -f "$rsync_bytes_file" ]; then
+		progress_bytes=$(cat "$rsync_bytes_file" 2>/dev/null)
+		case "$progress_bytes" in ''|*[!0-9]*) progress_bytes=0 ;; esac
+		rm -f "$rsync_bytes_file"
+	fi
+	case "$stat_files" in ''|*[!0-9]*) stat_files=0 ;; esac
+	case "$stat_bytes" in ''|*[!0-9]*) stat_bytes=$progress_bytes ;; esac
 
 	# Log summary
 	log_info "Backup completed in ${duration}s (exit code: $rsync_exit)"
@@ -256,7 +374,29 @@ Exit Code: $rsync_exit
 Completed: $(date '+%Y-%m-%d %H:%M:%S')
 EOF
 
-	return $rsync_exit
+	# Branch on the TRUE rsync exit code (issue #6).
+	if [ "$rsync_exit" -ne 0 ]; then
+		log_error "rsync failed with exit code $rsync_exit"
+		# rsync uses exit code 11/12 for I/O / disk-full errors; surface those
+		# as the "no space" LED so the operator knows to free up storage (#4).
+		case "$rsync_exit" in
+			11|12) ERROR_TYPE="no_space" ;;
+			*)     ERROR_TYPE="rsync" ;;
+		esac
+		write_status "failed" "$SD_UUID" "$display_name" "$DEVNAME" \
+			"$start_time" 0 "$stat_files" "$stat_files" "$stat_bytes" \
+			"$stat_bytes" 0 "$target_dir" "$target_dir" \
+			"rsync exit $rsync_exit" || true
+		return "$rsync_exit"
+	fi
+
+	# rsync succeeded: record completed status + history entry (issue #7).
+	write_status "completed" "$SD_UUID" "$display_name" "$DEVNAME" \
+		"$start_time" 100 "$stat_files" "$stat_files" "$stat_bytes" \
+		"$stat_bytes" 0 "$target_dir" "$target_dir" "" \
+		|| log_warn "Failed to write final status.json"
+
+	return 0
 }
 
 # Handle remove action
@@ -281,16 +421,18 @@ main() {
 			# Start LED indication
 			led_backup_start
 
-			# Acquire lock
-			acquire_lock || exit 1
+			# Acquire lock. A timeout here means another backup holds the lock;
+			# flag it so cleanup() shows the lock-timeout LED (2 flashes, #4).
+			acquire_lock || { ERROR_TYPE="lock_timeout"; exit 1; }
 
-			# Mount SD card
-			mount_sdcard || exit 1
+			# Mount SD card. Failure means the inserted device isn't a mountable
+			# card -> device-unknown LED (1 flash, #4).
+			mount_sdcard || { ERROR_TYPE="device_unknown"; exit 1; }
 
 			# Setup configuration
 			setup_sdcard_config || exit 1
 
-			# Perform backup
+			# Perform backup (sets ERROR_TYPE itself on no_space / rsync failure)
 			perform_backup || exit 1
 
 			# Success - cleanup will handle the rest
@@ -308,5 +450,10 @@ main() {
 	esac
 }
 
-# Run main function
-main "$@"
+# Run main function.
+# Guard allows the test suite to source this file and call perform_backup()
+# directly without triggering the real mount/lock flow. Production execution is
+# unchanged: the variable is unset, so main runs as before.
+if [ "${OUTDOOR_BACKUP_SOURCED:-0}" != "1" ]; then
+	main "$@"
+fi

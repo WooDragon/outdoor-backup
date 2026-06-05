@@ -8,7 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=outdoor-backup
-PKG_VERSION:=1.0.0
+PKG_VERSION:=1.2.0
 PKG_RELEASE:=1
 
 PKG_MAINTAINER:=Your Name <your.email@example.com>
@@ -34,8 +34,9 @@ define Package/outdoor-backup/description
 
   Features:
   - Automatic hotplug-triggered backups
-  - Incremental rsync with --ignore-existing
-  - LED status indication
+  - Incremental rsync with --partial (resumes interrupted transfers safely)
+  - Differentiated LED status indication (per error type)
+  - Real-time progress reporting to the WebUI (status.json)
   - Concurrent backup protection (PID lock)
   - Support for multiple filesystems (ext4/exFAT/NTFS/FAT32)
   - Primary and Replica backup modes

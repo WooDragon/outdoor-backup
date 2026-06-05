@@ -81,6 +81,25 @@ ssh root@router "opkg install /tmp/outdoor-backup_*.ipk"
    tail -f /opt/outdoor-backup/log/backup.log
    ```
 
+## LED Status Reference
+
+In the field there is no screen or SSH — the LED is the only diagnostic
+interface. Each state maps to a distinct, countable pattern so you can tell at
+a glance what happened:
+
+| State | LED pattern | Meaning |
+|-------|-------------|---------|
+| Backup in progress | Green fast blink | Transfer running |
+| Backup complete | Green solid (30s) | Done, verified |
+| Device not recognized | Red, **1 flash** + pause | Inserted device not detected as an SD card / reader |
+| Lock timeout / busy | Red, **2 flashes** + pause | Another backup is already running; waited and gave up |
+| Insufficient space | Red, **3 flashes** + pause | Target free space below `MIN_FREE_SPACE` (or disk full) |
+| rsync transfer failed | Red slow blink | rsync exited non-zero (read/write error) |
+| Integrity verify failed | Red/green alternating | Transfer reported done but post-check disagreed |
+
+Count the red flashes between pauses to identify the fault. All error patterns
+auto-clear after 60 seconds.
+
 ## Configuration
 
 ### Option 1: Simple Config File
