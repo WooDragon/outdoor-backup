@@ -16,8 +16,16 @@ BASE_DIR="${BASE_DIR:-$(dirname "$SCRIPT_DIR")}"
 MOUNT_POINT="${MOUNT_POINT:-/mnt/sdcard}"
 BACKUP_ROOT="${BACKUP_ROOT:-/mnt/ssd/SDMirrors}"
 LOCK_FILE="$BASE_DIR/var/lock/backup.pid"
+# Atomic-mkdir fallback lock, used only when flock is unavailable.
+LOCK_DIR="$BASE_DIR/var/lock/backup.lock.d"
 CONFIG_FILE="FieldBackup.conf"
 LOG_TAG="outdoor-backup"
+
+# Lock state. Set by acquire_lock so release_lock only ever frees a lock we
+# actually hold (a process that lost the race must never delete the winner's
+# lock). LOCK_METHOD records which primitive won so release matches it.
+LOCK_HELD=0
+LOCK_METHOD=""
 
 # Load configuration
 [ -f "$BASE_DIR/conf/backup.conf" ] && . "$BASE_DIR/conf/backup.conf"
@@ -43,13 +51,8 @@ cleanup() {
 	# Stop LED blinking
 	led_backup_stop
 
-	# Remove lock file if we own it
-	if [ -f "$LOCK_FILE" ]; then
-		if [ "$(cat "$LOCK_FILE" 2>/dev/null)" = "$$" ]; then
-			rm -f "$LOCK_FILE"
-			log_info "Lock released"
-		fi
-	fi
+	# Release the lock if (and only if) we hold it.
+	release_lock
 
 	# Unmount if needed
 	if mountpoint -q "$MOUNT_POINT" 2>/dev/null; then
@@ -78,40 +81,114 @@ cleanup() {
 	exit $exit_code
 }
 
-# Get exclusive lock
+# Acquire an exclusive backup lock (issue #8).
+#
+# The old implementation hand-rolled `echo $$ > lock` + read-back verify: it
+# was non-atomic (TOCTOU) and, worse, on a failed verify it looped back with
+# NO sleep and NO elapsed increment — a 100% CPU spin that could never reach
+# the timeout. Two cards inserted together could peg a core forever.
+#
+# We use flock as the atomic primitive (same FD-based form common.sh already
+# relies on). flock is held for the lifetime of FD 201 and is auto-released by
+# the kernel if this process dies — so there is no stale-lock window and no
+# PID-reuse hazard. When flock is absent we fall back to mkdir, which is also
+# atomic; its contention branch sleeps and increments so the timeout is always
+# reachable. The PID is written for human/debug visibility only, never trusted
+# for mutual exclusion.
 acquire_lock() {
-	local timeout=300  # 5 minutes
+	# Timeout/interval honor pre-set overrides (used by the test suite for
+	# fast, deterministic contention checks). Production defaults unchanged.
+	local timeout="${LOCK_TIMEOUT:-300}"   # 5 minutes
 	local elapsed=0
+	local interval="${LOCK_INTERVAL:-5}"
 
-	while [ $elapsed -lt $timeout ]; do
-		# Check if lock exists
-		if [ -f "$LOCK_FILE" ]; then
-			local pid=$(cat "$LOCK_FILE" 2>/dev/null)
+	mkdir -p "$(dirname "$LOCK_FILE")" 2>/dev/null || true
 
-			# Check if process is still running
-			if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-				log_debug "Waiting for lock (PID $pid)..."
-				sleep 5
-				elapsed=$((elapsed + 5))
-			else
-				# Stale lock, remove it
-				rm -f "$LOCK_FILE"
-				log_info "Removed stale lock"
-			fi
-		else
-			# Try to create lock
-			echo "$$" > "$LOCK_FILE"
-
-			# Verify we got the lock (race condition check)
-			if [ "$(cat "$LOCK_FILE" 2>/dev/null)" = "$$" ]; then
-				log_info "Lock acquired"
+	if command -v flock >/dev/null 2>&1; then
+		# Open the lock file on a dedicated FD and take a non-blocking lock.
+		# Retry with backoff so we honor the same timeout semantics.
+		exec 201>"$LOCK_FILE" 2>/dev/null || {
+			log_error "Cannot open lock file $LOCK_FILE"
+			return 1
+		}
+		while [ "$elapsed" -lt "$timeout" ]; do
+			if flock -n 201; then
+				echo "$$" >&201 2>/dev/null || true
+				LOCK_HELD=1
+				LOCK_METHOD="flock"
+				log_info "Lock acquired (flock)"
 				return 0
 			fi
+			log_debug "Waiting for lock (flock held)..."
+			sleep "$interval"
+			elapsed=$((elapsed + interval))
+		done
+		exec 201>&- 2>/dev/null || true
+		log_error "Failed to acquire lock after ${timeout}s"
+		return 1
+	fi
+
+	# Fallback: atomic mkdir. `mkdir` of an existing dir fails atomically, so
+	# the winner is whoever creates it first — no read-back race.
+	while [ "$elapsed" -lt "$timeout" ]; do
+		if mkdir "$LOCK_DIR" 2>/dev/null; then
+			echo "$$" > "$LOCK_DIR/pid" 2>/dev/null || true
+			LOCK_HELD=1
+			LOCK_METHOD="mkdir"
+			log_info "Lock acquired (mkdir)"
+			return 0
 		fi
+
+		# Held: decide whether the holder is alive. If it looks dead, reclaim
+		# the stale lock ATOMICALLY: rename the dir to a private name and only
+		# the process whose rename succeeds gets to remove it. A blind
+		# `rm -rf` + retry would let two losers both delete and both re-mkdir,
+		# producing two holders — the very bug #8 is about. `mv` of an already
+		# moved/renamed source fails, so the second loser just loops and
+		# competes for a fresh `mkdir` cleanly.
+		local pid
+		pid=$(cat "$LOCK_DIR/pid" 2>/dev/null) || true
+		if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+			local stale="${LOCK_DIR}.stale.$$"
+			if mv "$LOCK_DIR" "$stale" 2>/dev/null; then
+				rm -rf "$stale" 2>/dev/null || true
+				log_info "Removed stale lock (PID $pid gone)"
+			fi
+			# Whether or not we won the rename, loop and retry mkdir.
+			continue
+		fi
+
+		log_debug "Waiting for lock (PID ${pid:-unknown})..."
+		sleep "$interval"
+		elapsed=$((elapsed + interval))
 	done
 
 	log_error "Failed to acquire lock after ${timeout}s"
 	return 1
+}
+
+# Release the lock, but only if this process actually holds it. A process that
+# lost the race (LOCK_HELD=0) must never free the winner's lock.
+release_lock() {
+	[ "$LOCK_HELD" = "1" ] || return 0
+
+	case "$LOCK_METHOD" in
+		flock)
+			# Closing the FD drops the kernel lock. We deliberately do NOT
+			# unlink the sentinel file: removing the inode while another waiter
+			# still holds an open FD on it lets a newcomer create a fresh inode
+			# and lock that, producing two simultaneous holders (the classic
+			# flock-unlink race). The file persists; its pid content is debug
+			# only and is overwritten on the next acquire.
+			exec 201>&- 2>/dev/null || true
+			;;
+		mkdir)
+			rm -rf "$LOCK_DIR" 2>/dev/null || true
+			;;
+	esac
+
+	LOCK_HELD=0
+	log_info "Lock released"
 }
 
 # Mount SD card
@@ -451,9 +528,9 @@ main() {
 }
 
 # Run main function.
-# Guard allows the test suite to source this file and call perform_backup()
-# directly without triggering the real mount/lock flow. Production execution is
-# unchanged: the variable is unset, so main runs as before.
+# Guard allows the test suite to source this file and call perform_backup() /
+# acquire_lock() directly without triggering the real mount/lock flow.
+# Production execution is unchanged: the variable is unset, so main runs as before.
 if [ "${OUTDOOR_BACKUP_SOURCED:-0}" != "1" ]; then
 	main "$@"
 fi

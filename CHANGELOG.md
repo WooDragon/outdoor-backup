@@ -20,6 +20,16 @@ All notable changes to this project will be documented in this file.
   slow, incorrect whole-card `du` precheck that compared the card's TOTAL size
   against target free space (rejecting incremental re-backups of nearly full
   cards). Replaced with an O(1) `df` check against `MIN_FREE_SPACE`.
+- **acquire_lock CPU spin + TOCTOU eliminated** (#8): the old PID lock did a
+  non-atomic `echo $$ > lock` + read-back verify, and on a failed verify looped
+  back with no sleep and no timeout increment — a 100% CPU spin that never timed
+  out (two cards inserted together could peg a core forever). Rewritten to use
+  `flock` as the atomic primitive (kernel auto-releases on death — no stale-lock
+  window) with an atomic `mkdir` fallback. Both contention paths sleep and
+  increment so the timeout is always reachable. release_lock frees only a lock
+  this process actually holds, never unlinks the flock sentinel (avoids the
+  flock-unlink double-holder race), and reclaims a stale mkdir lock via atomic
+  rename (single winner under concurrent reclaim).
 
 ### Added
 - **status.json writer** (#7): `backup-manager.sh` now writes throttled
@@ -34,7 +44,8 @@ All notable changes to this project will be documented in this file.
 ### Internal
 - Added testability seams (`SCRIPT_DIR`/`BASE_DIR`/`STATUS_FILE`/`ALIASES_FILE`
   overrides, `OUTDOOR_BACKUP_SOURCED` guard) — no production behavior change.
-- New BDD suite `test-backup-core.sh` (24 cases, mock-rsync E2E).
+- New BDD suites `test-backup-core.sh` (34 cases, mock-rsync E2E) and
+  `test-lock.sh` (12 cases incl. concurrency smoke test).
 
 ## [v1.1.0] - 2025-01
 
