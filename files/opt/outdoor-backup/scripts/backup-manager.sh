@@ -16,17 +16,33 @@ LOCK_FILE="$BASE_DIR/var/lock/backup.pid"
 CONFIG_FILE="FieldBackup.conf"
 LOG_TAG="outdoor-backup"
 
-# Load configuration
-[ -f "$BASE_DIR/conf/backup.conf" ] && . "$BASE_DIR/conf/backup.conf"
-[ -f /etc/config/outdoor-backup ] && . /etc/config/outdoor-backup
+# Arguments are checked before loading common.sh because an add event may be
+# intentionally disabled and must not create LED, lock, mount, or I/O effects.
+ACTION="${1:-}"
+DEVNAME="${2:-}"
+DEVPATH="${3:-}"
 
-# Load common functions
+case "$ACTION" in
+	add|remove)
+		;;
+	*)
+		printf 'outdoor-backup: invalid action: %s\n' "$ACTION" >&2
+		exit 1
+		;;
+esac
+
+# config.sh owns defaults, legacy compatibility, real UCI loading, and input
+# validation. Failure here is deliberately before common functions and traps.
+. "$SCRIPT_DIR/config.sh"
+config_load "$BASE_DIR/conf/backup.conf" || exit 1
+
+if [ "$ACTION" = "add" ] && [ "$ENABLED" = "0" ]; then
+	config_notice "backup disabled; ignoring add event for $DEVNAME"
+	exit 0
+fi
+
+# Load common functions only after an enabled add or a valid remove event.
 . "$SCRIPT_DIR/common.sh"
-
-# Arguments
-ACTION="$1"
-DEVNAME="$2"
-DEVPATH="$3"
 
 # Cleanup function
 cleanup() {

@@ -94,32 +94,15 @@ exit 0
 
 ### 文件: `/opt/outdoor-backup/scripts/backup-manager.sh`
 
+`config.sh` 在管理器加载公共函数、注册清理 trap 或执行资源操作前加载有效配置。它的加载顺序是内置默认值、root 管理的 legacy `backup.conf`、再到命名 UCI section 的显式 option。UCI 文件是 UCI 数据，管理器不应 `source` 或 `eval` `/etc/config/outdoor-backup`。
+
+`enabled=0` 只阻止 `add` 事件。管理器仍应让 `remove` 事件进入清理路径。加载器应拒绝空或无效路径、错误布尔值及相同或嵌套的备份和挂载路径，然后在资源操作前返回失败。路径检查只验证词法形式；它不验证 SSD 身份。SSD 身份保护属于未完成的 #14。
+
+用户配置和升级兼容的完整说明在 [README.md 的 Configuration 章节](../README.md#configuration)。本文档只说明组件边界，不复制运行时实现。
+
+运行时脚本见 [`backup-manager.sh`](../files/opt/outdoor-backup/scripts/backup-manager.sh) 与 [`config.sh`](../files/opt/outdoor-backup/scripts/config.sh)。管理器先验证配置，再处理 `enabled=0` 的 `add` 早退；`remove` 事件仍进入清理路径。
+
 ```bash
-#!/bin/sh
-#
-# OpenWrt SD Card Backup - Main Backup Manager
-# Handles the actual backup process with all safety checks
-#
-
-set -e
-
-# Constants
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-BASE_DIR="$(dirname "$SCRIPT_DIR")"
-MOUNT_POINT="/mnt/sdcard"
-BACKUP_ROOT="/mnt/ssd/SDMirrors"
-LOCK_FILE="$BASE_DIR/var/lock/backup.pid"
-CONFIG_FILE="FieldBackup.conf"
-LOG_TAG="outdoor-backup"
-
-# Load common functions
-. "$SCRIPT_DIR/common.sh"
-
-# Arguments
-ACTION="$1"
-DEVNAME="$2"
-DEVPATH="$3"
-
 # Cleanup function
 cleanup() {
     local exit_code=$?
