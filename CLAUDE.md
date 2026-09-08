@@ -203,7 +203,7 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 - **依赖明确**: `DEPENDS:=+rsync +block-mount ...`
 - **架构标识**: `PKGARCH:=all` (纯脚本包)
 - **版本递增**: 功能变更递增 `PKG_VERSION`，打包变更递增 `PKG_RELEASE`
-- **安装脚本**: postinst 创建目录，prerm 清理进程
+- **安装/启动规则**: 安装/启动仅初始化运行目录，不预建备份介质目录；prerm 负责清理进程。
 
 ### GitHub Workflow 规范
 - **构建策略**: 使用 OpenWrt SDK，不使用完整源码（避免超时）
