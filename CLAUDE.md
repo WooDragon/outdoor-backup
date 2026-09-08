@@ -108,9 +108,11 @@ outdoor-backup/
 ## 配置系统
 
 ### 三层配置架构
-1. **全局配置** (`/opt/outdoor-backup/conf/backup.conf`): 备份路径、LED 路径、调试开关
-2. **UCI 配置** (`/etc/config/outdoor-backup`): OpenWrt 标准配置接口
-3. **SD 卡配置** (`{SD_ROOT}/FieldBackup.conf`): UUID、备份模式、创建时间
+1. **内置默认值与兼容配置**：运行时先使用内置默认值，再读取 root 管理的 `/opt/outdoor-backup/conf/backup.conf`。
+2. **UCI 覆盖层**：`/etc/config/outdoor-backup` 的命名 section `outdoor-backup.config` 仅以显式 option 覆盖下层值。运行时只能通过 `uci` CLI 读取它，禁止将 UCI 文件作为 shell 脚本 `source` 或 `eval`。
+3. **SD 卡配置** (`{SD_ROOT}/FieldBackup.conf`): UUID、备份模式、创建时间。
+
+配置加载、校验、升级兼容和运维命令的权威说明在 [README.md 的 Configuration 章节](README.md#configuration)。修改配置加载逻辑前，应同时读取 [config.sh](files/opt/outdoor-backup/scripts/config.sh)、[backup-manager.sh](files/opt/outdoor-backup/scripts/backup-manager.sh) 和 [test-config.sh](test-config.sh)。
 
 ### 别名管理机制
 

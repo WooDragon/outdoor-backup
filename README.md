@@ -83,30 +83,44 @@ ssh root@router "opkg install /tmp/outdoor-backup_*.ipk"
 
 ## Configuration
 
-### Option 1: Simple Config File
+### Runtime precedence and compatibility
 
-Edit `/opt/outdoor-backup/conf/backup.conf`:
+The runtime loader applies values in this order:
 
-```bash
-# Change backup location
-BACKUP_ROOT="/mnt/ssd/SDMirrors"
+1. Built-in defaults.
+2. The root-owned legacy file `/opt/outdoor-backup/conf/backup.conf`.
+3. Explicit options in the named UCI section `outdoor-backup.config`.
 
-# Enable debug logging
-DEBUG=1
+The loader reads UCI through the `uci` CLI. It does not `source` or `eval` `/etc/config/outdoor-backup`; a UCI value is data, not shell code. The legacy file remains sourced for backward compatibility and can retain legacy-only settings.
 
-# Adjust LED paths for your hardware
-LED_GREEN="/sys/class/leds/green:lan"
-LED_RED="/sys/class/leds/red:sys"
-```
+The factory UCI conffile contains only `config outdoor-backup 'config'`. OpenWrt preserves a modified conffile during upgrades. The package does not migrate values from `backup.conf`, remove that file, or delete existing UCI options. Therefore, an existing explicit UCI option continues to override the legacy value after an upgrade.
 
-### Option 2: UCI (OpenWrt Style)
+### Set UCI overrides
 
-```bash
-# Edit via UCI
-uci set outdoor-backup.config.backup_root='/mnt/nvme/backups'
+Set only values that must override the lower layers. The supported UCI options are `enabled`, `backup_root`, `mount_point`, `debug`, `led_green`, and `led_red`.
+
+```sh
+# Use absolute, non-root, non-nested paths.
+uci set outdoor-backup.config.backup_root='/srv/camera-backups'
+uci set outdoor-backup.config.mount_point='/run/outdoor-card'
 uci set outdoor-backup.config.debug='1'
 uci commit outdoor-backup
 ```
+
+To return one setting to the legacy file or the built-in default, delete that UCI option and commit. Do not delete the whole configuration merely to inherit one value.
+
+```sh
+uci delete outdoor-backup.config.backup_root
+uci commit outdoor-backup
+```
+
+An empty UCI option is normalized by UCI as unset, so it also inherits the lower layer. Final empty or invalid storage paths in `backup_root` or `mount_point`, and values other than `0` or `1` for `enabled` or `debug`, make the manager stop before resource operations. The `enabled=0` switch exits an `add` event before LED, lock, mount, or I/O work. A `remove` event still reaches cleanup. LED paths retain their existing optional semantics: an empty legacy LED value falls back to the default in `common.sh`, and LED sysfs paths do not use the storage-path validation.
+
+The storage-path checks are lexical: they require an absolute non-root path, remove trailing slashes, reject control characters and ambiguous path segments, and reject equal or nested backup and mount paths. They do not prove that a path is an SSD or protect SSD identity. That protection is tracked by unfinished #14.
+
+### Maintain legacy configuration
+
+Edit `/opt/outdoor-backup/conf/backup.conf` only when a legacy value should apply, including legacy-only settings. An explicit UCI option has higher precedence. Remove that specific option with `uci delete` and `uci commit` when the legacy value should take effect again.
 
 ### Per-SD Card Configuration
 
