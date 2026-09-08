@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=outdoor-backup
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 
 PKG_MAINTAINER:=Your Name <your.email@example.com>
 PKG_LICENSE:=GPL-2.0-only
@@ -84,8 +84,6 @@ define Package/outdoor-backup/postinst
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] && exit 0
 
-# Create backup storage directory
-mkdir -p /mnt/ssd/SDMirrors/.logs
 
 # Set proper permissions
 chmod 755 /opt/outdoor-backup/scripts/*.sh

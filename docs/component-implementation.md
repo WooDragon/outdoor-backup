@@ -96,7 +96,7 @@ exit 0
 
 `config.sh` 在管理器加载公共函数、注册清理 trap 或执行资源操作前加载有效配置。它的加载顺序是内置默认值、root 管理的 legacy `backup.conf`、再到命名 UCI section 的显式 option。UCI 文件是 UCI 数据，管理器不应 `source` 或 `eval` `/etc/config/outdoor-backup`。
 
-`enabled=0` 只阻止 `add` 事件。管理器仍应让 `remove` 事件进入清理路径。加载器应拒绝空或无效路径、错误布尔值及相同或嵌套的备份和挂载路径，然后在资源操作前返回失败。路径检查只验证词法形式；它不验证 SSD 身份。SSD 身份保护属于未完成的 #14。
+`enabled=0` 只阻止 `add` 事件。管理器仍应让 `remove` 事件进入清理路径。加载器应拒绝空或无效路径、错误布尔值及相同或嵌套的备份和挂载路径，然后在资源操作前返回失败。路径检查只验证词法形式；它不验证 SSD 身份。SSD 身份保护属于未完成的 #14。安装与启动仅初始化运行目录，不预建备份介质目录。运行期介质保护仍待实现。
 
 用户配置和升级兼容的完整说明在 [README.md 的 Configuration 章节](../README.md#configuration)。本文档只说明组件边界，不复制运行时实现。
 
@@ -583,7 +583,6 @@ echo "Creating directory structure..."
 mkdir -p "$SCRIPT_DIR/var/lock"
 mkdir -p "$SCRIPT_DIR/var/status"
 mkdir -p "$SCRIPT_DIR/log"
-mkdir -p "/mnt/ssd/SDMirrors/.logs"
 
 # Set permissions
 echo "Setting permissions..."

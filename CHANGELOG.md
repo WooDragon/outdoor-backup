@@ -11,11 +11,13 @@ All notable changes to this project will be documented in this file.
 - Changed the factory UCI conffile to contain only its named section. Package upgrades preserve modified conffiles and do not migrate or delete the legacy configuration or existing UCI options.
 - Added fail-fast validation for empty or invalid paths, invalid boolean controls, and equal or nested backup and mount paths. Disabled `add` events exit before resource operations; `remove` events retain their cleanup path.
 - Configuration failures before resource operations and disabled-event reasons are also recorded in syslog; tests write only to an isolated UCI directory.
+- #14a: Installation and startup now initialize only runtime directories and do not pre-create `/mnt/ssd/SDMirrors/.logs`; `PKG_RELEASE` is `3`.
 
 ### Verified
 - Ran `test-config.sh` in the pinned `openwrt/rootfs:x86_64-24.10.8` container with OpenWrt `ash` and `uci`: 19 cases, 81 assertions, 0 failures. This is not a NanoPi R5S hardware test.
 - Ran `shellcheck --shell=bash files/opt/outdoor-backup/scripts/config.sh` successfully. The manager retains 9 historical lint findings; this entry does not claim a clean full-script lint, a package build, or a deployment.
 - The current CI `severity=error` check passes for all scripts. This does not mean that historical warnings have been cleared.
+- Ran `test-storage-lifecycle.sh` in the pinned `openwrt/rootfs:x86_64-24.10.8@sha256:9972a4b4747cd136abd597475d7b88c51a49fd849d0d53f069a2f4bf446061b9` container: 4 cases, 21 assertions, 0 failures.
 
 ## [v1.1.0] - 2025-01
 
