@@ -37,7 +37,7 @@ esac
 config_load "$BASE_DIR/conf/backup.conf" || exit 1
 
 if [ "$ACTION" = "add" ] && [ "$ENABLED" = "0" ]; then
-	printf 'outdoor-backup: backup disabled; ignoring add event for %s\n' "$DEVNAME" >&2
+	config_notice "backup disabled; ignoring add event for $DEVNAME"
 	exit 0
 fi
 

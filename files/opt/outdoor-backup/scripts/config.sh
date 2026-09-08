@@ -5,8 +5,13 @@
 # present options in the named UCI section outdoor-backup.config.
 #
 
+config_notice() {
+    printf 'outdoor-backup: %s\n' "$1" >&2
+    logger -t outdoor-backup "$1" 2>/dev/null || :
+}
+
 config_error() {
-    printf 'outdoor-backup: configuration error: %s\n' "$1" >&2
+    config_notice "configuration error: $1"
     return 1
 }
 

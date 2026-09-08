@@ -100,43 +100,9 @@ exit 0
 
 用户配置和升级兼容的完整说明在 [README.md 的 Configuration 章节](../README.md#configuration)。本文档只说明组件边界，不复制运行时实现。
 
+运行时脚本见 [`backup-manager.sh`](../files/opt/outdoor-backup/scripts/backup-manager.sh) 与 [`config.sh`](../files/opt/outdoor-backup/scripts/config.sh)。管理器先验证配置，再处理 `enabled=0` 的 `add` 早退；`remove` 事件仍进入清理路径。
+
 ```bash
-#!/bin/sh
-#
-# OpenWrt SD Card Backup - Main Backup Manager
-# Handles the actual backup process with all safety checks
-#
-
-set -e
-
-# Constants
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-BASE_DIR="$(dirname "$SCRIPT_DIR")"
-MOUNT_POINT="/mnt/sdcard"
-BACKUP_ROOT="/mnt/ssd/SDMirrors"
-LOCK_FILE="$BASE_DIR/var/lock/backup.pid"
-CONFIG_FILE="FieldBackup.conf"
-LOG_TAG="outdoor-backup"
-
-# Validate the action and load configuration before common functions.
-ACTION="${1:-}"
-DEVNAME="${2:-}"
-DEVPATH="${3:-}"
-
-case "$ACTION" in
-    add|remove) ;;
-    *) exit 1 ;;
-esac
-
-. "$SCRIPT_DIR/config.sh"
-config_load "$BASE_DIR/conf/backup.conf" || exit 1
-
-if [ "$ACTION" = "add" ] && [ "$ENABLED" = "0" ]; then
-    exit 0
-fi
-
-. "$SCRIPT_DIR/common.sh"
-
 # Cleanup function
 cleanup() {
     local exit_code=$?

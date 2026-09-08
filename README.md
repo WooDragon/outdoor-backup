@@ -114,7 +114,7 @@ uci delete outdoor-backup.config.backup_root
 uci commit outdoor-backup
 ```
 
-An empty UCI option is normalized by UCI as unset, so it also inherits the lower layer. Final empty or invalid storage paths in `backup_root` or `mount_point`, and values other than `0` or `1` for `enabled` or `debug`, make the manager stop before resource operations. The `enabled=0` switch exits an `add` event before LED, lock, mount, or I/O work. A `remove` event still reaches cleanup. LED paths retain their existing optional semantics: an empty legacy LED value falls back to the default in `common.sh`, and LED sysfs paths do not use the storage-path validation.
+An empty UCI option is normalized by UCI as unset, so it also inherits the lower layer. Final empty or invalid storage paths in `backup_root` or `mount_point`, and values other than `0` or `1` for `enabled` or `debug`, make the manager stop before resource operations and report the reason to stderr and syslog with the `outdoor-backup` tag. The `enabled=0` switch exits an `add` event before LED, lock, mount, or I/O work. A `remove` event still reaches cleanup. LED paths retain their existing optional semantics: an empty legacy LED value falls back to the default in `common.sh`, and LED sysfs paths do not use the storage-path validation.
 
 The storage-path checks are lexical: they require an absolute non-root path, remove trailing slashes, reject control characters and ambiguous path segments, and reject equal or nested backup and mount paths. They do not prove that a path is an SSD or protect SSD identity. That protection is tracked by unfinished #14.
 

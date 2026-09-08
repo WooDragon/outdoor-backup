@@ -25,6 +25,7 @@ TEST_ROOT="/tmp/outdoor-backup-config-test.$$"
 UCI_DIR="$TEST_ROOT/uci"
 LEGACY_FILE="$TEST_ROOT/backup.conf"
 EFFECTS_FILE="$TEST_ROOT/effects.log"
+NOTICES_FILE="$TEST_ROOT/notices.log"
 RUNTIME_BASE="$TEST_ROOT/runtime/opt/outdoor-backup"
 RUNTIME_SCRIPTS="$RUNTIME_BASE/scripts"
 RUNTIME_MANAGER="$RUNTIME_SCRIPTS/backup-manager.sh"
@@ -112,10 +113,11 @@ EOF
 write_effect_stubs() {
     mkdir -p "$TEST_ROOT/bin"
     : > "$EFFECTS_FILE"
+    : > "$NOTICES_FILE"
 
     cat > "$TEST_ROOT/bin/logger" <<'EOF'
 #!/bin/sh
-printf 'logger:%s\n' "$*" >> "$TEST_EFFECTS"
+printf 'logger:%s\n' "$*" >> "$TEST_NOTICES"
 EOF
     cat > "$TEST_ROOT/bin/mount" <<'EOF'
 #!/bin/sh
@@ -141,6 +143,7 @@ EOF
 
 run_manager() {
     TEST_EFFECTS="$EFFECTS_FILE" \
+        TEST_NOTICES="$NOTICES_FILE" \
         PATH="$TEST_ROOT/bin:$ORIGINAL_PATH" \
         UCI_CONFIG_DIR="$UCI_DIR" \
         /bin/ash "$RUNTIME_MANAGER" "$@"
@@ -189,9 +192,7 @@ case_c14_factory_config_reaches_task_decision() {
     begin_case C14 "factory UCI config reaches manager task decision"
     prepare_config_state
     prepare_manager_runtime
-    mkdir -p /etc/config
     cp "$FACTORY_UCI" "$UCI_DIR/outdoor-backup"
-    cp "$FACTORY_UCI" /etc/config/outdoor-backup
     write_effect_stubs
 
     if run_manager add sda1 /devices/test >/dev/null 2>&1; then
@@ -300,6 +301,23 @@ case_c06_bad_uci_and_missing_cli_fail_loud() {
     assert_failure load_config
 
     prepare_config_state
+    write_uci "broken"
+    prepare_manager_runtime
+    write_effect_stubs
+    c06_manager_err="$TEST_ROOT/c06-manager.err"
+    run_manager add sda1 /devices/test > /dev/null 2> "$c06_manager_err" &
+    c06_manager_pid=$!
+    ASSERTIONS=$((ASSERTIONS + 1))
+    if wait "$c06_manager_pid"; then
+        fail "C06 malformed UCI manager should fail"
+    fi
+    assert_file_contains "configuration error" "$c06_manager_err" \
+        "C06 manager hid malformed UCI configuration error"
+    assert_file_contains "configuration error" "$NOTICES_FILE" \
+        "C06 manager did not syslog malformed UCI configuration error"
+    assert_effect_absent "C06 malformed UCI manager performed a side effect"
+
+    prepare_config_state
     write_uci "config outdoor-backup 'config'"
     ASSERTIONS=$((ASSERTIONS + 1))
     # shellcheck disable=SC2123 # Deliberately hide UCI to test fail-loud behavior.
@@ -327,8 +345,10 @@ case_c08_disabled_add_has_no_side_effects() {
     c08_disabled_err="$TEST_ROOT/disabled.err"
     snapshot_c08_runtime "$c08_before"
 
+    run_manager add sda1 /devices/test > /dev/null 2> "$c08_disabled_err" &
+    c08_manager_pid=$!
     ASSERTIONS=$((ASSERTIONS + 1))
-    if ! run_manager add sda1 /devices/test > /dev/null 2> "$c08_disabled_err"; then
+    if ! wait "$c08_manager_pid"; then
         fail "C08 disabled add must exit zero"
     fi
     snapshot_c08_runtime "$c08_after"
@@ -339,6 +359,9 @@ case_c08_disabled_add_has_no_side_effects() {
     assert_file_contains \
         "outdoor-backup: backup disabled; ignoring add event for sda1" \
         "$c08_disabled_err" "C08 disabled add hid its disabled message"
+    assert_file_contains \
+        "logger:-t outdoor-backup backup disabled; ignoring add event for sda1" \
+        "$NOTICES_FILE" "C08 disabled add did not syslog its disabled message"
     assert_effect_absent "C08 disabled add performed a side effect"
     assert_path_absent "$RUNTIME_BASE/var/lock/backup.pid" \
         "C08 disabled add created a lock"
@@ -369,6 +392,24 @@ case_c10_invalid_paths_and_controls_fail() {
 	option backup_root '$invalid_root'"
         assert_failure load_config
     done
+
+    prepare_config_state
+    write_uci "config outdoor-backup 'config'
+	option backup_root 'relative'"
+    prepare_manager_runtime
+    write_effect_stubs
+    c10_manager_err="$TEST_ROOT/c10-manager.err"
+    run_manager add sda1 /devices/test > /dev/null 2> "$c10_manager_err" &
+    c10_manager_pid=$!
+    ASSERTIONS=$((ASSERTIONS + 1))
+    if wait "$c10_manager_pid"; then
+        fail "C10 invalid backup_root manager should fail"
+    fi
+    assert_file_contains "configuration error" "$c10_manager_err" \
+        "C10 manager hid invalid backup_root configuration error"
+    assert_file_contains "configuration error" "$NOTICES_FILE" \
+        "C10 manager did not syslog invalid backup_root configuration error"
+    assert_effect_absent "C10 invalid backup_root manager performed a side effect"
 }
 
 case_c11_same_and_nested_paths_fail() {
@@ -494,8 +535,9 @@ main() {
     trap cleanup_test_data EXIT INT TERM
     mkdir -p "$TEST_ROOT"
 
-    # C14 runs before config.sh is loaded so baseline Red proves the old manager
-    # sources the factory UCI file as shell syntax instead of calling UCI.
+    # C14 uses the factory template in the temporary UCI directory to verify
+    # that it reaches the manager task decision. The historical baseline Red
+    # is recorded in the PR validation record.
     case_c14_factory_config_reaches_task_decision
 
     if [ ! -r "$CONFIG_SCRIPT" ]; then
@@ -525,8 +567,8 @@ main() {
 
     assert_equal "$CASES" "19" "all required cases executed"
     ASSERTIONS=$((ASSERTIONS + 1))
-    if [ "$ASSERTIONS" -ne 72 ]; then
-        fail "all required assertions executed (expected=72, actual=$ASSERTIONS)"
+    if [ "$ASSERTIONS" -ne 81 ]; then
+        fail "all required assertions executed (expected=81, actual=$ASSERTIONS)"
     fi
     if [ "$FAILED" -ne 0 ]; then
         printf 'cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"

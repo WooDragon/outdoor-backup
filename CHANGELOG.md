@@ -10,9 +10,10 @@ All notable changes to this project will be documented in this file.
 - Replaced shell sourcing of `/etc/config/outdoor-backup` with `uci` CLI reads. UCI values remain data and are not executed as shell text.
 - Changed the factory UCI conffile to contain only its named section. Package upgrades preserve modified conffiles and do not migrate or delete the legacy configuration or existing UCI options.
 - Added fail-fast validation for empty or invalid paths, invalid boolean controls, and equal or nested backup and mount paths. Disabled `add` events exit before resource operations; `remove` events retain their cleanup path.
+- Configuration failures before resource operations and disabled-event reasons are also recorded in syslog; tests write only to an isolated UCI directory.
 
 ### Verified
-- Ran `test-config.sh` in the pinned `openwrt/rootfs:x86_64-24.10.8` container with OpenWrt `ash` and `uci`: 19 cases, 72 assertions, 0 failures. This is not a NanoPi R5S hardware test.
+- Ran `test-config.sh` in the pinned `openwrt/rootfs:x86_64-24.10.8` container with OpenWrt `ash` and `uci`: 19 cases, 81 assertions, 0 failures. This is not a NanoPi R5S hardware test.
 - Ran `shellcheck --shell=bash files/opt/outdoor-backup/scripts/config.sh` successfully. The manager retains 9 historical lint findings; this entry does not claim a clean full-script lint, a package build, or a deployment.
 - The current CI `severity=error` check passes for all scripts. This does not mean that historical warnings have been cleared.
 
