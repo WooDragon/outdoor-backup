@@ -200,13 +200,14 @@ case_l01_install_without_storage() {
 case_l02_start_without_storage() {
     begin_case L02 'start_service preserves absent backup storage'
     reset_owned_state
+    rm -rf /opt/outdoor-backup/var/lock /opt/outdoor-backup/log
     assert_success 'L02 actual start_service should return zero' run_start_service
     assert_path_absent "$STORAGE_ROOT" \
         'L02 start_service created the absent backup storage directory'
     assert_path_exists /opt/outdoor-backup/var/lock \
-        'L02 start_service did not retain the runtime lock directory'
+        'L02 start_service did not create the runtime lock directory'
     assert_path_exists /opt/outdoor-backup/log \
-        'L02 start_service did not retain the runtime log directory'
+        'L02 start_service did not create the runtime log directory'
 }
 
 case_l03_staging_install_skips_runtime_actions() {
