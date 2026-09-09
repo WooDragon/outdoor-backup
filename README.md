@@ -7,7 +7,7 @@ Automatic SD card backup system for OpenWrt routers with internal storage (SSD/H
 ## Features
 
 - ✅ **Automatic Backup**: Hotplug-triggered backup on SD card insertion
-- ✅ **Incremental Sync**: rsync with `--ignore-existing` for safety
+- ✅ **Incremental Sync**: rsync updates files when size or modification time differs, preserves partial transfers, and does not delete target files
 - ✅ **LED Indicators**: Visual feedback for backup status
 - ✅ **Concurrent Protection**: PID-based locking prevents conflicts
 - ✅ **Multi-Filesystem**: Supports ext4, exFAT, NTFS, FAT32
@@ -144,9 +144,15 @@ The static directory check rejects a symlink at the configured mount path or in 
 
 If the initial target guard fails, the manager writes the reason to stderr and error-level syslog. It may signal the optional red LED, but it does not enter the source mount, `rsync`, alias, lock, or application-log lifecycle. The manager closes the target FD before the LED helper starts its delayed child process. A missing LED does not turn this failure into success. `enabled=0` exits an `add` event before any LED side effect.
 
-Automatic backup supports the PRIMARY direction only: SD card to the configured storage target. The data-only card reader still accepts `REPLICA` in an existing `FieldBackup.conf` for compatibility. The manager rejects that card with an explicit error before `rsync`. It does not change the card configuration or UUID, update an alias, create the target UUID directory, or create a per-backup log. The manager does not convert `REPLICA` to `PRIMARY`. Remaining #15 work concerns stable card identity, read-only cards, and cloned cards; #15 remains open. The existing rsync pipeline still does not preserve the complete pipeline exit status, so this release does not claim that every `ENOSPC` error is reported correctly or that the implementation is completely safe.
+Automatic backup supports the PRIMARY direction only: SD card to the configured storage target. The data-only card reader still accepts `REPLICA` in an existing `FieldBackup.conf` for compatibility. The manager rejects that card with an explicit error before `rsync`. It does not change the card configuration or UUID, update an alias, create the target UUID directory, or create a per-backup log. The manager does not convert `REPLICA` to `PRIMARY`. Remaining #15 work concerns stable card identity, read-only cards, and cloned cards; #15 remains open.
 
-### LuCI storage fields
+The manager calls `backup-transfer.sh` after its source and target guards succeed. That module invokes the production `rsync` command directly and captures its real exit status. It uses `--partial` so an interrupted transfer can retain partial target data. It does not use `--ignore-existing`, `--append`, `--append-verify`, or `--delete`. Normal rsync quick-check behavior updates a file when its size or modification time differs. It does not guarantee detection of a content change that preserves both values. An `ENOSPC` classification requires the transfer diagnostics to contain `No space left on device` or `ENOSPC`; other rsync exits, including exit 11 or 12 without that diagnostic, remain rsync failures.
+
+### Runtime status and LuCI storage fields
+
+`status.sh` requires `jq` and atomically replaces the single snapshot at `/opt/outdoor-backup/var/status.json`. The snapshot contains `current_backup`, `storage`, and `history`; no `history.jsonl` state file exists. Each terminal event replaces any older event for the same UUID. The history is newest first and contains at most 20 entries. The storage counters come from `df` through the active target FD, while `storage.root` and each history `backup_path` are stable canonical display paths.
+
+While the manager transfers data, `current_backup.active` is true and all progress, file-count, byte-count, and speed fields are `0` because the runtime does not measure live progress. On completion, the manager records the actual `rsync --stats` file and byte counters. It writes `completed` only after rsync succeeds, the summary write succeeds, and the final target-health and device-identity checks succeed. A failed terminal-status write or any failed prerequisite prevents a completed state.
 
 The LuCI form exposes `target_mount`, `target_uuid`, and the `backup_root` boundary. It requires a valid UUID when `enabled=1`. It permits an empty UUID when `enabled=0`. Field validation only checks submitted values and paths. It does not mount or format a disk. Use the fstab procedure above to mount the real target UUID.
 
@@ -383,7 +389,7 @@ Expected performance on NanoPi R5S (4-core ARM, SATA SSD):
 A LuCI-based web interface for visual monitoring and management of the backup system.
 
 **Features**:
-- Real-time backup progress monitoring (progress bar, file count, speed, ETA)
+- Snapshot-backed running status and completed rsync statistics; no live progress, speed, or ETA writer
 - Storage space visualization (pie chart, usage percentage)
 - Backup history viewer
 - SD card alias management (solve UUID readability issue)
@@ -410,9 +416,9 @@ http://192.168.1.1/cgi-bin/luci/admin/services/outdoor-backup
 ### Key Features
 
 #### 1. Status Monitoring
-- Current backup progress with real-time updates
-- Storage usage bar (color-coded: green → yellow → red)
-- Backup history table with status badges
+- Current backup running state from the atomic status snapshot; it does not report live progress or transfer rate
+- Storage counters obtained through the anchored target FD
+- UUID-unique backup history from the same snapshot
 
 #### 2. Alias Management
 - Give SD cards human-readable names (e.g., "Canon_5D4_Card1")

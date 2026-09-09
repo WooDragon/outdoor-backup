@@ -77,7 +77,7 @@ led_backup_done() {
 }
 
 led_backup_error() {
-	# Slow blink red - error occurred
+	# Slow blink red - generic error (kept as fallback / rsync failure)
 	led_set "$LED_RED" "timer" "500" "500"
 	log_debug "LED set to error blink"
 
@@ -86,6 +86,134 @@ led_backup_error() {
 		sleep 60
 		led_set "$LED_RED" "none" "" "" "0"
 	) &
+}
+
+# ---------------------------------------------------------------------------
+# Differentiated LED error codes (issue #4)
+#
+# Field diagnostics: the operator has no SSH/network, the LED is the only
+# interface. A countable blink pattern (N flashes + pause, repeating) is far
+# easier to read by eye than a duty-cycle difference, so each error type maps
+# to a distinct flash count.
+#
+# Pattern table:
+#   device unknown   -> red, 1 flash  + pause
+#   lock timeout     -> red, 2 flashes + pause
+#   no space         -> red, 3 flashes + pause
+#   card config      -> red, 4 flashes + pause
+#   rsync failure    -> red, slow blink (legacy led_backup_error)
+#   verify failed    -> red/green alternating slow blink
+# ---------------------------------------------------------------------------
+
+# Blink a LED a fixed number of times, then pause, repeating for a duration.
+# Uses manual brightness toggling (not the kernel "timer" trigger) so we can
+# produce a countable N-flash burst the kernel timer can't express.
+# Args: $1=led_path  $2=flash_count  $3=duration_seconds
+led_blink_pattern() {
+	local led_path="$1"
+	local flash_count="$2"
+	local duration="${3:-60}"
+
+	# No LED hardware at this path -> nothing to do (matches led_set behavior)
+	[ -d "$led_path" ] || return 0
+
+	# Take manual control of the LED
+	echo "none" > "$led_path/trigger" 2>/dev/null || true
+
+	# Run the blink loop in the background so the caller can exit; the loop
+	# self-terminates after $duration to avoid leaving an orphan forever.
+	(
+		local elapsed=0
+		local pause_s=2    # pause between bursts, defines the "count" boundary
+
+		while [ "$elapsed" -lt "$duration" ]; do
+			local i=0
+			while [ "$i" -lt "$flash_count" ]; do
+				echo "1" > "$led_path/brightness" 2>/dev/null || true
+				sleep 1          # flash on for one second
+				echo "0" > "$led_path/brightness" 2>/dev/null || true
+				sleep 1          # one-second gap within a burst
+				i=$((i + 1))
+			done
+			sleep "$pause_s"
+			# One burst cycle = flash_count * two seconds + two-second pause.
+			elapsed=$((elapsed + (2 * flash_count + pause_s)))
+		done
+
+		# Leave the LED off when finished
+		echo "0" > "$led_path/brightness" 2>/dev/null || true
+	) &
+}
+
+# Device not recognized as SD card / reader (1 flash)
+led_err_device_unknown() {
+	led_blink_pattern "$LED_RED" 1 60
+	log_debug "LED error: device unknown (1 flash)"
+}
+
+# Lock acquisition timeout / concurrent backup (2 flashes)
+led_err_lock_timeout() {
+	led_blink_pattern "$LED_RED" 2 60
+	log_debug "LED error: lock timeout (2 flashes)"
+}
+
+# Insufficient free space on target (3 flashes)
+led_err_no_space() {
+	led_blink_pattern "$LED_RED" 3 60
+	log_debug "LED error: no space (3 flashes)"
+}
+
+# SD card configuration rejected by policy (4 flashes)
+led_err_card_config() {
+	led_blink_pattern "$LED_RED" 4 60
+	log_debug "LED error: card config (4 flashes)"
+}
+
+# rsync transfer failure (legacy slow red blink)
+led_err_rsync() {
+	led_backup_error
+	log_debug "LED error: rsync failure (slow blink)"
+}
+
+# Post-backup integrity verification failed (red/green alternating slow blink)
+led_err_verify_failed() {
+	if [ -d "$LED_RED" ] && [ -d "$LED_GREEN" ]; then
+		echo "none" > "$LED_RED/trigger" 2>/dev/null || true
+		echo "none" > "$LED_GREEN/trigger" 2>/dev/null || true
+
+		(
+			local elapsed=0
+			while [ "$elapsed" -lt 60 ]; do
+				echo "1" > "$LED_RED/brightness" 2>/dev/null || true
+				echo "0" > "$LED_GREEN/brightness" 2>/dev/null || true
+				sleep 1          # red on, green off for one second
+				echo "0" > "$LED_RED/brightness" 2>/dev/null || true
+				echo "1" > "$LED_GREEN/brightness" 2>/dev/null || true
+				sleep 1          # green on, red off for one second
+				elapsed=$((elapsed + 2))
+			done
+			echo "0" > "$LED_RED/brightness" 2>/dev/null || true
+			echo "0" > "$LED_GREEN/brightness" 2>/dev/null || true
+		) &
+
+		log_debug "LED error: verify failed (red/green alternating)"
+		return 0
+	fi
+
+	if [ -d "$LED_RED" ]; then
+		led_backup_error
+		log_debug "LED error: verify failed (green unavailable; red slow-blink fallback)"
+		return 0
+	fi
+
+	if [ -d "$LED_GREEN" ]; then
+		led_blink_pattern "$LED_GREEN" 1 60
+		log_debug "LED error: verify failed (red unavailable; green one-flash fallback)"
+		return 0
+	fi
+
+	log_debug "LED error: verify failed (both LEDs unavailable)"
+	return 0
 }
 
 led_backup_stop() {
@@ -136,9 +264,15 @@ get_dir_size_mb() {
 	fi
 }
 
-# Check available space in MB
+# Check available space in MB on the filesystem holding $1.
+# Walks up to the nearest existing ancestor so a not-yet-created target dir
+# still yields the correct figure (df can't stat a path that doesn't exist).
 get_available_space_mb() {
 	local path="$1"
+	# Climb until we hit a path that exists (worst case "/").
+	while [ ! -e "$path" ] && [ "$path" != "/" ] && [ -n "$path" ]; do
+		path=$(dirname "$path")
+	done
 	df -m "$path" 2>/dev/null | awk 'NR==2 {print $4}'
 }
 
@@ -156,13 +290,18 @@ generate_uuid() {
 
 # Alias management functions (for WebUI support)
 # File: /opt/outdoor-backup/conf/aliases.json
+#
+# ALIASES_FILE honors a pre-set override (used by the test suite to redirect
+# writes into a fixture). Production leaves it unset, so it resolves to the
+# canonical absolute path exactly as before — no behavior change.
+ALIASES_FILE="${ALIASES_FILE:-/opt/outdoor-backup/conf/aliases.json}"
 
 # Get alias for a given UUID
 # Args: $1 = UUID
 # Returns: alias string (empty if not found or no alias set)
 get_alias() {
 	local uuid="$1"
-	local alias_file="/opt/outdoor-backup/conf/aliases.json"
+	local alias_file="$ALIASES_FILE"
 
 	# Return empty if file doesn't exist
 	[ -f "$alias_file" ] || return 0
@@ -200,7 +339,7 @@ get_alias() {
 update_alias_last_seen() {
 	local uuid="$1"
 	local initial_alias="$2"  # Optional: set initial alias on first creation
-	local alias_file="/opt/outdoor-backup/conf/aliases.json"
+	local alias_file="$ALIASES_FILE"
 	local temp_file="${alias_file}.tmp"
 	local lock_file="${alias_file}.lock"
 	local now=$(date +%s)

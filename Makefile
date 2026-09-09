@@ -8,8 +8,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=outdoor-backup
-PKG_VERSION:=1.1.0
-PKG_RELEASE:=2
+PKG_VERSION:=1.2.0
+PKG_RELEASE:=1
 
 PKG_MAINTAINER:=Your Name <your.email@example.com>
 PKG_LICENSE:=GPL-2.0-only
@@ -21,7 +21,7 @@ define Package/outdoor-backup
   SECTION:=utils
   CATEGORY:=Utilities
   TITLE:=Outdoor Backup - SD card auto backup system
-  DEPENDS:=+rsync +block-mount +kmod-usb-storage +kmod-fs-ext4 +kmod-fs-vfat +kmod-fs-exfat +kmod-fs-ntfs3
+  DEPENDS:=+rsync +jq +block-mount +kmod-usb-storage +kmod-fs-ext4 +kmod-fs-vfat +kmod-fs-exfat +kmod-fs-ntfs3
   PKGARCH:=all
 endef
 
@@ -34,8 +34,8 @@ define Package/outdoor-backup/description
 
   Features:
   - Automatic hotplug-triggered backups
-  - Incremental rsync with --ignore-existing
-  - LED status indication
+  - Incremental rsync that updates changed files and preserves partial transfers
+  - Reliable atomic backup status snapshots and LED status indication
   - Concurrent backup protection (PID lock)
   - Support for multiple filesystems (ext4/exFAT/NTFS/FAT32)
   - One-way automatic backup from SD card to SSD

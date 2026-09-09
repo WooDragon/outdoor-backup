@@ -106,7 +106,7 @@ exit 0
 
 守卫成功后，目标目录和日志都经 FD 9 引用。管理器在目标准备、`rsync` 前、`rsync` 后及末尾的设备复验中检查锚点。目标卸载、替换或只读重挂载不应产生成功结果。日志摘要写入失败，以及摘要后的 detached 或只读复检失败，均返回非零。
 
-静态符号链接检查不是 `openat2`。恶意 root 并发替换目标目录不在此 shell 实现的保证范围内。未知或 deleted loop backing 无法证明身份时会失败关闭。本文档不声称真机全兼容。`FieldBackup.conf` 由 [`card-config.sh`](../files/opt/outdoor-backup/scripts/card-config.sh) 按数据读取，绝不 `source` 或 `eval`。该读取器只导出 `SD_UUID`、`BACKUP_MODE`、`CREATED_AT` 与旧 `SD_NAME`。其他合法赋值会被忽略。畸形数据或缺失、非法 UUID 会失败，且不会重写现有卡配置。读取器为兼容数据仍接受 `REPLICA`。自动管理器仅执行 `PRIMARY` 的 SD 卡到目标存储方向；它读取既有 `REPLICA` 卡后明确失败，不执行 `rsync`，不改变卡文件或 UUID，不更新 alias，也不创建目标 UUID 叶目录或备份日志。管理器不会将 `REPLICA` 自动改为 `PRIMARY`。新卡配置只生成 `PRIMARY`。#15 的稳定身份、只读卡和克隆卡工作仍未完成。现有 rsync 管道的整体退出码处理仍属既有 PR 和 Issue；#14 未结项包括最终包 CI、固件 CI 与真机验证。
+静态符号链接检查不是 `openat2`。恶意 root 并发替换目标目录不在此 shell 实现的保证范围内。未知或 deleted loop backing 无法证明身份时会失败关闭。本文档不声称真机全兼容。`FieldBackup.conf` 由 [`card-config.sh`](../files/opt/outdoor-backup/scripts/card-config.sh) 按数据读取，绝不 `source` 或 `eval`。该读取器只导出 `SD_UUID`、`BACKUP_MODE`、`CREATED_AT` 与旧 `SD_NAME`。其他合法赋值会被忽略。畸形数据或缺失、非法 UUID 会失败，且不会重写现有卡配置。读取器为兼容数据仍接受 `REPLICA`。自动管理器仅执行 `PRIMARY` 的 SD 卡到目标存储方向；它读取既有 `REPLICA` 卡后明确失败，不执行 `rsync`，不改变卡文件或 UUID，不更新 alias，也不创建目标 UUID 叶目录或备份日志。管理器不会将 `REPLICA` 自动改为 `PRIMARY`。新卡配置只生成 `PRIMARY`。#15 的稳定身份、只读卡和克隆卡工作仍未完成。`backup-transfer.sh` 直接调用正式 `rsync` 并保留真实退出码；#14 的旧管道退出码限制不再适用。最终包 CI、固件 CI 与真机验证仍未完成。
 
 LuCI 表单提供 `target_mount`、`target_uuid` 和 `backup_root` 说明。表单在 `enabled=1` 时要求 UUID。表单在 `enabled=0` 时允许空 UUID。字段的合法值和路径检查不代表表单会自动挂载或格式化介质。
 
@@ -114,7 +114,17 @@ LuCI 表单提供 `target_mount`、`target_uuid` 和 `backup_root` 说明。表�
 
 运行时细节以 [`backup-manager.sh`](../files/opt/outdoor-backup/scripts/backup-manager.sh)、[`card-config.sh`](../files/opt/outdoor-backup/scripts/card-config.sh)、[`target.sh`](../files/opt/outdoor-backup/scripts/target.sh) 和 [`target-device.sh`](../files/opt/outdoor-backup/scripts/target-device.sh) 为单一事实源；本文档不复制生产算法。
 
-## 3. 公共函数库
+## 3. 传输、空间与状态模块
+
+`backup-transfer.sh` 是在 add 事件的目标守卫成功后才由管理器显式加载的 inert source-only 模块。它不安装 trap，也不改变 disabled 事件或初始 guard 的资源约束。该模块直接运行正式 `rsync --archive --recursive --times --prune-empty-dirs --partial --stats`，并从该命令捕获真实退出码。它不会使用 pipeline、退出码文件、`--ignore-existing`、任何 append 家族选项或 `--delete`。rsync 根据 size/mtime quick check 更新文件，因而不能保证发现 size 和 mtime 都未变的内容变更。只有诊断含 `No space left on device` 或 `ENOSPC` 时，失败才分类为 `no_space`；单独的 rsync exit 11 或 12 不是满盘结论。
+
+`check_minimum_free_space` 在创建备份叶目录后，经 FD 9 的目标路径调用 `df`。它不对整张卡或备份树执行 `du` 扫描。`MIN_FREE_SPACE` 默认为 1024 MB；非负十进制整数合法，`0` 禁用余量。无法取得可信 `df` 值时，守卫失败关闭。
+
+`status.sh` 依赖 `jq`。它把 `current_backup`、经活 FD 获取的 `storage` 和 `history` 原子写入唯一的 `status.json` 快照。它不维护 `history.jsonl`。history 以 UUID 去重，最新终态在前，最多 20 条。运行期间 `current_backup` 仅表达 active/running，未知进度和速率字段均为 0。成功终态的文件数和字节数来自 `rsync --stats`；管理器仅在 rsync、汇总写入和最后的锚点健康及身份复验均成功后才写 `completed`。
+
+`cleanup` 先清理传输临时文件并关闭目标 FD，再启动成功或错误 LED 定时器。`ERROR_TYPE` 的现有调用映射为 `device_unknown`、`lock_timeout`、`no_space`、`card_config`（红灯 4 闪，SD 卡配置被策略拒绝，例如既有 `REPLICA` 卡）、`rsync` 和 `verify_failed`。本文档不把未覆盖的 LED 类型表述为端到端验证。
+
+## 4. 公共函数库
 
 ### 文件: `/opt/outdoor-backup/scripts/common.sh`
 
@@ -281,7 +291,7 @@ EOF
 }
 ```
 
-## 4. 安装脚本
+## 5. 安装脚本
 
 ### 文件: `/opt/outdoor-backup/install.sh`
 
@@ -410,7 +420,7 @@ echo "0" > /sys/class/leds/green:lan/brightness 2>/dev/null || true
 echo "Setup complete!"
 ```
 
-## 5. 配置文件模板
+## 6. 配置文件模板
 
 ### 文件: `/opt/outdoor-backup/conf/backup.conf`
 

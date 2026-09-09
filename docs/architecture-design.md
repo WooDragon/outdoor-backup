@@ -55,6 +55,8 @@
 │   └── rsync                      # ARM架构静态编译rsync (可选)
 ├── scripts/
 │   ├── backup-manager.sh          # 主备份管理脚本
+│   ├── backup-transfer.sh         # 直接调用 rsync 的传输模块
+│   ├── status.sh                  # jq 原子状态快照模块
 │   ├── sdcard-setup.sh            # SD卡初始化脚本
 │   ├── safety-check.sh            # 安全检查脚本
 │   ├── led-control.sh             # LED控制脚本
@@ -192,10 +194,10 @@ LED指示完成
 
 ### 5.1 数据安全
 
-1. **增量备份**: `rsync --ignore-existing`确保不覆盖已有文件
-2. **只读检测**: 检测SD卡写保护状态
-3. **完整性**: 备份后执行`sync`确保数据写入
-4. **原子操作**: 使用临时文件+重命名保证配置文件原子性
+1. **增量备份**: `rsync` 按 size/mtime quick check 更新不同文件，并以 `--partial` 保留中断后的部分数据；它不使用 `--ignore-existing`、append 家族选项或 `--delete`，且不能保证探测 size 和 mtime 均相同的内容变化。
+2. **空间守卫**: 管理器通过已锚定目标 FD 执行 `df`，不扫描备份树。`MIN_FREE_SPACE` 默认为 1024 MB，`0` 禁用余量，未知空间值失败关闭。
+3. **状态原子性**: `jq` 原子替换唯一的 `status.json` 快照。它不创建 `history.jsonl`，history 按 UUID 最新优先并限制为 20 条。
+4. **完成边界**: 管理器只有在 rsync、汇总写入和最终目标健康及身份复验成功后才写 completed 状态。
 
 ### 5.2 系统安全
 

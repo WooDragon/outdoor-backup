@@ -11,7 +11,7 @@ IMAGE_DIGEST="sha256:9972a4b4747cd136abd597475d7b88c51a49fd849d0d53f069a2f4bf446
 
 if [ "${1:-}" != "--inside" ]; then
     REPO_ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-    exec docker run --rm --platform linux/amd64 --network none --read-only \
+    exec docker run --rm --platform linux/amd64 --network bridge \
         --cap-add SYS_ADMIN --security-opt seccomp=unconfined --tmpfs /tmp:rw,exec --tmpfs /opt:rw,exec \
         -v "$REPO_ROOT:/src:ro" \
         "$IMAGE@$IMAGE_DIGEST" /bin/ash /src/test-target-manager.sh --inside
@@ -21,6 +21,35 @@ if [ ! -f /.dockerenv ] || [ ! -r /etc/openwrt_release ]; then
     printf '%s\n' 'FAIL: --inside requires the pinned OpenWrt rootfs' >&2
     exit 1
 fi
+
+ASYNC_STDERR="${TEST_ASYNC_STDERR:-/tmp/outdoor-backup-target-manager-stderr.$$}"
+
+# Preserve the caller's diagnostic sink before the normal child redirects fd 2
+# into ASYNC_STDERR. Failure replay must never write into its own input file.
+if [ "${TEST_CAPTURED_STDERR:-0}" != 1 ]; then
+    exec 3>&2
+    : > "$ASYNC_STDERR"
+    TEST_CAPTURED_STDERR=1 TEST_ASYNC_STDERR="$ASYNC_STDERR"         exec /bin/ash "$0" "$@" 2> "$ASYNC_STDERR"
+fi
+
+replay_async_stderr() {
+    while IFS= read -r captured_line || [ -n "$captured_line" ]; do
+        printf '%s\n' "$captured_line" >&3
+    done < "$ASYNC_STDERR"
+}
+
+# This test-only probe exercises the normal replay helper without running the
+# suite again. Its caller supplies fd 3 as an independent, bounded sink.
+if [ "${2:-}" = "--stderr-replay-probe" ]; then
+    printf '%s\n' 'ASYNC-REPLAY-SENTINEL-7f1c6d9e' > "$ASYNC_STDERR"
+    replay_async_stderr
+    printf 'cases=0 assertions=0 failed=1\n' >&3
+    exit 1
+fi
+
+mkdir -p /var/lock
+opkg update >/dev/null
+opkg install jq >/dev/null
 
 REPO_ROOT=/src
 TEST_ROOT="/tmp/outdoor-backup-target-manager.$$"
@@ -67,6 +96,48 @@ assert_failure() {
     ASSERTIONS=$((ASSERTIONS + 1))
     if "$@"; then
         fail "$message"
+    fi
+}
+
+# Execute the production manager once and retain its real exit status. Args are
+# the manager event arguments; this wrapper always succeeds for test control.
+run_manager_capture_exit() {
+    if run_manager "$@"; then
+        MANAGER_EXIT=0
+    else
+        MANAGER_EXIT=$?
+    fi
+    return 0
+}
+
+assert_manager_exit() {
+    expected_exit=$1
+    message=$2
+    shift 2
+    run_manager_capture_exit "$@"
+    assert_equal "$MANAGER_EXIT" "$expected_exit" "$message"
+}
+
+assert_manager_nonzero() {
+    message=$1
+    shift
+    run_manager_capture_exit "$@"
+    ASSERTIONS=$((ASSERTIONS + 1))
+    if [ "$MANAGER_EXIT" -eq 0 ]; then
+        fail "$message (actual exit=0)"
+    fi
+}
+
+# Prove the precise exit assertion is a real guard: a deliberately mutated
+# manager must not satisfy the production exit code expectation.
+assert_manager_exit_rejected() {
+    expected_exit=$1
+    message=$2
+    shift 2
+    run_manager_capture_exit "$@"
+    ASSERTIONS=$((ASSERTIONS + 1))
+    if [ "$MANAGER_EXIT" -eq "$expected_exit" ]; then
+        fail "$message (unexpected exit=$MANAGER_EXIT)"
     fi
 }
 
@@ -119,9 +190,16 @@ assert_matches() {
     fi
 }
 
+assert_no_async_led_stderr() {
+    ASSERTIONS=$((ASSERTIONS + 1))
+    if grep -E -q 'sleep: invalid number|nonexistent directory' "$ASYNC_STDERR"; then
+        fail "LED helper emitted invalid asynchronous stderr: $(tr '\n' ' ' < "$ASYNC_STDERR")"
+    fi
+}
+
 # A target guard failure may emit syslog and the red LED only. The fixture sleep
-# stub records the production 60-second auto-off request. Individual cases choose
-# either a capped wait or a release-controlled wait to make timer lifetime explicit.
+# stub records the production duration, then waits on a fixture-owned release file.
+# reset_case releases and joins that exact child before replacing its LED directory.
 assert_guard_failure_effects() {
     case_id=$1
     assert_contains '-t outdoor-backup -p err' "$NOTICES" \
@@ -251,6 +329,8 @@ prepare_runtime() {
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/backup-manager.sh" "$SCRIPTS/backup-manager.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/config.sh" "$SCRIPTS/config.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/common.sh" "$SCRIPTS/common.sh"
+    ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/status.sh" "$SCRIPTS/status.sh"
+    ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/backup-transfer.sh" "$SCRIPTS/backup-transfer.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/card-config.sh" "$SCRIPTS/card-config.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/target.sh" "$SCRIPTS/target.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/target-device.sh" "$SCRIPTS/target-device.sh"
@@ -261,6 +341,7 @@ BACKUP_ROOT="$TARGET_MOUNT/backups"
 TARGET_MOUNT="$TARGET_MOUNT"
 TARGET_UUID="$TARGET_UUID"
 MOUNT_POINT="$SOURCE_MOUNT"
+MIN_FREE_SPACE=0
 LED_GREEN="$TEST_ROOT/green"
 LED_RED="$TEST_ROOT/red"
 EOF
@@ -316,16 +397,24 @@ for value in "$@"; do
 done
 printf '%s' "$rsync_source" > "$TEST_RSYNC_SOURCE"
 printf '%s' "$rsync_target" > "$TEST_RSYNC_TARGET"
+if [ -n "${TEST_RSYNC_DIAGNOSTIC:-}" ]; then
+    printf '%s\n' "$TEST_RSYNC_DIAGNOSTIC" >&2
+fi
+if [ -n "${TEST_RSYNC_STATS:-}" ]; then
+    printf '%s\n' 'Number of regular files transferred: 7'
+    printf '%s\n' 'Total transferred file size: 1,234 bytes'
+fi
 if [ "${TEST_RSYNC_INJECT:-}" = detach ]; then
     /bin/umount -l "$TEST_TARGET_MOUNT"
 elif [ "${TEST_RSYNC_INJECT:-}" = ro ]; then
     /bin/mount -o remount,ro "$TEST_TARGET_MOUNT"
 fi
-exit 0
+exit "${TEST_RSYNC_EXIT:-0}"
 EOF
     cat > "$BIN/cat" <<'EOF'
 #!/bin/sh
-if [ "$#" -eq 0 ]; then
+output_target=$(readlink "/proc/$$/fd/1" 2>/dev/null || :)
+if [ "$#" -eq 0 ] && [ "${output_target##*/}" != FieldBackup.conf ]; then
     case "${TEST_CAT_INJECT:-}" in
         summary-fail)
             exit 1
@@ -335,9 +424,42 @@ if [ "$#" -eq 0 ]; then
             /bin/umount -l "$TEST_TARGET_MOUNT"
             exit 0
             ;;
+        summary-verify-fail)
+            /bin/cat
+            /bin/rm -f "$TEST_SYSFS/dev/block/$(/bin/cat "$TEST_TARGET_MM")"
+            exit 0
+            ;;
     esac
 fi
 exec /bin/cat "$@"
+EOF
+    cat > "$BIN/df" <<'EOF'
+#!/bin/sh
+printf 'df %s\n' "$*" >> "$TEST_EFFECTS"
+if [ "${1:-}" = -m ]; then
+    printf '%s\n' 'Filesystem 1M-blocks Used Available Use% Mounted on'
+    printf '%s\n' "/dev/fixture 100 0 ${TEST_DF_MB:-2} 0% /fixture"
+else
+    printf '%s\n' 'Filesystem 1K-blocks Used Available Use% Mounted on'
+    printf '%s\n' "/dev/fixture 102400 0 $(( ${TEST_DF_MB:-2} * 1024 )) 0% /fixture"
+fi
+EOF
+    cat > "$BIN/du" <<'EOF'
+#!/bin/sh
+printf 'du %s\n' "$*" >> "$TEST_EFFECTS"
+exit 99
+EOF
+    cat > "$BIN/status-mv" <<'EOF'
+#!/bin/sh
+count_file=$TEST_STATUS_MV_COUNT
+count=0
+[ -r "$count_file" ] && count=$(cat "$count_file")
+count=$((count + 1))
+printf '%s\n' "$count" > "$count_file"
+if [ "${TEST_STATUS_MV_FAIL:-0}" = 1 ] || [ "${TEST_STATUS_MV_FAIL_ON:-0}" = "$count" ]; then
+    exit 1
+fi
+exec /bin/mv "$@"
 EOF
     cat > "$BIN/pkill" <<'EOF'
 #!/bin/sh
@@ -349,18 +471,21 @@ printf 'sync\n' >> "$TEST_EFFECTS"
 EOF
     cat > "$BIN/sleep" <<'EOF'
 #!/bin/sh
-# The production helper still requests 60 seconds. M02d switches to a controlled
-# wait so the test can prove the timer is alive while it tries a normal umount.
+# The fixture accepts only production-valid, integer delays. It then blocks on a
+# case-owned release file: reset_case can join this exact child before deleting
+# BIN or fake LED paths, while M02d/M11 can prove the timer stays alive.
+case "${1:-}" in
+    ''|*[!0-9]*)
+        printf 'sleep fixture rejected non-integer=[%s]\n' "${1:-}" >&2
+        exit 64
+        ;;
+esac
 printf 'sleep duration=%s\n' "$1" >> "$TEST_EFFECTS"
-if [ "${TEST_TIMER_CONTROLLED:-0}" = 1 ] && [ "$1" = 60 ]; then
-    printf '%s\n' "$$" > "$TEST_TIMER_PID"
-    : > "$TEST_TIMER_READY"
-    while [ ! -e "$TEST_TIMER_RELEASE" ]; do
-        /bin/sleep 1
-    done
-    exit 0
-fi
-/bin/sleep 1
+printf '%s\n' "$$" > "$TEST_TIMER_PID"
+: > "$TEST_TIMER_READY"
+while [ ! -e "$TEST_TIMER_RELEASE" ]; do
+    /bin/sleep 1
+done
 EOF
     chmod 755 "$BIN"/*
 }
@@ -373,6 +498,7 @@ run_manager() {
     TEST_EFFECTS="$EFFECTS" TEST_NOTICES="$NOTICES" \
         TARGET_TEST_BLOCK_NODE="$TARGET_TEST_BLOCK_NODE" \
         TARGET_SYSFS_ROOT="$SYSFS" TARGET_MOUNTINFO_FILE="$MOUNTINFO" \
+        TEST_SYSFS="$SYSFS" TEST_TARGET_MM="$TEST_ROOT/target-mm" \
         TEST_TARGET_MOUNT="$TARGET_MOUNT" TEST_CAT_INJECT="${TEST_CAT_INJECT:-}" \
         TEST_RSYNC_ARGC="$RSYNC_ARGC" TEST_RSYNC_SOURCE="$RSYNC_SOURCE" \
         TEST_RSYNC_TARGET="$RSYNC_TARGET" \
@@ -380,11 +506,45 @@ run_manager() {
         TEST_TIMER_READY="$TEST_ROOT/timer-ready" \
         TEST_TIMER_RELEASE="$TEST_ROOT/timer-release" \
         TEST_TIMER_PID="$TEST_ROOT/timer-pid" \
+        TEST_TIMER_DURATION="${TEST_TIMER_DURATION:-60}" \
+        TEST_DF_MB="${TEST_DF_MB:-2}" TEST_RSYNC_EXIT="${TEST_RSYNC_EXIT:-0}" \
+        TEST_RSYNC_DIAGNOSTIC="${TEST_RSYNC_DIAGNOSTIC:-}" TEST_RSYNC_STATS="${TEST_RSYNC_STATS:-}" \
+        STATUS_FILE="$RUNTIME/var/status.json" STATUS_MV="$BIN/status-mv" \
+        TEST_STATUS_MV_COUNT="$TEST_ROOT/status-mv-count" \
+        TEST_STATUS_MV_FAIL="${TEST_STATUS_MV_FAIL:-0}" \
+        TEST_STATUS_MV_FAIL_ON="${TEST_STATUS_MV_FAIL_ON:-0}" \
         DEBUG="${DEBUG:-0}" PATH="$BIN:$PATH" \
-        /bin/ash "$SCRIPTS/backup-manager.sh" "$@"
+        /bin/ash "${MANAGER_SCRIPT:-$SCRIPTS/backup-manager.sh}" "$@"
+}
+
+settle_led_fixture() {
+    [ -d "$TEST_ROOT" ] || return 0
+    timer_pid=$(cat "$TEST_ROOT/timer-pid" 2>/dev/null || :)
+    [ -n "$timer_pid" ] || return 0
+
+    if kill -0 "$timer_pid" 2>/dev/null; then
+        : > "$TEST_ROOT/timer-release"
+        wait_for_timer_exit || return 1
+    fi
+
+    attempts=0
+    while [ "$attempts" -lt 5 ]; do
+        red_active=0
+        green_active=0
+        [ -s "$TEST_ROOT/red/trigger" ] && red_active=1
+        [ -s "$TEST_ROOT/green/trigger" ] && green_active=1
+        if { [ "$red_active" -eq 0 ] || [ "$(cat "$TEST_ROOT/red/brightness")" = 0 ]; } && \
+            { [ "$green_active" -eq 0 ] || [ "$(cat "$TEST_ROOT/green/brightness")" = 0 ]; }; then
+            return 0
+        fi
+        /bin/sleep 1
+        attempts=$((attempts + 1))
+    done
+    return 1
 }
 
 reset_case() {
+    settle_led_fixture || return 1
     unmount_target
     rm -rf "$TEST_ROOT"
     TARGET_UUID="A1B2-C3D4"
@@ -491,14 +651,21 @@ case_m02c_same_source_or_system_disk_stops_before_common() {
 case_m03_healthy_path_uses_only_fd_anchored_target() {
     begin_case M03 'successful primary backup ignores card BACKUP_ROOT and TARGET overrides'
     reset_case || { fail 'M03 fixture setup failed'; return; }
-    assert_success 'M03 healthy guarded backup succeeds' run_manager add sda1 /devices/mock
+    ASSERTIONS=$((ASSERTIONS + 1))
+    if run_manager add sda1 /devices/mock > "$TEST_ROOT/m03.stdout" 2> "$TEST_ROOT/m03.stderr"; then
+        :
+    else
+        fail "M03 healthy guarded backup succeeds: stderr=$(tr '\n' ' ' < "$TEST_ROOT/m03.stderr"); log=$(tr '\n' ' ' < "$RUNTIME/log/backup.log")"
+    fi
     target_root=$(cat "$TEST_ROOT/target-mm")
     assert_contains "mount argc=4 target=[$SOURCE_MOUNT]" "$EFFECTS" 'M03 space mount remained one argument'
-    assert_equal "$(cat "$RSYNC_ARGC")" 17 'M03 rsync received the expected option and operand count'
+    assert_equal "$(cat "$RSYNC_ARGC")" 15 'M03 rsync received the transfer helper option and operand count'
     assert_equal "$(cat "$RSYNC_SOURCE")" "$SOURCE_MOUNT/" \
         'M03 rsync penultimate argv is the complete source-card path'
     assert_matches "^/proc/[0-9]+/fd/9/backups/$CARD_UUID/$" "$RSYNC_TARGET" \
         'M03 rsync final argv is the complete anchored UUID target path'
+    assert_contains 'Backup completed successfully' "$RUNTIME/log/backup.log" \
+        'M03 successful completed status retains the final cleanup success log'
     assert_absent /escaped-by-card-config 'M03 card configuration did not create an escaped root'
     assert_not_contains /escaped-by-card-config "$EFFECTS" 'M03 ignored card BACKUP_ROOT and TARGET overrides'
     assert_equal "$(find "$TARGET_MOUNT/backups" -type d | wc -l)" 3 'M03 created root UUID and logs only on tmpfs'
@@ -544,6 +711,22 @@ case_m03b_invalid_existing_card_fails_without_rewriting_identity() {
     assert_not_contains rsync "$EFFECTS" 'M03b invalid card never reaches rsync'
     assert_equal "$(cat "$SOURCE_MOUNT/FieldBackup.conf")" 'BACKUP_MODE=PRIMARY' \
         'M03b preserves the invalid existing card file'
+}
+
+case_m03c_existing_replica_card_classifies_card_config_not_rsync() {
+    begin_case M03c 'existing replica card classifies ERROR_TYPE as card_config, not the generic rsync failure'
+    reset_case || { fail 'M03c fixture setup failed'; return; }
+    TEST_CARD_CONFIG="SD_UUID=\"$CARD_UUID\"
+BACKUP_MODE=\"REPLICA\""
+    export TEST_CARD_CONFIG
+    printf '%s\n' "$TEST_CARD_CONFIG" > "$SOURCE_MOUNT/FieldBackup.conf"
+    assert_failure 'M03c existing REPLICA card fails manager' run_manager add sda1 /devices/mock
+    unset TEST_CARD_CONFIG
+    assert_equal "$(cat "$TEST_ROOT/red/trigger")" none \
+        'M03c card_config uses the manual-toggle flash pattern, not the generic rsync timer trigger'
+    assert_absent "$RUNTIME/var/status.json" \
+        'M03c guard-stage rejection precedes STATUS_STARTED, so no status.json terminal write occurs'
+    /bin/sleep 1
 }
 
 case_m04_symlink_components_reject_before_target_update() {
@@ -620,6 +803,274 @@ case_m05b_summary_failure_and_post_summary_detach_fail() {
         'M05b post-summary detach does not log completed successfully'
 }
 
+assert_status_jq() {
+    filter=$1
+    message=$2
+    ASSERTIONS=$((ASSERTIONS + 1))
+    jq -e "$filter" "$RUNTIME/var/status.json" >/dev/null 2>&1 || fail "$message"
+}
+
+set_config_value() {
+    name=$1
+    value=$2
+    sed -i "s|^${name}=.*|${name}=${value}|" "$RUNTIME/conf/backup.conf"
+}
+
+case_m07_transfer_failures_preserve_exit_and_classify_evidence() {
+    begin_case M07 'rsync exit and diagnostics drive failed history and evidence-based error LEDs'
+    reset_case || { fail 'M07 fixture setup failed'; return; }
+    TEST_RSYNC_EXIT=23
+    export TEST_RSYNC_EXIT
+    assert_manager_exit 23 'M07 exit 23 survives the manager unchanged' add sda1 /devices/mock
+    unset TEST_RSYNC_EXIT
+    assert_status_jq '.history[0].status == "error" and .history[0].error_message == "rsync"' \
+        'M07 exit 23 without ENOSPC records generic rsync failure'
+    assert_equal "$(cat "$TEST_ROOT/red/trigger")" timer 'M07 generic transfer failure uses generic red LED'
+    assert_equal "$(cat "$TEST_ROOT/green/brightness")" 0 'M07 failed transfer leaves completion LED off'
+
+    reset_case || { fail 'M07 exit12 fixture setup failed'; return; }
+    TEST_RSYNC_EXIT=12
+    export TEST_RSYNC_EXIT
+    assert_manager_exit 12 'M07 exit 12 survives the manager unchanged' add sda1 /devices/mock
+    unset TEST_RSYNC_EXIT
+    assert_status_jq '.history[0].error_message == "rsync"' \
+        'M07 exit 12 without ENOSPC is not mislabeled no_space'
+    assert_equal "$(cat "$TEST_ROOT/red/trigger")" timer 'M07 exit 12 retains generic LED'
+
+    reset_case || { fail 'M07 ENOSPC fixture setup failed'; return; }
+    TEST_RSYNC_EXIT=23
+    TEST_RSYNC_DIAGNOSTIC=ENOSPC
+    export TEST_RSYNC_EXIT TEST_RSYNC_DIAGNOSTIC
+    assert_manager_exit 23 'M07 ENOSPC retains rsync exit 23' add sda1 /devices/mock
+    unset TEST_RSYNC_EXIT TEST_RSYNC_DIAGNOSTIC
+    assert_status_jq '.history[0].error_message == "no_space"' \
+        'M07 ENOSPC produces no_space history classification'
+    assert_equal "$(cat "$TEST_ROOT/red/trigger")" none 'M07 ENOSPC uses no-space LED pattern'
+    assert_equal "$(cat "$TEST_ROOT/green/brightness")" 0 'M07 ENOSPC leaves completion LED off'
+
+    reset_case || { fail 'M07 mutation fixture setup failed'; return; }
+    cp "$SCRIPTS/backup-manager.sh" "$SCRIPTS/backup-manager-mutated.sh"
+    sed -i 's/return "\$transfer_exit"/return 1/' "$SCRIPTS/backup-manager-mutated.sh"
+    MANAGER_SCRIPT="$SCRIPTS/backup-manager-mutated.sh"
+    TEST_RSYNC_EXIT=23
+    export TEST_RSYNC_EXIT
+    assert_manager_exit_rejected 23 \
+        'M07 controlled return-1 mutation would turn the exact exit-23 gate red' \
+        add sda1 /devices/mock
+    unset TEST_RSYNC_EXIT MANAGER_SCRIPT
+}
+
+case_m08_free_space_boundaries_are_strict_and_credible() {
+    begin_case M08 'minimum free-space accepts equality and zero but rejects insufficient or untrustworthy df'
+    reset_case || { fail 'M08 low-space fixture setup failed'; return; }
+    set_config_value MIN_FREE_SPACE 3
+    TEST_DF_MB=2
+    export TEST_DF_MB
+    assert_failure 'M08 free space below configured minimum fails' run_manager add sda1 /devices/mock
+    unset TEST_DF_MB
+    assert_not_contains rsync "$EFFECTS" 'M08 insufficient preflight does not start rsync'
+    assert_equal "$(cat "$TEST_ROOT/red/trigger")" none 'M08 insufficient space uses no-space LED'
+
+    reset_case || { fail 'M08 equality fixture setup failed'; return; }
+    set_config_value MIN_FREE_SPACE 2
+    TEST_DF_MB=2
+    export TEST_DF_MB
+    assert_success 'M08 free space equal to minimum succeeds' run_manager add sda1 /devices/mock
+    unset TEST_DF_MB
+
+    reset_case || { fail 'M08 zero minimum fixture setup failed'; return; }
+    set_config_value MIN_FREE_SPACE 0
+    TEST_DF_MB=0
+    export TEST_DF_MB
+    assert_success 'M08 zero disables only headroom, not df validation' run_manager add sda1 /devices/mock
+    unset TEST_DF_MB
+
+    reset_case || { fail 'M08 invalid minimum fixture setup failed'; return; }
+    set_config_value MIN_FREE_SPACE invalid
+    assert_failure 'M08 invalid minimum is rejected' run_manager add sda1 /devices/mock
+    assert_not_contains rsync "$EFFECTS" 'M08 invalid minimum does not start rsync'
+
+    reset_case || { fail 'M08 overflow minimum fixture setup failed'; return; }
+    set_config_value MIN_FREE_SPACE 2147483648
+    assert_failure 'M08 out-of-range minimum is rejected before shell comparison' run_manager add sda1 /devices/mock
+    assert_not_contains rsync "$EFFECTS" 'M08 out-of-range minimum does not start rsync'
+
+    reset_case || { fail 'M08 unknown df fixture setup failed'; return; }
+    TEST_DF_MB=unknown
+    export TEST_DF_MB
+    assert_failure 'M08 nonnumeric df result is rejected' run_manager add sda1 /devices/mock
+    unset TEST_DF_MB
+    assert_not_contains rsync "$EFFECTS" 'M08 unknown df does not start rsync'
+}
+
+case_m09_terminal_state_never_precedes_final_target_writes() {
+    begin_case M09 'summary and final-target failures cannot publish completed status'
+    reset_case || { fail 'M09 summary fixture setup failed'; return; }
+    TEST_CAT_INJECT=summary-fail
+    export TEST_CAT_INJECT
+    assert_failure 'M09 summary write failure fails manager' run_manager add sda1 /devices/mock
+    unset TEST_CAT_INJECT
+    assert_status_jq '.history[0].status == "error" and .history[0].error_message == "rsync"' \
+        'M09 summary failure records failed status rather than completed'
+    assert_not_contains 'Backup completed successfully' "$RUNTIME/log/backup.log" \
+        'M09 summary failure never signals backup completion'
+
+    reset_case || { fail 'M09 detach fixture setup failed'; return; }
+    TEST_RSYNC_INJECT=detach
+    export TEST_RSYNC_INJECT
+    assert_failure 'M09 target detach after transfer fails manager' run_manager add sda1 /devices/mock
+    unset TEST_RSYNC_INJECT
+    assert_status_jq '.history | all(.status != "completed")' \
+        'M09 detached target never publishes completed history'
+    assert_not_contains 'Backup completed successfully' "$RUNTIME/log/backup.log" \
+        'M09 detached target never signals backup completion'
+
+    reset_case || { fail 'M09 readonly fixture setup failed'; return; }
+    TEST_RSYNC_INJECT=ro
+    export TEST_RSYNC_INJECT
+    assert_failure 'M09 read-only target after transfer fails manager' run_manager add sda1 /devices/mock
+    unset TEST_RSYNC_INJECT
+    assert_status_jq '.history | all(.status != "completed")' \
+        'M09 read-only target never publishes completed history'
+    assert_not_contains 'Backup completed successfully' "$RUNTIME/log/backup.log" \
+        'M09 read-only target never signals backup completion'
+}
+
+case_m10_status_terminal_write_failure_never_signals_success() {
+    begin_case M10 'durable-finalization failures remain failures and never claim backup completion'
+
+    reset_case || { fail 'M10 rename fixture setup failed'; return; }
+    TEST_STATUS_MV_FAIL_ON=2
+    export TEST_STATUS_MV_FAIL_ON
+    assert_manager_nonzero 'M10 second atomic status rename fails manager' add sda1 /devices/mock
+    unset TEST_STATUS_MV_FAIL_ON
+    assert_contains rsync "$EFFECTS" 'M10 rename failure reaches terminal status publication'
+    assert_status_jq '.history[0].status == "error" and .history[0].error_message == "rsync"' \
+        'M10 rename cleanup records failed terminal state'
+    assert_equal "$(cat "$TEST_ROOT/green/brightness")" 0 'M10 rename failure leaves completion LED off'
+    assert_equal "$(cat "$TEST_ROOT/red/trigger")" timer 'M10 rename failure signals error LED'
+    assert_not_contains 'Backup completed' "$RUNTIME/log/backup.log" \
+        'M10 rename failure has no application completion claim'
+    target_log=''
+    for candidate_log in "$TARGET_MOUNT/backups/.logs/"*; do
+        if [ -f "$candidate_log" ]; then
+            target_log=$candidate_log
+            break
+        fi
+    done
+    assert_success 'M10 rename failure leaves transfer log for inspection' test -n "$target_log"
+    assert_not_contains 'Completed:' "$target_log" 'M10 rename failure target log has no overall completion marker'
+
+    reset_case || { fail 'M10 summary fixture setup failed'; return; }
+    TEST_CAT_INJECT=summary-fail
+    export TEST_CAT_INJECT
+    assert_manager_nonzero 'M10 summary write failure fails manager' add sda1 /devices/mock
+    unset TEST_CAT_INJECT
+    assert_status_jq '.history[0].status == "error" and .history[0].error_message == "rsync"' \
+        'M10 summary failure records failed terminal state'
+    assert_equal "$(cat "$TEST_ROOT/green/brightness")" 0 'M10 summary failure leaves completion LED off'
+    assert_equal "$(cat "$TEST_ROOT/red/trigger")" timer 'M10 summary failure signals error LED'
+    assert_not_contains 'Backup completed' "$RUNTIME/log/backup.log" \
+        'M10 summary failure has no application completion claim'
+    target_log=''
+    for candidate_log in "$TARGET_MOUNT/backups/.logs/"*; do
+        if [ -f "$candidate_log" ]; then
+            target_log=$candidate_log
+            break
+        fi
+    done
+    assert_success 'M10 summary failure leaves target log for inspection' test -n "$target_log"
+    assert_not_contains 'Completed:' "$target_log" 'M10 summary failure target log has no overall completion marker'
+
+    reset_case || { fail 'M10 final verification fixture setup failed'; return; }
+    TEST_CAT_INJECT=summary-verify-fail
+    export TEST_CAT_INJECT
+    assert_manager_nonzero 'M10 final target verification failure fails manager' add sda1 /devices/mock
+    unset TEST_CAT_INJECT
+    assert_status_jq '.history[0].status == "error" and .history[0].error_message == "verify_failed"' \
+        'M10 final target verification records failed terminal state'
+    assert_equal "$(cat "$TEST_ROOT/green/brightness")" 0 'M10 final verification failure leaves completion LED off'
+    assert_equal "$(cat "$TEST_ROOT/red/trigger")" none 'M10 final verification failure uses its configured error LED pattern'
+    assert_not_contains 'Backup completed' "$RUNTIME/log/backup.log" \
+        'M10 final verification failure has no application completion claim'
+    target_log=''
+    for candidate_log in "$TARGET_MOUNT/backups/.logs/"*; do
+        if [ -f "$candidate_log" ]; then
+            target_log=$candidate_log
+            break
+        fi
+    done
+    assert_success 'M10 final verification failure leaves transfer log for inspection' test -n "$target_log"
+    assert_not_contains 'Completed:' "$target_log" 'M10 final verification target log has no overall completion marker'
+}
+
+case_m11_status_stats_are_real_and_paths_are_stable() {
+    begin_case M11 'successful transfer uses helper statistics and never serializes an FD path'
+    reset_case || { fail 'M11 fixture setup failed'; return; }
+    TEST_RSYNC_STATS=1
+    TEST_TIMER_CONTROLLED=1
+    TEST_TIMER_DURATION=30
+    export TEST_RSYNC_STATS TEST_TIMER_CONTROLLED TEST_TIMER_DURATION
+    assert_success 'M11 transfer with helper stats succeeds' run_manager add sda1 /devices/mock
+    unset TEST_RSYNC_STATS
+    assert_status_jq '.history[0].status == "completed" and .history[0].files_count == 7 and
+        .history[0].bytes_total == 1234 and (.history[0].backup_path | startswith("/proc/") | not) and
+        (.storage.root | startswith("/proc/") | not)' \
+        'M11 JSON reports helper stats and stable user-visible paths'
+    assert_contains 'df -m /proc/' "$EFFECTS" 'M11 free-space check probes anchored FD path'
+    assert_not_contains 'du ' "$EFFECTS" 'M11 manager never scans source with du'
+    assert_success 'M11 completion timer reaches controlled wait' wait_for_path "$TEST_ROOT/timer-ready"
+    assert_success 'M11 completion timer remains alive until release' kill -0 "$(cat "$TEST_ROOT/timer-pid")"
+    assert_success 'M11 completed LED timer cannot retain target FD' /bin/umount "$TARGET_MOUNT"
+    : > "$TEST_ROOT/timer-release"
+    assert_success 'M11 completion timer exits after fixture release' wait_for_timer_exit
+    unset TEST_TIMER_CONTROLLED TEST_TIMER_DURATION
+}
+
+run_replay_probe_with_timeout() {
+    probe_stderr=$1
+    probe_output=$2
+    (
+        exec env TEST_CAPTURED_STDERR=1 TEST_ASYNC_STDERR="$probe_stderr" \
+            /bin/ash "$0" --inside --stderr-replay-probe
+    ) 3> "$probe_output" &
+    probe_pid=$!
+    probe_seconds=0
+    while kill -0 "$probe_pid" 2>/dev/null; do
+        if [ "$probe_seconds" -eq 3 ]; then
+            # This PID is the exec'd test-only ash process in this container.
+            # Never use name-based process control for this safety boundary.
+            kill "$probe_pid" 2>/dev/null || :
+            wait "$probe_pid" 2>/dev/null || :
+            return 124
+        fi
+        /bin/sleep 1
+        probe_seconds=$((probe_seconds + 1))
+    done
+    wait "$probe_pid"
+    probe_wait_exit=$?
+    return "$probe_wait_exit"
+}
+
+case_stderr_replay_self_check() {
+    begin_case M12 'test stderr replay preserves the failure sentinel without self-copying'
+    probe_stderr="$TEST_ROOT/replay-probe.stderr"
+    probe_output="$TEST_ROOT/replay-probe.output"
+
+    # The dedicated helper bounds only its exec'd test child in the existing
+    # pinned OpenWrt container; it cannot kill unrelated fixture processes.
+    if run_replay_probe_with_timeout "$probe_stderr" "$probe_output"; then
+        probe_exit=0
+    else
+        probe_exit=$?
+    fi
+    assert_equal "$probe_exit" 1 'M12 injected replay failure ends with its expected nonzero status'
+    assert_contains 'ASYNC-REPLAY-SENTINEL-7f1c6d9e' "$probe_output" \
+        'M12 replay forwards the unique stderr sentinel to the original sink'
+    assert_equal "$(wc -l < "$probe_output")" 2 \
+        'M12 replay output remains bounded instead of self-copying'
+}
+
 case_m06_remove_ignores_unmounted_target() {
     begin_case M06 'remove retains cleanup path without opening or requiring target mount'
     reset_case || { fail 'M06 fixture setup failed'; return; }
@@ -629,7 +1080,7 @@ case_m06_remove_ignores_unmounted_target() {
 }
 
 main() {
-    trap 'unmount_target; rm -rf "$TEST_ROOT" /opt/outdoor-backup/conf' EXIT INT TERM
+    trap 'settle_led_fixture; unmount_target; rm -rf "$TEST_ROOT" /opt/outdoor-backup/conf "$ASYNC_STDERR"' EXIT INT TERM
     case_m01_unconfigured_uuid_stops_before_common_side_effects
     case_m01b_missing_led_keeps_guard_failure_and_error_syslog
     case_m01c_debug_guard_failure_does_not_create_application_log
@@ -641,16 +1092,26 @@ main() {
     case_m03_healthy_path_uses_only_fd_anchored_target
     case_m03a_existing_replica_card_rejects_reverse_rsync_and_preserves_card_files
     case_m03b_invalid_existing_card_fails_without_rewriting_identity
+    case_m03c_existing_replica_card_classifies_card_config_not_rsync
     case_m04_symlink_components_reject_before_target_update
     case_m05_detach_or_readonly_during_rsync_fails_without_naked_writes
     case_m05b_summary_failure_and_post_summary_detach_fail
+    case_m07_transfer_failures_preserve_exit_and_classify_evidence
+    case_m08_free_space_boundaries_are_strict_and_credible
+    case_m09_terminal_state_never_precedes_final_target_writes
+    case_m10_status_terminal_write_failure_never_signals_success
+    case_m11_status_stats_are_real_and_paths_are_stable
+    case_stderr_replay_self_check
     case_m06_remove_ignores_unmounted_target
-    assert_equal "$CASES" 15 'all required cases executed'
-    if [ "$ASSERTIONS" -ne 141 ]; then
-        fail "all required assertions executed (expected=141, actual=$ASSERTIONS)"
+    assert_success 'M06 completion timer releases before test exit' settle_led_fixture
+    assert_no_async_led_stderr
+    assert_equal "$CASES" 22 'all required cases executed'
+    if [ "$ASSERTIONS" -ne 212 ]; then
+        fail "all required assertions executed (expected=212, actual=$ASSERTIONS)"
     fi
     if [ "$FAILED" -ne 0 ]; then
-        printf 'cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"
+        replay_async_stderr
+        printf 'cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED" >&3
         exit 1
     fi
     printf 'cases=%s assertions=%s failed=0\n' "$CASES" "$ASSERTIONS"

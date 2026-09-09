@@ -22,12 +22,12 @@
     "name": "Canon_5D4_Card1",
     "device": "sda1",
     "started_at": 1728825000,
-    "progress_percent": 45,
-    "files_total": 1200,
-    "files_done": 540,
-    "bytes_total": 52428800000,
-    "bytes_done": 23592960000,
-    "speed_bytes_per_sec": 157286400
+    "progress_percent": 0,
+    "files_total": 0,
+    "files_done": 0,
+    "bytes_total": 0,
+    "bytes_done": 0,
+    "speed_bytes_per_sec": 0
   },
   "history": [
     {
@@ -37,7 +37,7 @@
       "status": "completed",
       "files_count": 1200,
       "bytes_total": 52428800000,
-      "backup_path": "/mnt/ssd/SDMirrors/550e8400-...",
+      "backup_path": "/mnt/ssd/SDMirrors/550e8400-e29b-41d4-a716-446655440000",
       "error_message": null
     }
   ]
@@ -45,6 +45,10 @@
 ```
 
 **说明**：
+- `status.sh` 使用 `jq` 同目录临时文件和重命名原子替换这一个快照；不存在 `history.jsonl` 或手写 JSON 的第二状态源。
+- `current_backup` 仅在 running 状态存在。其进度、文件数、字节数和速率字段为 `0`，表示运行时未知，不是实时计量值。
+- `storage.root` 和 `backup_path` 是稳定的规范显示路径。空间计数通过活跃目标 FD 上的 `df` 取得。
+- history 对 UUID 去重，最新终态在前，最多保留 20 项。
 - `name` 字段由 `get_display_name()` 函数生成，优先使用别名
 
 ### 2. 别名映射文件（aliases.json）
@@ -99,12 +103,15 @@
 
 ### 状态更新时机
 
-backup-manager.sh 在以下时机更新状态文件：
+管理器在目标守卫成功后显式 source `status.sh`。模块本身不安装 trap，也不改变 disabled 或初始 guard 阶段的资源约束。
 
-1. **备份开始时**：写入 `current_backup` 基本信息
-2. **进度更新时**：每传输 10% 或每 60 秒更新一次
-3. **备份完成时**：清空 `current_backup`，追加到 `history`
-4. **备份失败时**：记录错误到 `history`
+1. **备份开始时**：管理器写入 `current_backup` 的 running 快照。进度字段均为未知的 `0`。
+2. **备份完成时**：rsync 返回 `0`、摘要写入成功、最终目标锚点健康且身份复验成功后，管理器清空 `current_backup` 并把真实 `--stats` 计数作为 completed 终态写入 history。
+3. **备份失败时**：管理器尽力写入 failed 终态。终态写入失败本身使调用失败，不能显示完成。
+
+现有 LuCI 页面可周期性读取 status.json。该读取频率不表示管理器写入实时百分比、速率或 ETA。
+
+> **实现边界**：本文件后续的界面草图、伪代码、工期和待办记录是历史设计材料，不是当前实现契约。PR9 的运行时状态事实以 [`status.sh`](../files/opt/outdoor-backup/scripts/status.sh)、[`backup-manager.sh`](../files/opt/outdoor-backup/scripts/backup-manager.sh) 和现有 LuCI 源码为准；它们不从 `history.jsonl` 读取状态，也不以手写 JSON 或 `awk`/`grep` 编辑状态快照。
 
 ## UI 界面设计
 

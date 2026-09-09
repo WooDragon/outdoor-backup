@@ -13,6 +13,7 @@
 - **硬件平台**: ARM/MIPS 路由器，需内置存储（SSD/HDD/eMMC）
 - **Shell**: POSIX 兼容 Shell (ash)
 - **备份引擎**: rsync 3.x
+- **状态序列化**: jq
 - **触发机制**: hotplug.d 事件系统
 - **状态指示**: LED 控制接口（/sys/class/leds/）
 - **包格式**: OpenWrt IPK
@@ -179,8 +180,10 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 ### 数据安全
 - **目标身份守卫**：`add` 先验证目标 UUID、精确挂载和源卡、系统盘、目标盘三者的物理盘分离。
 - **FD 锚定**：管理器通过 `/proc/<manager-pid>/fd/9` 使用已验证目标，目标卸载、替换或转为只读均不应视为成功。
-- **增量备份**：`rsync --ignore-existing` 不覆盖已有文件。
-- **错误恢复**：信号处理确保清理；`remove` 不依赖目标存储在场。
+- **增量备份**：传输模块应直接调用 `rsync` 并保留真实退出码。它应使用 `--partial`，不应使用 `--ignore-existing`、`--append`、`--append-verify` 或 `--delete`。rsync 的 size/mtime quick check 不保证发现值相同的内容变化。
+- **状态单一来源**：`status.sh` 应使用 `jq` 原子替换唯一的 `status.json` 快照。它不得创建 `history.jsonl` 或手写 JSON。状态仅在守卫建立后写入，且只有 rsync、摘要写入、最终锚点健康和设备身份复验均成功时才可写 `completed`。
+- **空间守卫**：管理器应通过已锚定目标 FD 执行 `df`，而非扫描备份树计算空间。`MIN_FREE_SPACE` 的默认值为 1024 MB；合法非负整数 `0` 禁用余量，未知 `df` 值必须失败关闭。只有明确 ENOSPC 诊断可把 rsync 失败归类为满盘。
+- **错误恢复**：信号处理确保清理；`remove` 不依赖目标存储在场。清理应先释放 FD，再启动 LED 定时器。旧 PID 锁与广泛 `pkill` 的限制由 #8/PR10 和 #16 跟踪。
 
 ### 路径安全
 - **目录遍历防护**: `is_safe_path()` 检查 `../`
@@ -273,7 +276,7 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 **luci-app-outdoor-backup** - LuCI 网页管理界面
 
 ### 核心功能
-- ✅ **实时状态监控**：进度条、文件数、速度、ETA
+- ✅ **状态快照监控**：运行状态、已锚定目标的空间计数和完成后的 rsync 统计；不提供实时进度、速度或 ETA
 - ✅ **别名管理系统**：解决 UUID 可读性问题
 - ✅ **批量清理功能**：多重确认机制，防止误删
 - ✅ **日志查看**：过滤、高亮、下载

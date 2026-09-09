@@ -16,6 +16,7 @@
   - block-mount
   - kmod-usb-storage
   - rsync
+  - jq
   - kmod-fs-ext4
   - kmod-fs-exfat（可选）
   - kmod-fs-ntfs3（可选）
@@ -55,7 +56,7 @@ opkg update
 
 ```bash
 # 核心包
-opkg install block-mount kmod-usb-storage rsync
+opkg install block-mount kmod-usb-storage rsync jq
 
 # 文件系统支持
 opkg install kmod-fs-ext4 kmod-fs-vfat
@@ -216,8 +217,8 @@ ls -la /mnt/ssd/SDMirrors/.logs/
 ### 5.3 查看备份统计
 
 ```bash
-# 统计所有备份大小
-du -sh /mnt/ssd/SDMirrors/*/
+# 查看运行时状态快照（current_backup、storage 和 history）
+jq . /opt/outdoor-backup/var/status.json
 
 # 查看最近备份
 ls -lt /mnt/ssd/SDMirrors/.logs/ | head -10
@@ -436,7 +437,7 @@ A: 支持FAT32、exFAT、NTFS、ext4等常见格式。
 A: 默认不支持，可通过修改MAX_CONCURRENT配置启用。
 
 **Q: 备份会删除已有文件吗？**
-A: 不会，使用增量备份，只添加新文件。
+A: 不会。传输不使用 `--delete`，并按 rsync 的 size/mtime quick check 更新不同的文件；它不保证发现 size 和 mtime 均相同的内容变化。
 
 **Q: 如何从备份恢复到SD卡？**
 A: 自动备份不执行恢复，也不要通过设置 `REPLICA` 触发恢复；请按本指南“恢复数据”说明人工操作。
