@@ -232,11 +232,23 @@ release_lock() {
 	log_info 'Lock released'
 }
 
-# Mount the source card. Args: none. Returns nonzero when no supported FS mounts.
+# Mount the source card. Args: $1 mode, exactly "ro" or "rw" (no default: a
+# missing mode is a caller bug and must fail loud, not silently pick one).
+# Returns nonzero when no supported FS mounts. umount+mount (never remount) is
+# used everywhere this is paired with an unmount: the fs types this loop tries
+# do not all support remount uniformly, so a clean unmount/mount cycle is the
+# only deterministic way to flip access mode across every one of them.
 mount_sdcard() {
+	case "$1" in
+		ro|rw) ;;
+		*)
+			log_error "mount_sdcard requires an explicit ro or rw mode, got '$1'"
+			return 1
+			;;
+	esac
 	mkdir -p "$MOUNT_POINT"
 	for fs in auto exfat ntfs3 ext4 ext3 ext2 vfat; do
-		if mount -t "$fs" "/dev/$DEVNAME" "$MOUNT_POINT" 2>/dev/null; then
+		if mount -t "$fs" -o "$1" "/dev/$DEVNAME" "$MOUNT_POINT" 2>/dev/null; then
 			log_info "Mounted $DEVNAME as $fs"
 			return 0
 		fi
@@ -246,6 +258,9 @@ mount_sdcard() {
 }
 
 # Setup card metadata without executing removable-media content. Args: none.
+# Steady state (config already present) never remounts or writes; only a
+# missing config opens a bounded read-write window, and that window always
+# ends back at a read-only source mount before rsync ever runs.
 setup_sdcard_config() {
 	config_path="$MOUNT_POINT/$CONFIG_FILE"
 	. "$SCRIPT_DIR/card-config.sh"
@@ -260,13 +275,17 @@ setup_sdcard_config() {
 		fi
 		log_info "Loaded config for SD: $SD_NAME ($SD_UUID)"
 	else
-		if ! touch "$config_path" 2>/dev/null; then
-			log_error 'SD card is read-only, cannot create config'
+		if ! umount "$MOUNT_POINT" 2>/dev/null; then
+			log_error 'Failed to release read-only source mount to create card configuration'
+			return 1
+		fi
+		if ! mount_sdcard rw; then
+			log_error 'Source card cannot be mounted read-write; it may be write-protected'
 			return 1
 		fi
 		SD_UUID=$(generate_uuid)
 		BACKUP_MODE=PRIMARY
-		cat > "$config_path" <<EOF
+		if ! cat > "$config_path" <<EOF
 # OpenWrt SD Card Backup Configuration
 # Generated: $(date '+%Y-%m-%d %H:%M:%S')
 
@@ -279,6 +298,23 @@ BACKUP_MODE="$BACKUP_MODE"
 # Creation timestamp
 CREATED_AT="$(date '+%Y-%m-%d %H:%M:%S')"
 EOF
+		then
+			log_error 'Failed to write new card configuration'
+			return 1
+		fi
+		sync
+		if ! umount "$MOUNT_POINT" 2>/dev/null; then
+			log_error 'Failed to unmount source card after writing card configuration'
+			return 1
+		fi
+		if ! mount_sdcard ro; then
+			log_error 'Failed to restore read-only source mount after creating card configuration'
+			return 1
+		fi
+		# Validate only after the source is back to read-only: this both proves
+		# the write actually reached the card (not an overlay/tmpfs view that a
+		# still-writable mount could mask) and guarantees rsync never runs
+		# against a writable source, whatever card_config_load decides below.
 		if ! card_config_load "$config_path"; then
 			log_error 'Generated card configuration failed validation'
 			return 1
@@ -425,7 +461,7 @@ main() {
 				ERROR_TYPE=lock_timeout
 				exit 1
 			fi
-			if ! mount_sdcard; then
+			if ! mount_sdcard ro; then
 				ERROR_TYPE=device_unknown
 				exit 1
 			fi

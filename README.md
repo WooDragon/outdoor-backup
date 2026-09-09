@@ -65,7 +65,7 @@ ssh root@router "opkg install /tmp/outdoor-backup_*.ipk"
 
 Configure and mount the target storage before inserting an SD card. The manager does not format, mount, or select a target disk automatically. Follow [Configure target storage](#configure-target-storage) first.
 
-1. **Insert an SD card**. After the target guard accepts the configured target, the system detects the card through hotplug, creates `FieldBackup.conf` when necessary, starts the backup, and shows LED status.
+1. **Insert an SD card**. After the target guard accepts the configured target, the system detects the card through hotplug, mounts it read-only, creates `FieldBackup.conf` in a bounded read-write window when the card does not already have one, starts the backup, and shows LED status.
 
 2. **Monitor progress**:
    ```bash
@@ -202,7 +202,13 @@ Edit `/opt/outdoor-backup/conf/backup.conf` only when a legacy value should appl
 
 ### Per-SD Card Configuration
 
-When a writable card has no configuration, the manager creates `{SD_ROOT}/FieldBackup.conf` with a new UUID and `PRIMARY` mode. The manager reads an existing file as data. It never `source`s or `eval`s the file.
+The source card is mounted read-only. `rsync` always reads from a read-only mount, so the steady state has no way to write to the card at all.
+
+The one exception is bounded and explicit. When a card carries no `FieldBackup.conf`, the manager unmounts it, remounts it read-write, writes the file with a new UUID and `PRIMARY` mode, unmounts it again, and remounts it read-only before doing anything else. The card configuration is validated only after that read-only remount, which also proves the write reached the card rather than a still-writable view of it. If the read-write mount fails, the card is treated as write-protected and the run fails without creating a file. If the read-only remount cannot be restored, the run fails as well: `rsync` never runs against a source that could not be proven read-only again. Every one of those failures is classified as a card-configuration error.
+
+`remount` is never used for this; each transition is a full unmount and mount, because the filesystem types the manager tries do not all support `remount` uniformly.
+
+The manager reads an existing file as data. It never `source`s or `eval`s the file.
 
 ```bash
 # Automatically generated on first insertion

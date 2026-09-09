@@ -373,13 +373,35 @@ printf '%s: UUID="A1B2-C3D4" TYPE="tmpfs"\n' "$TARGET_TEST_BLOCK_NODE"
 EOF
     cat > "$BIN/mount" <<'EOF'
 #!/bin/sh
-printf 'mount argc=%s target=[%s]\n' "$#" "$4" >> "$TEST_EFFECTS"
-mkdir -p "$4"
-if [ ! -e "$4/FieldBackup.conf" ]; then
+# The mountpoint is always the final positional operand no matter how many
+# -t/-o option pairs precede it, so scan for it instead of hardcoding a
+# position (mirrors the rsync stub's own source/target extraction below) --
+# this stays correct across argv shape changes such as adding "-o <mode>".
+mount_prev=''
+mount_target=''
+mount_mode='none'
+mount_fstype='none'
+for value in "$@"; do
+    if [ "$mount_prev" = '-o' ]; then
+        mount_mode=$value
+    fi
+    if [ "$mount_prev" = '-t' ]; then
+        mount_fstype=$value
+    fi
+    mount_target=$value
+    mount_prev=$value
+done
+printf 'mount mode=%s target=[%s]\n' "$mount_mode" "$mount_target" >> "$TEST_EFFECTS"
+mkdir -p "$mount_target"
+# Auto-creating a card config file is opt-in only: a case that wants a
+# pre-existing config must ask for it explicitly (or write it directly, as
+# the replica/invalid-card cases do), so a case that says nothing sees a
+# genuinely blank card and exercises the manager's own first-write path.
+if [ -n "${TEST_MOUNT_AUTO_CARD:-}" ] && [ ! -e "$mount_target/FieldBackup.conf" ]; then
     if [ -n "${TEST_CARD_CONFIG:-}" ]; then
-        printf '%s\n' "$TEST_CARD_CONFIG" > "$4/FieldBackup.conf"
+        printf '%s\n' "$TEST_CARD_CONFIG" > "$mount_target/FieldBackup.conf"
     else
-        cat > "$4/FieldBackup.conf" <<'CARD'
+        cat > "$mount_target/FieldBackup.conf" <<'CARD'
 SD_UUID="550e8400-e29b-41d4-a716-446655440000"
 BACKUP_MODE="PRIMARY"
 BACKUP_ROOT="/escaped-by-card-config"
@@ -392,9 +414,51 @@ IFS="attacker"
 CARD
     fi
 fi
-if [ -n "${TEST_SOURCE_SENTINEL:-}" ] && [ ! -e "$4/source-sentinel" ]; then
-    printf '%s\n' "$TEST_SOURCE_SENTINEL" > "$4/source-sentinel"
+if [ -n "${TEST_SOURCE_SENTINEL:-}" ] && [ ! -e "$mount_target/source-sentinel" ]; then
+    printf '%s\n' "$TEST_SOURCE_SENTINEL" > "$mount_target/source-sentinel"
 fi
+if [ "$mount_mode" = rw ] && [ "${TEST_MOUNT_RW_FAILS:-0}" = 1 ]; then
+    exit 1
+fi
+if [ "$mount_mode" = ro ] && [ -n "${TEST_MOUNT_RO_COUNT:-}" ]; then
+    # mount_sdcard() retries multiple fs types on failure, so a naive "count
+    # every stub call" counter double-counts a deliberately failing logical
+    # invocation as soon as production retries the next fs type. "-t auto" is
+    # always the first fs type mount_sdcard() tries for any one invocation, so
+    # only it advances the counter and decides pass/fail; every later fs-type
+    # retry within that same invocation (fstype != auto) replays that same
+    # decision from a sidecar file instead of drawing a fresh one.
+    decision_file="$TEST_MOUNT_RO_COUNT.decision"
+    if [ "$mount_fstype" = auto ]; then
+        ro_count=0
+        [ -r "$TEST_MOUNT_RO_COUNT" ] && ro_count=$(cat "$TEST_MOUNT_RO_COUNT")
+        ro_count=$((ro_count + 1))
+        printf '%s\n' "$ro_count" > "$TEST_MOUNT_RO_COUNT"
+        if [ "$ro_count" = "${TEST_MOUNT_RO_FAIL_ON:-0}" ]; then
+            printf '1\n' > "$decision_file"
+        else
+            printf '0\n' > "$decision_file"
+        fi
+    fi
+    if [ -r "$decision_file" ] && [ "$(cat "$decision_file")" = 1 ]; then
+        exit 1
+    fi
+fi
+exit 0
+EOF
+    cat > "$BIN/umount" <<'EOF'
+#!/bin/sh
+# Skip leading option flags (e.g. a future "-l"); the mountpoint is whatever
+# positional operand remains, same convention as the mount stub above.
+umount_target=''
+for value in "$@"; do
+    case $value in
+        -*) ;;
+        *) umount_target=$value ;;
+    esac
+done
+printf 'umount target=[%s]\n' "$umount_target" >> "$TEST_EFFECTS"
+exit 0
 EOF
     cat > "$BIN/mountpoint" <<'EOF'
 #!/bin/sh
@@ -530,6 +594,10 @@ run_manager() {
         TEST_STATUS_MV_COUNT="$TEST_ROOT/status-mv-count" \
         TEST_STATUS_MV_FAIL="${TEST_STATUS_MV_FAIL:-0}" \
         TEST_STATUS_MV_FAIL_ON="${TEST_STATUS_MV_FAIL_ON:-0}" \
+        TEST_MOUNT_AUTO_CARD="${TEST_MOUNT_AUTO_CARD:-}" \
+        TEST_MOUNT_RW_FAILS="${TEST_MOUNT_RW_FAILS:-0}" \
+        TEST_MOUNT_RO_FAIL_ON="${TEST_MOUNT_RO_FAIL_ON:-0}" \
+        TEST_MOUNT_RO_COUNT="$TEST_ROOT/mount-ro-count" \
         DEBUG="${DEBUG:-0}" PATH="$BIN:$PATH" \
         /bin/ash "${MANAGER_SCRIPT:-$SCRIPTS/backup-manager.sh}" "$@"
 }
@@ -670,14 +738,22 @@ case_m02c_same_source_or_system_disk_stops_before_common() {
 case_m03_healthy_path_uses_only_fd_anchored_target() {
     begin_case M03 'successful primary backup ignores card BACKUP_ROOT and TARGET overrides'
     reset_case || { fail 'M03 fixture setup failed'; return; }
+    # This case is about rsync/backup mechanics on an already-provisioned card,
+    # not about setup_sdcard_config's first-write path (covered by dedicated
+    # cases below), so it opts the fixture back into a pre-existing, fixed-UUID
+    # card config -- matching what the manager sees in the field on every run
+    # after the very first.
+    TEST_MOUNT_AUTO_CARD=1
+    export TEST_MOUNT_AUTO_CARD
     ASSERTIONS=$((ASSERTIONS + 1))
     if run_manager add sda1 /devices/mock > "$TEST_ROOT/m03.stdout" 2> "$TEST_ROOT/m03.stderr"; then
         :
     else
         fail "M03 healthy guarded backup succeeds: stderr=$(tr '\n' ' ' < "$TEST_ROOT/m03.stderr"); log=$(tr '\n' ' ' < "$RUNTIME/log/backup.log")"
     fi
+    unset TEST_MOUNT_AUTO_CARD
     target_root=$(cat "$TEST_ROOT/target-mm")
-    assert_contains "mount argc=4 target=[$SOURCE_MOUNT]" "$EFFECTS" 'M03 space mount remained one argument'
+    assert_contains "mount mode=ro target=[$SOURCE_MOUNT]" "$EFFECTS" 'M03 source mount stayed read-only and used a single mount call'
     assert_equal "$(cat "$RSYNC_ARGC")" 15 'M03 rsync received the transfer helper option and operand count'
     assert_equal "$(cat "$RSYNC_SOURCE")" "$SOURCE_MOUNT/" \
         'M03 rsync penultimate argv is the complete source-card path'
@@ -724,9 +800,10 @@ case_m03b_invalid_existing_card_fails_without_rewriting_identity() {
     begin_case M03b 'invalid existing card config fails without rsync or replacement identity'
     reset_case || { fail 'M03b fixture setup failed'; return; }
     TEST_CARD_CONFIG='BACKUP_MODE=PRIMARY'
-    export TEST_CARD_CONFIG
+    TEST_MOUNT_AUTO_CARD=1
+    export TEST_CARD_CONFIG TEST_MOUNT_AUTO_CARD
     assert_failure 'M03b missing card UUID fails manager' run_manager add sda1 /devices/mock
-    unset TEST_CARD_CONFIG
+    unset TEST_CARD_CONFIG TEST_MOUNT_AUTO_CARD
     assert_not_contains rsync "$EFFECTS" 'M03b invalid card never reaches rsync'
     assert_equal "$(cat "$SOURCE_MOUNT/FieldBackup.conf")" 'BACKUP_MODE=PRIMARY' \
         'M03b preserves the invalid existing card file'
@@ -754,15 +831,21 @@ case_m04_symlink_components_reject_before_target_update() {
     mkdir -p "$TARGET_MOUNT/outside"
     ln -s "$TARGET_MOUNT/outside" "$TARGET_MOUNT/backups"
     assert_failure 'M04 root symlink rejects' run_manager add sda1 /devices/mock
-    assert_not_contains 'mount argc=' "$EFFECTS" 'M04 root symlink did not source mount'
+    assert_not_contains 'mount mode=' "$EFFECTS" 'M04 root symlink did not source mount'
     # Let the fixture's capped LED auto-off finish before the next reset.
     /bin/sleep 1
 
     reset_case || { fail 'M04 UUID fixture setup failed'; return; }
     mkdir -p "$TARGET_MOUNT/backups/outside"
     ln -s "$TARGET_MOUNT/backups/outside" "$TARGET_MOUNT/backups/$CARD_UUID"
+    # The planted symlink's name is the fixed CARD_UUID, so the card config
+    # must resolve to that same UUID for the escape attempt to actually be
+    # exercised -- otherwise a freshly generated random UUID sails past it.
+    TEST_MOUNT_AUTO_CARD=1
+    export TEST_MOUNT_AUTO_CARD
     assert_failure 'M04 UUID symlink rejects' run_manager add sda1 /devices/mock
-    assert_contains "mount argc=4 target=[$SOURCE_MOUNT]" "$EFFECTS" \
+    unset TEST_MOUNT_AUTO_CARD
+    assert_contains "mount mode=ro target=[$SOURCE_MOUNT]" "$EFFECTS" \
         'M04 UUID rejection did not reach the controlled source mount'
     ASSERTIONS=$((ASSERTIONS + 1))
     if grep -F -q rsync "$EFFECTS"; then
@@ -773,12 +856,92 @@ case_m04_symlink_components_reject_before_target_update() {
     mkdir -p "$TARGET_MOUNT/backups/outside"
     ln -s "$TARGET_MOUNT/backups/outside" "$TARGET_MOUNT/backups/.logs"
     assert_failure 'M04 logs symlink rejects' run_manager add sda1 /devices/mock
-    assert_contains "mount argc=4 target=[$SOURCE_MOUNT]" "$EFFECTS" \
+    assert_contains "mount mode=ro target=[$SOURCE_MOUNT]" "$EFFECTS" \
         'M04 logs rejection did not reach the controlled source mount'
     ASSERTIONS=$((ASSERTIONS + 1))
     if grep -F -q rsync "$EFFECTS"; then
         fail 'M04 logs symlink reached rsync'
     fi
+}
+
+# Reduce $EFFECTS to just its ordered mount/umount events, e.g. "ro,umount,rw".
+mount_effect_sequence() {
+    grep -E '^(mount mode=|umount target=)' "$EFFECTS" \
+        | sed -E 's/^mount mode=([a-z]+).*/\1/; s/^umount target=.*/umount/' \
+        | tr '\n' ',' \
+        | sed 's/,$//'
+}
+
+case_m13_steady_state_source_stays_read_only() {
+    begin_case M13 'a card with an existing config is mounted read-only and never remounted read-write'
+    reset_case || { fail 'M13 fixture setup failed'; return; }
+    printf 'SD_UUID="%s"\nBACKUP_MODE="PRIMARY"\n' "$CARD_UUID" > "$SOURCE_MOUNT/FieldBackup.conf"
+    config_hash_before=$(sha256sum "$SOURCE_MOUNT/FieldBackup.conf" | awk '{print $1}')
+    assert_success 'M13 steady-state backup with a pre-existing card config succeeds' \
+        run_manager add sda1 /devices/mock
+    assert_equal "$(mount_effect_sequence)" ro 'M13 steady state performs exactly one read-only source mount'
+    assert_not_contains 'mount mode=rw' "$EFFECTS" 'M13 steady state never opens a read-write source mount'
+    assert_equal "$(sha256sum "$SOURCE_MOUNT/FieldBackup.conf" | awk '{print $1}')" "$config_hash_before" \
+        'M13 steady state never rewrites the existing card configuration bytes'
+}
+
+case_m14_first_write_bounded_mount_sequence() {
+    begin_case M14 'a blank card opens exactly one bounded read-write window bracketed by read-only mounts'
+    reset_case || { fail 'M14 fixture setup failed'; return; }
+    assert_absent "$SOURCE_MOUNT/FieldBackup.conf" 'M14 fixture starts with a genuinely blank card'
+    assert_success 'M14 first-write provisioning succeeds' run_manager add sda1 /devices/mock
+    assert_equal "$(mount_effect_sequence)" ro,umount,rw,umount,ro \
+        'M14 mount sequence is exactly ro-mount, umount, rw-mount, umount, ro-mount'
+    assert_success 'M14 card configuration exists after provisioning' test -f "$SOURCE_MOUNT/FieldBackup.conf"
+    last_mount_mode=$(grep '^mount mode=' "$EFFECTS" | tail -n 1 | sed -E 's/^mount mode=([a-z]+).*/\1/')
+    assert_equal "$last_mount_mode" ro 'M14 the final source mount is read-only before rsync runs'
+}
+
+case_m15_write_protected_card_rejects_without_config() {
+    begin_case M15 'a write-protected card fails cleanly without creating a config or starting rsync'
+    reset_case || { fail 'M15 fixture setup failed'; return; }
+    TEST_MOUNT_RW_FAILS=1
+    export TEST_MOUNT_RW_FAILS
+    assert_failure 'M15 write-protected card fails the manager' run_manager add sda1 /devices/mock
+    unset TEST_MOUNT_RW_FAILS
+    # write_failed_status is gated on STATUS_STARTED, which perform_backup sets
+    # only after a card config already validated; a card_config rejection here
+    # happens strictly before that point, so (as M03c already establishes for
+    # the REPLICA case) no status.json is ever written -- the manual-toggle red
+    # LED trigger is this failure class's real, already-established signature.
+    assert_absent "$RUNTIME/var/status.json" \
+        'M15 card_config rejection precedes STATUS_STARTED, so no status.json terminal write occurs'
+    assert_equal "$(cat "$TEST_ROOT/red/trigger")" none \
+        'M15 write-protected card uses the card_config manual-toggle LED pattern (4 flashes), not the rsync timer pattern'
+    assert_absent "$SOURCE_MOUNT/FieldBackup.conf" 'M15 write-protected card never gets a config file'
+    assert_not_contains rsync "$EFFECTS" 'M15 write-protected card never reaches rsync'
+    # The LED trigger above only proves the failure landed in the manual-toggle
+    # class, which card_config shares with no_space and verify_failed. Pin the
+    # actual reason so this case cannot go green on a different failure.
+    assert_contains 'may be write-protected' "$NOTICES" \
+        'M15 the failure is reported as the write-protected-card reason specifically'
+    /bin/sleep 1
+}
+
+case_m16_readonly_restore_failure_blocks_transfer() {
+    begin_case M16 'failure to restore the read-only mount after writing config blocks the transfer'
+    reset_case || { fail 'M16 fixture setup failed'; return; }
+    # ro-mount #1 (initial source mount) must succeed; ro-mount #2 (the
+    # restore-to-read-only step after the config write) must fail.
+    TEST_MOUNT_RO_FAIL_ON=2
+    export TEST_MOUNT_RO_FAIL_ON
+    assert_failure 'M16 failed read-only restore fails the manager' run_manager add sda1 /devices/mock
+    unset TEST_MOUNT_RO_FAIL_ON
+    assert_not_contains rsync "$EFFECTS" \
+        'M16 a source that could not be proven read-only again never reaches rsync'
+    # Without these two, M16 would stay green on any failure at all -- including
+    # one that never opened the write window. They pin it to "the write landed,
+    # the restore did not".
+    assert_success 'M16 the config write itself did succeed before the restore failed' \
+        test -f "$SOURCE_MOUNT/FieldBackup.conf"
+    assert_contains 'Failed to restore read-only source mount' "$NOTICES" \
+        'M16 the failure is reported as the read-only restore reason specifically'
+    /bin/sleep 1
 }
 
 case_m05_detach_or_readonly_during_rsync_fails_without_naked_writes() {
@@ -1113,6 +1276,10 @@ main() {
     case_m03b_invalid_existing_card_fails_without_rewriting_identity
     case_m03c_existing_replica_card_classifies_card_config_not_rsync
     case_m04_symlink_components_reject_before_target_update
+    case_m13_steady_state_source_stays_read_only
+    case_m14_first_write_bounded_mount_sequence
+    case_m15_write_protected_card_rejects_without_config
+    case_m16_readonly_restore_failure_blocks_transfer
     case_m05_detach_or_readonly_during_rsync_fails_without_naked_writes
     case_m05b_summary_failure_and_post_summary_detach_fail
     case_m07_transfer_failures_preserve_exit_and_classify_evidence
@@ -1124,9 +1291,9 @@ main() {
     case_m06_remove_ignores_unmounted_target
     assert_success 'M06 completion timer releases before test exit' settle_led_fixture
     assert_no_async_led_stderr
-    assert_equal "$CASES" 22 'all required cases executed'
-    if [ "$ASSERTIONS" -ne 212 ]; then
-        fail "all required assertions executed (expected=212, actual=$ASSERTIONS)"
+    assert_equal "$CASES" 26 'all required cases executed'
+    if [ "$ASSERTIONS" -ne 231 ]; then
+        fail "all required assertions executed (expected=231, actual=$ASSERTIONS)"
     fi
     if [ "$FAILED" -ne 0 ]; then
         replay_async_stderr
