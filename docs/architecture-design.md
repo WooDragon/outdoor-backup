@@ -118,7 +118,7 @@
 # SD卡唯一标识（自动生成UUID）
 SD_UUID="550e8400-e29b-41d4-a716-446655440000"
 
-# 备份模式: PRIMARY(默认) 或 REPLICA
+# 备份模式：自动备份仅执行 `PRIMARY`（SD 卡 → SSD）；`REPLICA` 仅作为旧卡数据值被解析器接受，管理器会明确拒绝，不能触发反向同步。
 BACKUP_MODE="PRIMARY"
 
 # 创建时间
