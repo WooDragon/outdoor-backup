@@ -176,7 +176,9 @@ assert_file_contains() {
 
 assert_path_absent() {
     ASSERTIONS=$((ASSERTIONS + 1))
-    if [ -e "$1" ]; then
+    # -e follows symlinks and is false for a dangling one, so a leftover lock
+    # symlink whose holder is gone would slip through. -L catches that case.
+    if [ -e "$1" ] || [ -L "$1" ]; then
         fail "$2 (path exists: $1)"
     fi
 }
@@ -405,7 +407,7 @@ case_c08_disabled_add_has_no_side_effects() {
         "logger:-t outdoor-backup backup disabled; ignoring add event for sda1" \
         "$NOTICES_FILE" "C08 disabled add did not syslog its disabled message"
     assert_effect_absent "C08 disabled add performed a side effect"
-    assert_path_absent "$RUNTIME_BASE/var/lock/backup.pid" \
+    assert_path_absent "$RUNTIME_BASE/var/lock/backup.lock" \
         "C08 disabled add created a lock"
     assert_path_absent "$TEST_ROOT/backups" \
         "C08 disabled add created BACKUP_ROOT"

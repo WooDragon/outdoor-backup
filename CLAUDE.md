@@ -154,7 +154,7 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
     ↓
 [验证并锚定目标存储] → 精确挂载、UUID、物理盘分离、FD 9
     ↓
-[获取 PID 锁] → /opt/outdoor-backup/var/lock/backup.pid
+[获取符号链接锁] → /opt/outdoor-backup/var/lock/backup.lock
     ↓
 [挂载 SD 卡] → /mnt/sdcard/
     ↓
@@ -172,10 +172,10 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 ## 安全机制
 
 ### 并发控制
-- **PID 锁文件**: `/opt/outdoor-backup/var/lock/backup.pid`
-- **活跃进程检查**: `kill -0 $pid`
+- **锁**: 符号链接 `/opt/outdoor-backup/var/lock/backup.lock`，原子指向持有者的 `/proc/<pid>`（`ln -s`，禁止 `ln -sf`；链接的存在与持有者身份是同一次系统调用发布，不存在中间态）
+- **存活 + 身份校验**: 读取 `$LOCK_LINK/cmdline` 是否含预期进程名；持有者已死则链接悬空、`cmdline` 不可读，天然判定为失效
 - **超时机制**: 5 分钟未获取锁则放弃
-- **僵尸锁清理**: 自动检测并移除无效锁
+- **僵尸锁清理**: 自动检测并移除失效（悬空或身份不匹配）的锁
 
 ### 数据安全
 - **目标身份守卫**：`add` 先验证目标 UUID、精确挂载和源卡、系统盘、目标盘三者的物理盘分离。
