@@ -4,6 +4,12 @@
 # Defaults are overridden by the legacy root-managed file, then by explicitly
 # present options in the named UCI section outdoor-backup.config.
 #
+# config_load assigns and validates every field EXCEPT the three
+# CARD_READER_* whitelist fields, which it only assigns. Those three have a
+# single consumer (the hotplug trigger) and are validated separately by
+# config_validate_card_reader, called only from there -- see that function's
+# comment for why.
+#
 
 config_notice() {
     printf 'outdoor-backup: %s\n' "$1" >&2
@@ -108,6 +114,15 @@ config_apply_uci_option() {
         led_red)
             LED_RED="$option_value"
             ;;
+        card_reader_usb_ids)
+            CARD_READER_USB_IDS="$option_value"
+            ;;
+        card_reader_path_prefixes)
+            CARD_READER_PATH_PREFIXES="$option_value"
+            ;;
+        card_reader_heuristic_fallback)
+            CARD_READER_HEURISTIC_FALLBACK="$option_value"
+            ;;
     esac
 }
 
@@ -127,12 +142,26 @@ config_load() {
     DEBUG=0
     LED_GREEN="/sys/class/leds/green:lan"
     LED_RED="/sys/class/leds/red:sys"
+    CARD_READER_USB_IDS=""
+    CARD_READER_PATH_PREFIXES=""
+    CARD_READER_HEURISTIC_FALLBACK="yes"
 
     # The legacy file is root-managed and remains the compatibility source for
-    # options that this first UCI migration does not model.
-    if [ -f "$legacy_file" ]; then
-        # shellcheck disable=SC1090
-        . "$legacy_file"
+    # options that this first UCI migration does not model. `.` is a POSIX
+    # special builtin: sourcing a file that cannot be opened terminates the
+    # whole calling script, not just this function (verified on
+    # openwrt/rootfs:x86_64-24.10.8). So a present-but-unreadable legacy file
+    # must fail this call before reaching `.`, not be silently skipped like a
+    # genuinely absent one -- a root-managed config that exists but can't be
+    # read is a fail-closed condition, not a "use defaults" one.
+    if [ -e "$legacy_file" ]; then
+        if [ -f "$legacy_file" ] && [ -r "$legacy_file" ]; then
+            # shellcheck disable=SC1090
+            . "$legacy_file"
+        else
+            config_error "legacy configuration file $legacy_file exists but cannot be read"
+            return 1
+        fi
     fi
 
     if [ -f "$uci_file" ]; then
@@ -153,6 +182,9 @@ config_load() {
             config_apply_uci_option "$uci_dir" debug
             config_apply_uci_option "$uci_dir" led_green
             config_apply_uci_option "$uci_dir" led_red
+            config_apply_uci_option "$uci_dir" card_reader_usb_ids
+            config_apply_uci_option "$uci_dir" card_reader_path_prefixes
+            config_apply_uci_option "$uci_dir" card_reader_heuristic_fallback
         fi
     fi
 
@@ -185,4 +217,82 @@ config_load() {
             ;;
     esac
     config_paths_are_disjoint "$BACKUP_ROOT" "$MOUNT_POINT"
+}
+
+# Validate the three card-reader whitelist fields: CARD_READER_USB_IDS,
+# CARD_READER_PATH_PREFIXES, CARD_READER_HEURISTIC_FALLBACK. Reads the
+# current values of those globals; does not take arguments and does not
+# reassign anything but CARD_READER_USB_IDS (lowercase-normalized on
+# success).
+#
+# Deliberately NOT called from config_load: these three fields have exactly
+# one consumer, the hotplug trigger (90-outdoor-backup), which is also the
+# only caller of this function. backup-manager.sh never reads them, so
+# folding their validation into the shared config_load would make an
+# invalid whitelist fail manager's own config_load call -- before its
+# `trap cleanup`, `main()`, or `remove`-event handling are even installed --
+# over a value the manager never consumes.
+#
+# Every return path, success or failure, restores `set -f`.
+config_validate_card_reader() {
+    case "$CARD_READER_HEURISTIC_FALLBACK" in
+        yes|no)
+            ;;
+        *)
+            config_error "card_reader_heuristic_fallback must be yes or no (got '$CARD_READER_HEURISTIC_FALLBACK')"
+            return 1
+            ;;
+    esac
+
+    if [ -n "$CARD_READER_USB_IDS" ]; then
+        local usb_id_token
+        set -f
+        for usb_id_token in $CARD_READER_USB_IDS; do
+            case "$usb_id_token" in
+                [0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f])
+                    ;;
+                *)
+                    set +f
+                    config_error "card_reader_usb_ids: invalid token '$usb_id_token' (must be a space-separated vvvv:pppp hex token)"
+                    return 1
+                    ;;
+            esac
+        done
+        set +f
+        CARD_READER_USB_IDS=$(printf '%s' "$CARD_READER_USB_IDS" | tr 'A-Z' 'a-z')
+    fi
+
+    if [ -n "$CARD_READER_PATH_PREFIXES" ]; then
+        local prefix_token
+        set -f
+        for prefix_token in $CARD_READER_PATH_PREFIXES; do
+            case "$prefix_token" in
+                /)
+                    set +f
+                    config_error "card_reader_path_prefixes: '/' is not a valid entry (it would match every device path)"
+                    return 1
+                    ;;
+                /*[*?[]*)
+                    set +f
+                    config_error "card_reader_path_prefixes: entry '$prefix_token' must not contain glob characters"
+                    return 1
+                    ;;
+                */.|*/..|*/./*|*/../*)
+                    set +f
+                    config_error "card_reader_path_prefixes: entry '$prefix_token' must not contain a '.' or '..' path segment"
+                    return 1
+                    ;;
+                /*)
+                    ;;
+                *)
+                    set +f
+                    config_error "card_reader_path_prefixes: entry '$prefix_token' must be an absolute path"
+                    return 1
+                    ;;
+            esac
+        done
+        set +f
+    fi
+
+    return 0
 }
