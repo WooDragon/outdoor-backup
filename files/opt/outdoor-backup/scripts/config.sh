@@ -108,6 +108,15 @@ config_apply_uci_option() {
         led_red)
             LED_RED="$option_value"
             ;;
+        card_reader_usb_ids)
+            CARD_READER_USB_IDS="$option_value"
+            ;;
+        card_reader_path_prefixes)
+            CARD_READER_PATH_PREFIXES="$option_value"
+            ;;
+        card_reader_heuristic_fallback)
+            CARD_READER_HEURISTIC_FALLBACK="$option_value"
+            ;;
     esac
 }
 
@@ -127,6 +136,9 @@ config_load() {
     DEBUG=0
     LED_GREEN="/sys/class/leds/green:lan"
     LED_RED="/sys/class/leds/red:sys"
+    CARD_READER_USB_IDS=""
+    CARD_READER_PATH_PREFIXES=""
+    CARD_READER_HEURISTIC_FALLBACK="yes"
 
     # The legacy file is root-managed and remains the compatibility source for
     # options that this first UCI migration does not model.
@@ -153,6 +165,9 @@ config_load() {
             config_apply_uci_option "$uci_dir" debug
             config_apply_uci_option "$uci_dir" led_green
             config_apply_uci_option "$uci_dir" led_red
+            config_apply_uci_option "$uci_dir" card_reader_usb_ids
+            config_apply_uci_option "$uci_dir" card_reader_path_prefixes
+            config_apply_uci_option "$uci_dir" card_reader_heuristic_fallback
         fi
     fi
 
@@ -172,6 +187,55 @@ config_load() {
             return 1
             ;;
     esac
+
+    case "$CARD_READER_HEURISTIC_FALLBACK" in
+        yes|no)
+            ;;
+        *)
+            config_error "card_reader_heuristic_fallback must be yes or no"
+            return 1
+            ;;
+    esac
+
+    if [ -n "$CARD_READER_USB_IDS" ]; then
+        local usb_id_token
+        set -f
+        for usb_id_token in $CARD_READER_USB_IDS; do
+            case "$usb_id_token" in
+                [0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f])
+                    ;;
+                *)
+                    set +f
+                    config_error "card_reader_usb_ids must be space-separated vvvv:pppp tokens"
+                    return 1
+                    ;;
+            esac
+        done
+        set +f
+        CARD_READER_USB_IDS=$(printf '%s' "$CARD_READER_USB_IDS" | tr 'A-Z' 'a-z')
+    fi
+
+    if [ -n "$CARD_READER_PATH_PREFIXES" ]; then
+        local prefix_token
+        set -f
+        for prefix_token in $CARD_READER_PATH_PREFIXES; do
+            case "$prefix_token" in
+                /*[*?[]*)
+                    set +f
+                    config_error "card_reader_path_prefixes entries must not contain glob characters"
+                    return 1
+                    ;;
+                /*)
+                    ;;
+                *)
+                    set +f
+                    config_error "card_reader_path_prefixes entries must be absolute paths"
+                    return 1
+                    ;;
+            esac
+        done
+        set +f
+    fi
 
     BACKUP_ROOT=$(config_normalize_path "$BACKUP_ROOT" backup_root) || return 1
     MOUNT_POINT=$(config_normalize_path "$MOUNT_POINT" mount_point) || return 1

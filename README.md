@@ -224,7 +224,22 @@ To set a friendly name for an SD card, use the WebUI alias management feature in
 By default the system guesses which devices are SD cards/readers from their
 path, model string, and size (≤512GB). That heuristic mis-fires on 1TB+ cards
 and on readers with unusual sysfs paths. For reliable, unattended operation you
-can whitelist your exact reader in `backup.conf`:
+can whitelist your exact reader.
+
+The whitelist shares the same single config channel as everything else
+(`config.sh`): default < legacy `backup.conf` < the named UCI section
+`outdoor-backup.config`. The recommended way to set it is UCI:
+
+```bash
+uci set outdoor-backup.config.card_reader_usb_ids='05e3:0749 14cd:1212'
+uci set outdoor-backup.config.card_reader_path_prefixes='/devices/platform/soc/usb1'
+uci set outdoor-backup.config.card_reader_heuristic_fallback='no'
+uci commit outdoor-backup
+```
+
+An explicitly-present UCI option always wins over the legacy `backup.conf`
+value; `backup.conf` remains fully supported as the lower-priority layer, so
+existing setups that only edit `backup.conf` keep working unchanged:
 
 ```bash
 # USB VID:PID whitelist (most precise), space-separated lowercase hex
@@ -253,6 +268,19 @@ done
 A whitelist match is authoritative and checked first; the heuristic runs only
 when nothing matches (and `CARD_READER_HEURISTIC_FALLBACK="yes"`). An empty
 whitelist with fallback on behaves exactly like previous versions.
+
+**Value constraints and failure behavior**: `card_reader_usb_ids` must be
+space-separated `vvvv:pppp` hex tokens; `card_reader_path_prefixes` entries
+must be absolute paths with no glob characters (`*`, `?`, `[`);
+`card_reader_heuristic_fallback` must be `yes` or `no`. A value outside these
+constraints is a configuration error. `backup-manager.sh` loads this same
+config before any I/O and fails closed on such an error — no backup runs.
+The hotplug trigger reloads the config on every add/remove event too, but
+does **not** abort on a config error there: by the time validation can fail,
+the card-reader variables are already assigned (config.sh applies all values
+before validating any of them), so whitelist detection still uses the correct
+values; only the unrelated failure is logged. Fix the underlying config
+either way — the manager invocation will keep failing until you do.
 
 ## Package Structure
 

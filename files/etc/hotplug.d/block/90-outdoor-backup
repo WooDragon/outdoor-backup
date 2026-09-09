@@ -10,24 +10,62 @@
 
 # Configuration
 BACKUP_MANAGER="/opt/outdoor-backup/scripts/backup-manager.sh"
+# Legacy card-reader config file, passed to config_load as its legacy-file
+# argument (see load_reader_config below). Same seam name/semantics as before
+# the UCI migration; the value it now feeds into differs.
 CONFIG_FILE="${OUTDOOR_BACKUP_CONFIG:-/opt/outdoor-backup/conf/backup.conf}"
 LOG_TAG="outdoor-backup-hotplug"
 # SYSFS_ROOT prefixes all /sys reads. Empty in production (real /sys); the test
 # suite points it at a fixture tree. No behavior change when unset.
 SYSFS_ROOT="${SYSFS_ROOT:-}"
-
-# Load card-reader whitelist settings (issue #2). Kept lightweight: we source
-# only the small config file, NOT common.sh, because this trigger fires on
-# every block event system-wide and must stay fast.
-CARD_READER_USB_IDS=""
-CARD_READER_PATH_PREFIXES=""
-CARD_READER_HEURISTIC_FALLBACK="yes"
-# shellcheck disable=SC1090
-[ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
+# CONFIG_SCRIPT locates the shared config loader. Empty->default in
+# production; the test suite points it at the repo copy. No behavior change
+# when unset.
+CONFIG_SCRIPT="${OUTDOOR_BACKUP_CONFIG_SCRIPT:-/opt/outdoor-backup/scripts/config.sh}"
 
 # Log function
 log_message() {
 	logger -t "$LOG_TAG" "$1"
+}
+
+# Load card-reader whitelist settings (issue #2, folded into config.sh's
+# single config channel): default < legacy CONFIG_FILE < named
+# UCI section outdoor-backup.config. Deliberately called only from the two
+# hotplug action branches below (not at file top level) so an ignored block
+# event never pays the config_load cost.
+#
+# Failure policy: a config_load failure does NOT abort this trigger.
+#   (a) config_load's contract assigns every variable, including the three
+#       CARD_READER_* ones, before it runs any validation. So by the time
+#       config_load can fail, the card-reader variables already hold their
+#       correct effective values -- the failing check is necessarily about
+#       something else (an unrelated path/enabled/debug validation).
+#   (b) Aborting here would also skip the "remove" cleanup path, which must
+#       run regardless of unrelated config problems.
+#   (c) backup-manager.sh performs its own config_load and fails closed
+#       before any I/O -- that is the real gate for unrelated config errors.
+load_reader_config() {
+	# Degraded defaults for the case where config.sh is missing (a partially
+	# removed package, say). config_load reassigns all three unconditionally
+	# whenever it does run, so this is the only place they are defaulted.
+	CARD_READER_USB_IDS=""
+	CARD_READER_PATH_PREFIXES=""
+	CARD_READER_HEURISTIC_FALLBACK="yes"
+
+	# `.` is a POSIX special builtin: in ash, sourcing a file that cannot be
+	# opened terminates the whole script, and `if ! . ...` does NOT catch it
+	# (verified on openwrt/rootfs:x86_64-24.10.8 -- the shell exits 2 and the
+	# next line never runs). Test readability first; a dead hotplug trigger
+	# would also lose the "remove" cleanup path.
+	if [ ! -r "$CONFIG_SCRIPT" ]; then
+		log_message "card-reader config script unavailable: $CONFIG_SCRIPT (falling back to the built-in heuristic)"
+		return 0
+	fi
+	# shellcheck disable=SC1090
+	. "$CONFIG_SCRIPT"
+	if ! config_load "$CONFIG_FILE"; then
+		log_message "card-reader configuration reload reported an unrelated error; continuing with the values already assigned"
+	fi
 }
 
 # Resolve the USB VID:PID for the device behind a hotplug DEVPATH.
@@ -170,6 +208,8 @@ case "$ACTION" in
 		# Only process partitions, not whole disks
 		[ "$DEVTYPE" = "partition" ] || exit 0
 
+		load_reader_config
+
 		# Check if this is an SD card
 		if is_sdcard "$DEVPATH"; then
 			log_message "SD card detected: $DEVNAME"
@@ -186,6 +226,8 @@ case "$ACTION" in
 		;;
 
 	remove)
+		load_reader_config
+
 		if is_sdcard "$DEVPATH"; then
 			log_message "SD card removed: $DEVNAME"
 
