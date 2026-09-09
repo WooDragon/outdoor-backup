@@ -236,9 +236,6 @@ backup-manager.sh 在以下时机更新状态文件：
 └─────────────────────────────────────────────────┘
 
 ┌─ 高级设置 ─────────────────────────────────────┐
-│ 默认备份模式:     [PRIMARY ▼]                   │
-│                   - PRIMARY: SD卡 → 内置存储    │
-│                   - REPLICA: 内置存储 → SD卡    │
 └─────────────────────────────────────────────────┘
 
 ┌─ 危险操作 ─────────────────────────────────────┐
@@ -252,6 +249,8 @@ backup-manager.sh 在以下时机更新状态文件：
 
 [保存配置] [恢复默认]
 ```
+
+自动备份固定为 PRIMARY（SD 卡 → SSD），不提供模式选择控件。
 
 **批量清理确认对话框（第一步）**：
 
@@ -718,10 +717,7 @@ o.default = "/sys/class/leds/red:sys"
 s = m:section(TypedSection, "outdoor-backup", translate("Advanced Settings"))
 s.anonymous = true
 
-o = s:option(ListValue, "default_mode", translate("Default Backup Mode"))
-o:value("PRIMARY", translate("PRIMARY (SD → Storage)"))
-o:value("REPLICA", translate("REPLICA (Storage → SD)"))
-o.default = "PRIMARY"
+-- 自动备份固定为 PRIMARY（SD 卡 → SSD），不提供模式选择控件。
 
 return m
 ```
