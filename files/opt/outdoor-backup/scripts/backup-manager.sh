@@ -216,6 +216,11 @@ acquire_lock() {
 # lost the race must never delete the winner's lock. The in-process flag is not
 # enough: if this lock was reclaimed while we still believed we held it, the
 # name now belongs to someone else and removing it would take their lock.
+# Reading the link and unlinking it are two calls, so a reclaim landing between
+# them still removes the newcomer's link. There is no "unlink only if it still
+# points here" syscall; closing that gap would mean a different primitive. It is
+# reachable only if a competitor judges a live, identity-matching holder stale,
+# which lock_holder_alive does not do.
 release_lock() {
 	[ "$LOCK_HELD" = "1" ] || return 0
 	LOCK_HELD=0

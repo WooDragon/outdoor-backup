@@ -286,7 +286,12 @@ case_k05b_reclaimed_lock_release_does_not_delete_new_holder() {
         'K05b release_lock left the reclaimed lock link intact'
     assert_equal "$(readlink "$lockdir")" "/proc/$$" \
         'K05b lock still points to the new holder after old holder'"'"'s release_lock'
+    # The assertions above run before the background holder reaches its own
+    # release_lock, so they only prove the code path. Join it and read the link
+    # once more to prove the real holder's exit path also left the lock alone.
     wait "$holder_pid" 2>/dev/null || :
+    assert_equal "$(readlink "$lockdir")" "/proc/$$" \
+        'K05b the exited holder'"'"'s own release_lock also left the new lock intact'
 }
 
 # ---------------------------------------------------------------------------
@@ -490,8 +495,8 @@ main() {
     case_k11_lock_never_exists_without_a_usable_identity
     case_km01_mutation_probe_ln_sf_is_caught
     assert_equal "$CASES" 13 'all required lock cases executed'
-    if [ "$ASSERTIONS" -ne 44 ]; then
-        fail "all required assertions executed (expected=44, actual=$ASSERTIONS)"
+    if [ "$ASSERTIONS" -ne 45 ]; then
+        fail "all required assertions executed (expected=45, actual=$ASSERTIONS)"
     fi
     if [ "$FAILED" -ne 0 ]; then
         printf 'cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"
