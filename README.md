@@ -271,16 +271,30 @@ whitelist with fallback on behaves exactly like previous versions.
 
 **Value constraints and failure behavior**: `card_reader_usb_ids` must be
 space-separated `vvvv:pppp` hex tokens; `card_reader_path_prefixes` entries
-must be absolute paths with no glob characters (`*`, `?`, `[`);
-`card_reader_heuristic_fallback` must be `yes` or `no`. A value outside these
-constraints is a configuration error. `backup-manager.sh` loads this same
-config before any I/O and fails closed on such an error — no backup runs.
-The hotplug trigger reloads the config on every add/remove event too, but
-does **not** abort on a config error there: by the time validation can fail,
-the card-reader variables are already assigned (config.sh applies all values
-before validating any of them), so whitelist detection still uses the correct
-values; only the unrelated failure is logged. Fix the underlying config
-either way — the manager invocation will keep failing until you do.
+must be absolute paths with no glob characters (`*`, `?`, `[`), must not be
+the bare `/` (it would match every device path, i.e. disable the whitelist),
+and must not contain a `.` or `..` path segment; `card_reader_heuristic_fallback`
+must be `yes` or `no`.
+
+These three fields have exactly one consumer — the hotplug trigger — and it
+is the only thing that validates them. `config.sh`'s shared loader only
+assigns them; a value outside the constraints above does not make
+`backup-manager.sh`'s own config load fail, because the manager never reads
+`CARD_READER_*` in the first place. Concretely: an invalid whitelist does
+not make the backup manager reject an `add` event, and it does not stop a
+`remove` event's cleanup (`pkill`, unmount, lock release) from running. The
+hotplug trigger records exactly which field and which token was invalid,
+then falls back to the built-in heuristic (equivalent to an empty whitelist
+with `card_reader_heuristic_fallback=yes`) and keeps working.
+
+`backup.conf` existing but being unreadable is a different, fail-closed
+situation: `config_load` returns an error and none of the caller's
+subsequent effects (mounting, backing up, or, on the hotplug side, reading
+the whitelist from that file) happen with default values silently
+substituted — the manager exits, and the hotplug trigger falls back to the
+built-in heuristic exactly as it does for an invalid whitelist. Fix the
+underlying config either way; the manager invocation will keep failing
+until you do.
 
 ## Package Structure
 
