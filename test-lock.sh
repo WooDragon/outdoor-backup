@@ -285,7 +285,7 @@ case_k05b_reclaimed_lock_release_does_not_delete_new_holder() {
     assert_equal "$(cat "$TEST_ROOT/k05b.release")" 'LINK_EXISTS' \
         'K05b release_lock left the reclaimed lock link intact'
     assert_equal "$(readlink "$lockdir")" "/proc/$$" \
-        'K05b lock still points to the new holder after old holder'"'"'s release_lock'
+        'K05b lock still points to the new holder after a stale LOCK_HELD=1 release_lock'
     # The assertions above run before the background holder reaches its own
     # release_lock, so they only prove the code path. Join it and read the link
     # once more to prove the real holder's exit path also left the lock alone.
