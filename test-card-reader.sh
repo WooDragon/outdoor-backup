@@ -441,6 +441,38 @@ case_r09_invalid_path_prefixes_fail_loud() {
         "R09 config_validate_card_reader rejects the .. path segment"
     assert_file_contains "configuration error" "$r9d_err" \
         "R09 .. path segment reported as configuration error"
+
+    # A "." segment is matched by a different pair of case patterns than ".."
+    # (*/. and */./* vs */.. and */../*). Covering only ".." would leave those
+    # two patterns untested, so both "." shapes get their own probe: one
+    # interior, one trailing.
+    prepare_reader_state
+    write_uci "config outdoor-backup 'config'
+	option card_reader_path_prefixes '/devices/./usb1'"
+    r9e_load_rc="$TEST_ROOT/r09e.load_rc"
+    r9e_validate_rc="$TEST_ROOT/r09e.validate_rc"
+    r9e_err="$TEST_ROOT/r09e.err"
+    load_then_validate_card_reader "$r9e_load_rc" "$r9e_validate_rc" 2>"$r9e_err"
+    assert_equal "$(cat "$r9e_load_rc")" "0" \
+        "R09 config_load succeeds despite the interior . path segment (layering)"
+    assert_equal "$(cat "$r9e_validate_rc")" "1" \
+        "R09 config_validate_card_reader rejects the interior . path segment"
+    assert_file_contains "configuration error" "$r9e_err" \
+        "R09 interior . path segment reported as configuration error"
+
+    prepare_reader_state
+    write_uci "config outdoor-backup 'config'
+	option card_reader_path_prefixes '/devices/usb1/.'"
+    r9f_load_rc="$TEST_ROOT/r09f.load_rc"
+    r9f_validate_rc="$TEST_ROOT/r09f.validate_rc"
+    r9f_err="$TEST_ROOT/r09f.err"
+    load_then_validate_card_reader "$r9f_load_rc" "$r9f_validate_rc" 2>"$r9f_err"
+    assert_equal "$(cat "$r9f_load_rc")" "0" \
+        "R09 config_load succeeds despite the trailing . path segment (layering)"
+    assert_equal "$(cat "$r9f_validate_rc")" "1" \
+        "R09 config_validate_card_reader rejects the trailing . path segment"
+    assert_file_contains "configuration error" "$r9f_err" \
+        "R09 trailing . path segment reported as configuration error"
 }
 
 # ---------------------------------------------------------------------------
@@ -842,8 +874,8 @@ main() {
 
     assert_equal "$CASES" "22" "all required cases executed"
     ASSERTIONS=$((ASSERTIONS + 1))
-    if [ "$ASSERTIONS" -ne 58 ]; then
-        fail "all required assertions executed (expected=58, actual=$ASSERTIONS)"
+    if [ "$ASSERTIONS" -ne 64 ]; then
+        fail "all required assertions executed (expected=64, actual=$ASSERTIONS)"
     fi
     if [ "$FAILED" -ne 0 ]; then
         printf 'cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"
