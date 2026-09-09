@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=outdoor-backup
 PKG_VERSION:=1.1.0
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_MAINTAINER:=Your Name <your.email@example.com>
 PKG_LICENSE:=GPL-2.0-only
@@ -38,7 +38,7 @@ define Package/outdoor-backup/description
   - LED status indication
   - Concurrent backup protection (PID lock)
   - Support for multiple filesystems (ext4/exFAT/NTFS/FAT32)
-  - Primary and Replica backup modes
+  - One-way automatic backup from SD card to SSD
 endef
 
 define Package/outdoor-backup/conffiles

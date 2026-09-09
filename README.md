@@ -11,7 +11,7 @@ Automatic SD card backup system for OpenWrt routers with internal storage (SSD/H
 - ✅ **LED Indicators**: Visual feedback for backup status
 - ✅ **Concurrent Protection**: PID-based locking prevents conflicts
 - ✅ **Multi-Filesystem**: Supports ext4, exFAT, NTFS, FAT32
-- ✅ **Bidirectional**: Primary (SD→Storage) and Replica (Storage→SD) modes
+- ✅ **One-way Automatic Backup**: PRIMARY cards back up from SD to configured storage; existing REPLICA cards are refused
 - ✅ **Production Ready**: POSIX-compliant shell, fully error-handled
 
 ## Quick Start
@@ -144,7 +144,7 @@ The static directory check rejects a symlink at the configured mount path or in 
 
 If the initial target guard fails, the manager writes the reason to stderr and error-level syslog. It may signal the optional red LED, but it does not enter the source mount, `rsync`, alias, lock, or application-log lifecycle. The manager closes the target FD before the LED helper starts its delayed child process. A missing LED does not turn this failure into success. `enabled=0` exits an `add` event before any LED side effect.
 
-The guard protects the PRIMARY path. The current parser retains PRIMARY and REPLICA values and their current directions. Remaining #15 work concerns stable card identity, read-only cards, cloned cards, and default prohibition of REPLICA; it does not authorize executing card configuration. The existing rsync pipeline still does not preserve the complete pipeline exit status, so this release does not claim that every `ENOSPC` error is reported correctly or that the implementation is completely safe.
+Automatic backup supports the PRIMARY direction only: SD card to the configured storage target. The data-only card reader still accepts `REPLICA` in an existing `FieldBackup.conf` for compatibility. The manager rejects that card with an explicit error before `rsync`. It does not change the card configuration or UUID, update an alias, create the target UUID directory, or create a per-backup log. The manager does not convert `REPLICA` to `PRIMARY`. Remaining #15 work concerns stable card identity, read-only cards, and cloned cards; #15 remains open. The existing rsync pipeline still does not preserve the complete pipeline exit status, so this release does not claim that every `ENOSPC` error is reported correctly or that the implementation is completely safe.
 
 ### LuCI storage fields
 
@@ -181,7 +181,7 @@ When a writable card has no configuration, the manager creates `{SD_ROOT}/FieldB
 ```bash
 # Automatically generated on first insertion
 SD_UUID="550e8400-e29b-41d4-a716-446655440000"
-BACKUP_MODE="PRIMARY"                # PRIMARY or REPLICA
+BACKUP_MODE="PRIMARY"                # Generated automatic-backup mode
 CREATED_AT="2024-01-15 10:30:00"
 ```
 
@@ -189,9 +189,9 @@ The reader exports only `SD_UUID`, `BACKUP_MODE`, `CREATED_AT`, and the legacy `
 
 To set a friendly name for an SD card, use the WebUI alias management feature instead of editing this file.
 
-**Modes**:
-- `PRIMARY`: SD → Internal Storage (default)
-- `REPLICA`: Internal Storage → SD (current restoration direction)
+**Automatic-backup modes**:
+- `PRIMARY`: SD card → configured storage target. New card configurations use this value.
+- `REPLICA`: A legacy data value accepted by the reader for compatibility. Automatic backup does not restore from storage to the card. When the manager reads an existing `REPLICA` card, it returns an explicit error without running `rsync`, changing the card configuration or UUID, updating an alias, creating the target UUID directory, or creating a per-backup log.
 
 ## Package Structure
 

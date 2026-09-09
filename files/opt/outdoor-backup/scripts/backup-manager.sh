@@ -185,6 +185,10 @@ setup_sdcard_config() {
 			log_error "Invalid card configuration; refusing backup"
 			return 1
 		fi
+		if [ "$BACKUP_MODE" != "PRIMARY" ]; then
+			log_error 'REPLICA mode is not supported by automatic backup; refusing reverse synchronization'
+			return 1
+		fi
 		log_info "Loaded config for SD: $SD_NAME ($SD_UUID)"
 	else
 		# Check if SD card is read-only
@@ -204,7 +208,7 @@ setup_sdcard_config() {
 # Unique identifier for this SD card
 SD_UUID="$SD_UUID"
 
-# Backup mode: PRIMARY (SD→SSD) or REPLICA (SSD→SD)
+# Backup mode: PRIMARY only (automatic backup is SD→SSD)
 BACKUP_MODE="$BACKUP_MODE"
 
 # Creation timestamp
@@ -258,22 +262,12 @@ perform_backup() {
 	# NOTE: Don't pass SD_NAME here to avoid overwriting existing alias
 	update_alias_last_seen "$SD_UUID" || log_warn "Failed to update alias timestamp"
 
-	# Determine backup direction
-	if [ "$BACKUP_MODE" = "REPLICA" ]; then
-		# Replica mode: SSD → SD
-		source_dir="$BACKUP_ROOT/$SD_UUID/"
-		target_dir="$MOUNT_POINT/"
-		log_file="$BACKUP_ROOT/.logs/replica_${SD_UUID}_$(date +%Y%m%d_%H%M%S).log"
+	# Automatic backup is one-way: source card → anchored SSD target.
+	source_dir="$MOUNT_POINT/"
+	target_dir="$BACKUP_ROOT/$SD_UUID/"
+	log_file="$BACKUP_ROOT/.logs/backup_${SD_UUID}_$(date +%Y%m%d_%H%M%S).log"
 
-		log_info "Starting REPLICA backup: SSD → SD ($display_name)"
-	else
-		# Primary mode: SD → SSD
-		source_dir="$MOUNT_POINT/"
-		target_dir="$BACKUP_ROOT/$SD_UUID/"
-		log_file="$BACKUP_ROOT/.logs/backup_${SD_UUID}_$(date +%Y%m%d_%H%M%S).log"
-
-		log_info "Starting PRIMARY backup: SD → SSD ($display_name)"
-	fi
+	log_info "Starting PRIMARY backup: SD → SSD ($display_name)"
 
 	# Check available space
 	local source_size=$(get_dir_size_mb "$source_dir")

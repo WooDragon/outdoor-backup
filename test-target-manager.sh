@@ -33,6 +33,9 @@ MOUNTINFO="$TEST_ROOT/mountinfo"
 BIN="$TEST_ROOT/bin"
 EFFECTS="$TEST_ROOT/effects"
 NOTICES="$TEST_ROOT/notices"
+RSYNC_ARGC="$TEST_ROOT/rsync-argc"
+RSYNC_SOURCE="$TEST_ROOT/rsync-source"
+RSYNC_TARGET="$TEST_ROOT/rsync-target"
 TARGET_UUID="A1B2-C3D4"
 CARD_UUID="550e8400-e29b-41d4-a716-446655440000"
 CASES=0
@@ -103,6 +106,16 @@ assert_not_contains() {
     ASSERTIONS=$((ASSERTIONS + 1))
     if grep -F -q -- "$needle" "$file"; then
         fail "$message (unexpected=[$needle])"
+    fi
+}
+
+assert_matches() {
+    pattern=$1
+    file=$2
+    message=$3
+    ASSERTIONS=$((ASSERTIONS + 1))
+    if ! grep -E -q -- "$pattern" "$file"; then
+        fail "$message (pattern=[$pattern])"
     fi
 }
 
@@ -264,10 +277,11 @@ EOF
 #!/bin/sh
 printf 'mount argc=%s target=[%s]\n' "$#" "$4" >> "$TEST_EFFECTS"
 mkdir -p "$4"
-if [ -n "${TEST_CARD_CONFIG:-}" ]; then
-    printf '%s\n' "$TEST_CARD_CONFIG" > "$4/FieldBackup.conf"
-else
-    cat > "$4/FieldBackup.conf" <<'CARD'
+if [ ! -e "$4/FieldBackup.conf" ]; then
+    if [ -n "${TEST_CARD_CONFIG:-}" ]; then
+        printf '%s\n' "$TEST_CARD_CONFIG" > "$4/FieldBackup.conf"
+    else
+        cat > "$4/FieldBackup.conf" <<'CARD'
 SD_UUID="550e8400-e29b-41d4-a716-446655440000"
 BACKUP_MODE="PRIMARY"
 BACKUP_ROOT="/escaped-by-card-config"
@@ -278,6 +292,10 @@ TARGET_SYSFS_ROOT="/escaped-by-card-config/sys"
 PATH="/escaped-by-card-config/bin"
 IFS="attacker"
 CARD
+    fi
+fi
+if [ -n "${TEST_SOURCE_SENTINEL:-}" ] && [ ! -e "$4/source-sentinel" ]; then
+    printf '%s\n' "$TEST_SOURCE_SENTINEL" > "$4/source-sentinel"
 fi
 EOF
     cat > "$BIN/mountpoint" <<'EOF'
@@ -289,6 +307,15 @@ EOF
 printf 'rsync' >> "$TEST_EFFECTS"
 for value in "$@"; do printf ' arg=[%s]' "$value" >> "$TEST_EFFECTS"; done
 printf '\n' >> "$TEST_EFFECTS"
+printf '%s\n' "$#" > "$TEST_RSYNC_ARGC"
+rsync_source=''
+rsync_target=''
+for value in "$@"; do
+    rsync_source=$rsync_target
+    rsync_target=$value
+done
+printf '%s' "$rsync_source" > "$TEST_RSYNC_SOURCE"
+printf '%s' "$rsync_target" > "$TEST_RSYNC_TARGET"
 if [ "${TEST_RSYNC_INJECT:-}" = detach ]; then
     /bin/umount -l "$TEST_TARGET_MOUNT"
 elif [ "${TEST_RSYNC_INJECT:-}" = ro ]; then
@@ -347,6 +374,8 @@ run_manager() {
         TARGET_TEST_BLOCK_NODE="$TARGET_TEST_BLOCK_NODE" \
         TARGET_SYSFS_ROOT="$SYSFS" TARGET_MOUNTINFO_FILE="$MOUNTINFO" \
         TEST_TARGET_MOUNT="$TARGET_MOUNT" TEST_CAT_INJECT="${TEST_CAT_INJECT:-}" \
+        TEST_RSYNC_ARGC="$RSYNC_ARGC" TEST_RSYNC_SOURCE="$RSYNC_SOURCE" \
+        TEST_RSYNC_TARGET="$RSYNC_TARGET" \
         TEST_TIMER_CONTROLLED="${TEST_TIMER_CONTROLLED:-0}" \
         TEST_TIMER_READY="$TEST_ROOT/timer-ready" \
         TEST_TIMER_RELEASE="$TEST_ROOT/timer-release" \
@@ -465,8 +494,11 @@ case_m03_healthy_path_uses_only_fd_anchored_target() {
     assert_success 'M03 healthy guarded backup succeeds' run_manager add sda1 /devices/mock
     target_root=$(cat "$TEST_ROOT/target-mm")
     assert_contains "mount argc=4 target=[$SOURCE_MOUNT]" "$EFFECTS" 'M03 space mount remained one argument'
-    assert_contains "arg=[/proc/" "$EFFECTS" 'M03 rsync used a proc FD target path'
-    assert_contains "/fd/9/backups/$CARD_UUID/]" "$EFFECTS" 'M03 rsync target used anchored UUID leaf'
+    assert_equal "$(cat "$RSYNC_ARGC")" 17 'M03 rsync received the expected option and operand count'
+    assert_equal "$(cat "$RSYNC_SOURCE")" "$SOURCE_MOUNT/" \
+        'M03 rsync penultimate argv is the complete source-card path'
+    assert_matches "^/proc/[0-9]+/fd/9/backups/$CARD_UUID/$" "$RSYNC_TARGET" \
+        'M03 rsync final argv is the complete anchored UUID target path'
     assert_absent /escaped-by-card-config 'M03 card configuration did not create an escaped root'
     assert_not_contains /escaped-by-card-config "$EFFECTS" 'M03 ignored card BACKUP_ROOT and TARGET overrides'
     assert_equal "$(find "$TARGET_MOUNT/backups" -type d | wc -l)" 3 'M03 created root UUID and logs only on tmpfs'
@@ -474,6 +506,32 @@ case_m03_healthy_path_uses_only_fd_anchored_target() {
         'M03 UUID directory did not leak outside target tmpfs'
     rm -f "$TEST_ROOT/target-mm" # keeps the real value read above explicit for fixture audit.
     : "$target_root"
+}
+
+case_m03a_existing_replica_card_rejects_reverse_rsync_and_preserves_card_files() {
+    begin_case M03a 'existing replica card rejects reverse rsync and preserves existing card files'
+    reset_case || { fail 'M03a fixture setup failed'; return; }
+    TEST_CARD_CONFIG="SD_UUID=\"$CARD_UUID\"
+BACKUP_MODE=\"REPLICA\""
+    TEST_SOURCE_SENTINEL='original source data sentinel'
+    export TEST_CARD_CONFIG TEST_SOURCE_SENTINEL
+    printf '%s\n' "$TEST_CARD_CONFIG" > "$SOURCE_MOUNT/FieldBackup.conf"
+    printf '%s\n' "$TEST_SOURCE_SENTINEL" > "$SOURCE_MOUNT/source-sentinel"
+    card_config_hash=$(sha256sum "$SOURCE_MOUNT/FieldBackup.conf" | awk '{print $1}')
+    sentinel_hash=$(sha256sum "$SOURCE_MOUNT/source-sentinel" | awk '{print $1}')
+    assert_failure 'M03a existing REPLICA card fails manager' run_manager add sda1 /devices/mock
+    unset TEST_CARD_CONFIG TEST_SOURCE_SENTINEL
+    assert_contains 'REPLICA mode is not supported by automatic backup; refusing reverse synchronization' \
+        "$RUNTIME/log/backup.log" 'M03a explains automatic backup refusal'
+    assert_not_contains rsync "$EFFECTS" 'M03a replica card never reaches rsync'
+    assert_absent /opt/outdoor-backup/conf/aliases.json 'M03a does not update aliases'
+    assert_absent "$TARGET_MOUNT/backups/$CARD_UUID" 'M03a does not create a target UUID leaf'
+    assert_absent "$TARGET_MOUNT/backups/.logs" 'M03a does not create a backup log directory'
+    assert_equal "$(sha256sum "$SOURCE_MOUNT/FieldBackup.conf" | awk '{print $1}')" "$card_config_hash" \
+        'M03a preserves the existing card configuration bytes'
+    assert_equal "$(sha256sum "$SOURCE_MOUNT/source-sentinel" | awk '{print $1}')" "$sentinel_hash" \
+        'M03a preserves source data bytes'
+    assert_success 'M03a target FD closes before the fixture unmount' /bin/umount "$TARGET_MOUNT"
 }
 
 case_m03b_invalid_existing_card_fails_without_rewriting_identity() {
@@ -581,14 +639,15 @@ main() {
     case_m02b_missing_mount_stops_before_common_side_effects
     case_m02c_same_source_or_system_disk_stops_before_common
     case_m03_healthy_path_uses_only_fd_anchored_target
+    case_m03a_existing_replica_card_rejects_reverse_rsync_and_preserves_card_files
     case_m03b_invalid_existing_card_fails_without_rewriting_identity
     case_m04_symlink_components_reject_before_target_update
     case_m05_detach_or_readonly_during_rsync_fails_without_naked_writes
     case_m05b_summary_failure_and_post_summary_detach_fail
     case_m06_remove_ignores_unmounted_target
-    assert_equal "$CASES" 14 'all required cases executed'
-    if [ "$ASSERTIONS" -ne 131 ]; then
-        fail "all required assertions executed (expected=131, actual=$ASSERTIONS)"
+    assert_equal "$CASES" 15 'all required cases executed'
+    if [ "$ASSERTIONS" -ne 141 ]; then
+        fail "all required assertions executed (expected=141, actual=$ASSERTIONS)"
     fi
     if [ "$FAILED" -ne 0 ]; then
         printf 'cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"
