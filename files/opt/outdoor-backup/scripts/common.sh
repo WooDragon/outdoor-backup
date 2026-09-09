@@ -100,6 +100,7 @@ led_backup_error() {
 #   device unknown   -> red, 1 flash  + pause
 #   lock timeout     -> red, 2 flashes + pause
 #   no space         -> red, 3 flashes + pause
+#   card config      -> red, 4 flashes + pause
 #   rsync failure    -> red, slow blink (legacy led_backup_error)
 #   verify failed    -> red/green alternating slow blink
 # ---------------------------------------------------------------------------
@@ -123,22 +124,20 @@ led_blink_pattern() {
 	# self-terminates after $duration to avoid leaving an orphan forever.
 	(
 		local elapsed=0
-		local on_ms=200    # flash on
-		local off_ms=200   # gap between flashes within a burst
 		local pause_s=2    # pause between bursts, defines the "count" boundary
 
 		while [ "$elapsed" -lt "$duration" ]; do
 			local i=0
 			while [ "$i" -lt "$flash_count" ]; do
 				echo "1" > "$led_path/brightness" 2>/dev/null || true
-				sleep 0.2
+				sleep 1          # flash on for one second
 				echo "0" > "$led_path/brightness" 2>/dev/null || true
-				sleep 0.2
+				sleep 1          # one-second gap within a burst
 				i=$((i + 1))
 			done
 			sleep "$pause_s"
-			# One burst cycle = flash_count*(on+off) + pause
-			elapsed=$((elapsed + (flash_count * (on_ms + off_ms)) / 1000 + pause_s))
+			# One burst cycle = flash_count * two seconds + two-second pause.
+			elapsed=$((elapsed + (2 * flash_count + pause_s)))
 		done
 
 		# Leave the LED off when finished
@@ -164,6 +163,12 @@ led_err_no_space() {
 	log_debug "LED error: no space (3 flashes)"
 }
 
+# SD card configuration rejected by policy (4 flashes)
+led_err_card_config() {
+	led_blink_pattern "$LED_RED" 4 60
+	log_debug "LED error: card config (4 flashes)"
+}
+
 # rsync transfer failure (legacy slow red blink)
 led_err_rsync() {
 	led_backup_error
@@ -172,32 +177,43 @@ led_err_rsync() {
 
 # Post-backup integrity verification failed (red/green alternating slow blink)
 led_err_verify_failed() {
-	# Both LEDs needed; bail gracefully if either is absent
-	if [ ! -d "$LED_RED" ] || [ ! -d "$LED_GREEN" ]; then
-		# Fall back to generic error so the failure is still visible
-		led_backup_error
+	if [ -d "$LED_RED" ] && [ -d "$LED_GREEN" ]; then
+		echo "none" > "$LED_RED/trigger" 2>/dev/null || true
+		echo "none" > "$LED_GREEN/trigger" 2>/dev/null || true
+
+		(
+			local elapsed=0
+			while [ "$elapsed" -lt 60 ]; do
+				echo "1" > "$LED_RED/brightness" 2>/dev/null || true
+				echo "0" > "$LED_GREEN/brightness" 2>/dev/null || true
+				sleep 1          # red on, green off for one second
+				echo "0" > "$LED_RED/brightness" 2>/dev/null || true
+				echo "1" > "$LED_GREEN/brightness" 2>/dev/null || true
+				sleep 1          # green on, red off for one second
+				elapsed=$((elapsed + 2))
+			done
+			echo "0" > "$LED_RED/brightness" 2>/dev/null || true
+			echo "0" > "$LED_GREEN/brightness" 2>/dev/null || true
+		) &
+
+		log_debug "LED error: verify failed (red/green alternating)"
 		return 0
 	fi
 
-	echo "none" > "$LED_RED/trigger" 2>/dev/null || true
-	echo "none" > "$LED_GREEN/trigger" 2>/dev/null || true
+	if [ -d "$LED_RED" ]; then
+		led_backup_error
+		log_debug "LED error: verify failed (green unavailable; red slow-blink fallback)"
+		return 0
+	fi
 
-	(
-		local elapsed=0
-		while [ "$elapsed" -lt 60 ]; do
-			echo "1" > "$LED_RED/brightness" 2>/dev/null || true
-			echo "0" > "$LED_GREEN/brightness" 2>/dev/null || true
-			sleep 0.5
-			echo "0" > "$LED_RED/brightness" 2>/dev/null || true
-			echo "1" > "$LED_GREEN/brightness" 2>/dev/null || true
-			sleep 0.5
-			elapsed=$((elapsed + 1))
-		done
-		echo "0" > "$LED_RED/brightness" 2>/dev/null || true
-		echo "0" > "$LED_GREEN/brightness" 2>/dev/null || true
-	) &
+	if [ -d "$LED_GREEN" ]; then
+		led_blink_pattern "$LED_GREEN" 1 60
+		log_debug "LED error: verify failed (red unavailable; green one-flash fallback)"
+		return 0
+	fi
 
-	log_debug "LED error: verify failed (red/green alternating)"
+	log_debug "LED error: verify failed (both LEDs unavailable)"
+	return 0
 }
 
 led_backup_stop() {
@@ -527,222 +543,3 @@ get_total_backup_size() {
 
 	echo "${size_bytes:-0}"
 }
-
-# ---------------------------------------------------------------------------
-# status.json writer (issue #7)
-#
-# WebUI reads /opt/outdoor-backup/var/status.json to render the live progress
-# bar, storage gauge and history table. Before this, no writer existed and the
-# UI was permanently stuck at "No backup in progress".
-#
-# Field schema is fixed by the frontend (status.htm) and the developer guide:
-#   { version, last_update, storage{root,total_bytes,used_bytes,free_bytes},
-#     current_backup{active,uuid,name,device,started_at,progress_percent,
-#                    files_total,files_done,bytes_total,bytes_done,
-#                    speed_bytes_per_sec},
-#     history[ {uuid,name,last_backup_at,status,files_count,bytes_total,
-#               backup_path,error_message} ] }
-#
-# Writes are atomic (temp + mv) like aliases.json. Progress updates are
-# throttled by the caller (see backup-manager.sh) so I/O does not scale with
-# file count — echoing #6's concern about per-file overhead.
-# ---------------------------------------------------------------------------
-
-STATUS_FILE="${STATUS_FILE:-$BASE_DIR/var/status.json}"
-
-# Escape a string for safe embedding inside a JSON double-quoted value.
-# Card names come from user input (WebUI alias), so this must handle every
-# character JSON forbids unescaped: backslash, double-quote, tab, CR and —
-# critically — embedded newlines. An unescaped newline would both break the
-# whole status.json parse and split a history.jsonl entry across two physical
-# lines, corrupting the one-object-per-line invariant the array join relies on.
-json_escape() {
-	# Pipeline:
-	#  - sed escapes \, " and tab (tab -> \t) line by line.
-	#  - tr strips every remaining C0 control byte (0x01-0x08, 0x0b-0x1f),
-	#    which JSON forbids unescaped; this also removes CR. Tab (0x09, already
-	#    converted) and LF (0x0a, needed as the record separator) are kept.
-	#  - awk rejoins the surviving lines with a literal \n and emits no trailing
-	#    newline (printf, not print), so embedded newlines become valid \n.
-	printf '%s' "$1" \
-		| sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/	/\\t/g' \
-		| tr -d '\001-\010\013-\037' \
-		| awk 'NR>1 { printf "\\n" } { printf "%s", $0 }'
-}
-
-# Collect storage stats for a path into three globals (bytes).
-# Args: $1 = path on the target filesystem
-# Sets: _ST_TOTAL _ST_USED _ST_FREE (0 if path missing / df unavailable)
-status_collect_storage() {
-	local path="$1"
-	_ST_TOTAL=0
-	_ST_USED=0
-	_ST_FREE=0
-
-	# df -k is the portable form (POSIX 1k blocks). BusyBox and coreutils agree.
-	# Columns: Filesystem 1K-blocks Used Available ...
-	local line
-	line=$(df -k "$path" 2>/dev/null | awk 'NR==2 {print $2" "$3" "$4}')
-	[ -n "$line" ] || return 0
-
-	local total_k used_k free_k
-	total_k=$(echo "$line" | awk '{print $1}')
-	used_k=$(echo "$line" | awk '{print $2}')
-	free_k=$(echo "$line" | awk '{print $3}')
-
-	# Guard against non-numeric df output before arithmetic.
-	case "$total_k" in ''|*[!0-9]*) total_k=0 ;; esac
-	case "$used_k" in ''|*[!0-9]*) used_k=0 ;; esac
-	case "$free_k" in ''|*[!0-9]*) free_k=0 ;; esac
-
-	_ST_TOTAL=$((total_k * 1024))
-	_ST_USED=$((used_k * 1024))
-	_ST_FREE=$((free_k * 1024))
-}
-
-# Write status.json atomically.
-#
-# Args (all optional, default to current_backup=null when phase=idle):
-#   $1  phase        running | completed | failed | idle
-#   $2  uuid
-#   $3  name         display name (alias or SD_xxxxxxxx)
-#   $4  device       e.g. sda1
-#   $5  started_at   unix ts of backup start
-#   $6  progress     0-100 integer
-#   $7  files_total
-#   $8  files_done
-#   $9  bytes_total
-#   $10 bytes_done
-#   $11 speed        bytes/sec
-#   $12 storage_path path whose df stats feed the storage{} block
-#   $13 backup_path  target dir, recorded into history on completed/failed
-#   $14 error_message
-#
-# On completed/failed, appends one history entry (newest first, capped at 20).
-# History is preserved across runs by reading the previous file.
-write_status() {
-	local phase="$1" uuid="$2" name="$3" device="$4" started_at="$5"
-	local progress="$6" files_total="$7" files_done="$8"
-	local bytes_total="$9" bytes_done="${10}" speed="${11}"
-	local storage_path="${12}" backup_path="${13}" error_message="${14}"
-
-	local now temp
-	now=$(date +%s)
-	temp="${STATUS_FILE}.tmp.$$"
-	mkdir -p "$(dirname "$STATUS_FILE")" 2>/dev/null || true
-
-	# Storage block (best-effort; zeros if path unavailable)
-	status_collect_storage "${storage_path:-/}"
-
-	# current_backup is an object while running, JSON null otherwise.
-	local current_json="null"
-	if [ "$phase" = "running" ]; then
-		current_json=$(cat << EOF
-{
-      "active": true,
-      "uuid": "$(json_escape "$uuid")",
-      "name": "$(json_escape "$name")",
-      "device": "$(json_escape "$device")",
-      "started_at": ${started_at:-$now},
-      "progress_percent": ${progress:-0},
-      "files_total": ${files_total:-0},
-      "files_done": ${files_done:-0},
-      "bytes_total": ${bytes_total:-0},
-      "bytes_done": ${bytes_done:-0},
-      "speed_bytes_per_sec": ${speed:-0}
-    }
-EOF
-)
-	fi
-
-	# Build the history array: new entry (if terminal phase) + carried-over.
-	local history_json
-	history_json=$(status_build_history "$phase" "$uuid" "$name" \
-		"$files_done" "$bytes_done" "$backup_path" "$error_message" "$now")
-
-	# Assemble and write atomically.
-	cat > "$temp" << EOF
-{
-  "version": "1.0",
-  "last_update": ${now},
-  "storage": {
-    "root": "$(json_escape "${storage_path:-/}")",
-    "total_bytes": ${_ST_TOTAL},
-    "used_bytes": ${_ST_USED},
-    "free_bytes": ${_ST_FREE}
-  },
-  "current_backup": ${current_json},
-  "history": ${history_json}
-}
-EOF
-
-	mv "$temp" "$STATUS_FILE" 2>/dev/null || {
-		rm -f "$temp"
-		return 1
-	}
-	return 0
-}
-
-# Maintain backup history and emit it as a JSON array string.
-#
-# History is persisted as newline-delimited compact JSON (one object per line)
-# in var/history.jsonl — newest first. This keeps dedup-by-UUID and the size
-# cap as trivial line operations instead of fragile nested-JSON parsing.
-# The frontend table shows one row per card, so the latest entry for a UUID
-# replaces older ones rather than accumulating duplicate rows.
-#
-# Args: $1 phase  $2 uuid  $3 name  $4 files_count  $5 bytes_total
-#       $6 backup_path  $7 error_message  $8 now
-# Returns: a JSON array (stdout), e.g. [ {...}, {...} ]
-status_build_history() {
-	local phase="$1" uuid="$2" name="$3" files_count="$4" bytes_total="$5"
-	local backup_path="$6" error_message="$7" now="$8"
-	local hist_file
-	hist_file="$(dirname "$STATUS_FILE")/history.jsonl"
-	local max_entries=20
-
-	# On terminal phases, prepend a fresh entry for this card.
-	if [ "$phase" = "completed" ] || [ "$phase" = "failed" ]; then
-		local status_val="completed"
-		[ "$phase" = "failed" ] && status_val="error"
-
-		# error_message is JSON null unless a message was provided.
-		local err_json="null"
-		[ -n "$error_message" ] && err_json="\"$(json_escape "$error_message")\""
-
-		local entry
-		entry=$(printf '{"uuid": "%s", "name": "%s", "last_backup_at": %s, "status": "%s", "files_count": %s, "bytes_total": %s, "backup_path": "%s", "error_message": %s}' \
-			"$(json_escape "$uuid")" "$(json_escape "$name")" "${now}" \
-			"$status_val" "${files_count:-0}" "${bytes_total:-0}" \
-			"$(json_escape "$backup_path")" "$err_json")
-
-		local tmp_hist="${hist_file}.tmp.$$"
-		mkdir -p "$(dirname "$hist_file")" 2>/dev/null || true
-		{
-			printf '%s\n' "$entry"
-			# Carry over previous entries, dropping any for the same UUID,
-			# keeping at most max_entries-1 of them (newest first). The grep is
-			# anchored to the line start ('{"uuid": "<uuid>"') so a card whose
-			# name merely contains another card's uuid text can't be deleted.
-			if [ -f "$hist_file" ]; then
-				grep -v "^{\"uuid\": \"$uuid\"" "$hist_file" 2>/dev/null \
-					| head -n $((max_entries - 1))
-			fi
-		} > "$tmp_hist"
-		mv "$tmp_hist" "$hist_file" 2>/dev/null || rm -f "$tmp_hist"
-	fi
-
-	# Emit the array. Empty / missing file -> [].
-	if [ ! -s "$hist_file" ]; then
-		printf '[]'
-		return 0
-	fi
-
-	# Join lines with commas into a JSON array.
-	awk 'BEGIN { printf "[" }
-	     NF { if (n++) printf ","; printf "\n    %s", $0 }
-	     END { if (n) printf "\n  "; printf "]" }' "$hist_file"
-}
-
-
-
