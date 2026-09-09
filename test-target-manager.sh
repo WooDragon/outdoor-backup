@@ -52,19 +52,36 @@ opkg update >/dev/null
 opkg install jq >/dev/null
 
 REPO_ROOT=/src
-TEST_ROOT="/tmp/outdoor-backup-target-manager.$$"
-RUNTIME="$TEST_ROOT/runtime/opt/outdoor-backup"
-SCRIPTS="$RUNTIME/scripts"
-TARGET_MOUNT="$TEST_ROOT/target mount"
-SOURCE_MOUNT="$TEST_ROOT/source mount"
-SYSFS="$TEST_ROOT/sys"
-MOUNTINFO="$TEST_ROOT/mountinfo"
-BIN="$TEST_ROOT/bin"
-EFFECTS="$TEST_ROOT/effects"
-NOTICES="$TEST_ROOT/notices"
-RSYNC_ARGC="$TEST_ROOT/rsync-argc"
-RSYNC_SOURCE="$TEST_ROOT/rsync-source"
-RSYNC_TARGET="$TEST_ROOT/rsync-target"
+# Every case gets its own directory tree under SUITE_ROOT and cases never
+# delete each other's tree (only the EXIT trap removes SUITE_ROOT wholesale).
+# The LED helper (common.sh) forks a child that itself loops and re-spawns
+# stub sleep processes; settle_led_fixture only joins the one child it has a
+# pid for, so a straggling grandchild can still be alive after a case ends.
+# Giving each case an isolated, never-deleted-until-suite-exit directory
+# means that straggler simply keeps writing into a tree that still exists
+# instead of racing the next case's teardown.
+SUITE_ROOT="/tmp/outdoor-backup-target-manager.$$"
+FIXTURE_SEQ=0
+TEST_ROOT="$SUITE_ROOT/case-0"
+
+# Derive every fixture path from the current TEST_ROOT. Called once at
+# startup and again by reset_case() each time TEST_ROOT advances to a new
+# per-case directory.
+derive_fixture_paths() {
+    RUNTIME="$TEST_ROOT/runtime/opt/outdoor-backup"
+    SCRIPTS="$RUNTIME/scripts"
+    TARGET_MOUNT="$TEST_ROOT/target mount"
+    SOURCE_MOUNT="$TEST_ROOT/source mount"
+    SYSFS="$TEST_ROOT/sys"
+    MOUNTINFO="$TEST_ROOT/mountinfo"
+    BIN="$TEST_ROOT/bin"
+    EFFECTS="$TEST_ROOT/effects"
+    NOTICES="$TEST_ROOT/notices"
+    RSYNC_ARGC="$TEST_ROOT/rsync-argc"
+    RSYNC_SOURCE="$TEST_ROOT/rsync-source"
+    RSYNC_TARGET="$TEST_ROOT/rsync-target"
+}
+derive_fixture_paths
 TARGET_UUID="A1B2-C3D4"
 CARD_UUID="550e8400-e29b-41d4-a716-446655440000"
 CASES=0
@@ -546,7 +563,9 @@ settle_led_fixture() {
 reset_case() {
     settle_led_fixture || return 1
     unmount_target
-    rm -rf "$TEST_ROOT"
+    FIXTURE_SEQ=$((FIXTURE_SEQ + 1))
+    TEST_ROOT="$SUITE_ROOT/case-$FIXTURE_SEQ"
+    derive_fixture_paths
     TARGET_UUID="A1B2-C3D4"
     mkdir -p "$TEST_ROOT"
     mount_target || return 1
@@ -1080,7 +1099,7 @@ case_m06_remove_ignores_unmounted_target() {
 }
 
 main() {
-    trap 'settle_led_fixture; unmount_target; rm -rf "$TEST_ROOT" /opt/outdoor-backup/conf "$ASYNC_STDERR"' EXIT INT TERM
+    trap 'settle_led_fixture; unmount_target; rm -rf "$SUITE_ROOT" /opt/outdoor-backup/conf "$ASYNC_STDERR"' EXIT INT TERM
     case_m01_unconfigured_uuid_stops_before_common_side_effects
     case_m01b_missing_led_keeps_guard_failure_and_error_syslog
     case_m01c_debug_guard_failure_does_not_create_application_log

@@ -93,7 +93,7 @@ outdoor-backup/
 ### 2. 备份管理器
 - **文件**: `backup-manager.sh`
 - **职责**: 执行完整备份流程，处理所有错误情况
-- **执行流程**: PID 锁 → 挂载 → 配置 → rsync → 状态更新 → 清理
+- **执行流程**: 符号链接锁 → 挂载 → 配置 → rsync → 状态更新 → 清理
 
 ### 3. 公共函数库
 - **文件**: `common.sh`
@@ -183,7 +183,7 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 - **增量备份**：传输模块应直接调用 `rsync` 并保留真实退出码。它应使用 `--partial`，不应使用 `--ignore-existing`、`--append`、`--append-verify` 或 `--delete`。rsync 的 size/mtime quick check 不保证发现值相同的内容变化。
 - **状态单一来源**：`status.sh` 应使用 `jq` 原子替换唯一的 `status.json` 快照。它不得创建 `history.jsonl` 或手写 JSON。状态仅在守卫建立后写入，且只有 rsync、摘要写入、最终锚点健康和设备身份复验均成功时才可写 `completed`。
 - **空间守卫**：管理器应通过已锚定目标 FD 执行 `df`，而非扫描备份树计算空间。`MIN_FREE_SPACE` 的默认值为 1024 MB；合法非负整数 `0` 禁用余量，未知 `df` 值必须失败关闭。只有明确 ENOSPC 诊断可把 rsync 失败归类为满盘。
-- **错误恢复**：信号处理确保清理；`remove` 不依赖目标存储在场。清理应先释放 FD，再启动 LED 定时器。旧 PID 锁与广泛 `pkill` 的限制由 #8/PR10 和 #16 跟踪。
+- **错误恢复**：信号处理确保清理；`remove` 不依赖目标存储在场。清理应先释放 FD，再启动 LED 定时器。广泛 `pkill` 的限制由 #16 跟踪。
 
 ### 路径安全
 - **目录遍历防护**: `is_safe_path()` 检查 `../`

@@ -179,7 +179,8 @@ cleanup() {
 # Returns 0 when alive, nonzero when stale (dead, reused PID, or zombie).
 lock_holder_alive() {
 	[ -r "$LOCK_LINK/cmdline" ] || return 1
-	tr '\0' ' ' < "$LOCK_LINK/cmdline" 2>/dev/null | grep -q "$LOCK_IDENTITY"
+	# Body identity check requires literal match: "." in regex matches any char
+	tr '\0' ' ' < "$LOCK_LINK/cmdline" 2>/dev/null | grep -Fq -- "$LOCK_IDENTITY"
 }
 
 # Get exclusive lock via an atomic symlink publish. Args: none. Returns 0, or
@@ -211,12 +212,18 @@ acquire_lock() {
 	return 1
 }
 
-# Release the lock only if this process is its actual holder; a competitor
-# that lost the race must never delete the winner's lock. Args: none.
+# Release the lock only if this process is its actual holder; a competitor that
+# lost the race must never delete the winner's lock. The in-process flag is not
+# enough: if this lock was reclaimed while we still believed we held it, the
+# name now belongs to someone else and removing it would take their lock.
 release_lock() {
 	[ "$LOCK_HELD" = "1" ] || return 0
-	rm -f "$LOCK_LINK" 2>/dev/null || true
 	LOCK_HELD=0
+	if [ "$(readlink "$LOCK_LINK" 2>/dev/null)" != "/proc/$$" ]; then
+		log_warn 'Lock was reclaimed by another process; leaving it alone'
+		return 0
+	fi
+	rm -f "$LOCK_LINK" 2>/dev/null || true
 	log_info 'Lock released'
 }
 

@@ -115,6 +115,7 @@ LOCK_IDENTITY=${LOCK_IDENTITY:-backup-manager.sh}
 # shellcheck disable=SC1090
 . "$LOCK_LIB"
 log_info() { printf 'INFO %s\n' "$*" >> "${TEST_LOG:-/dev/null}"; }
+log_warn() { printf 'WARN %s\n' "$*" >> "${TEST_LOG:-/dev/null}"; }
 log_error() { printf 'ERROR %s\n' "$*" >> "${TEST_LOG:-/dev/null}"; }
 eval "$snippet"
 EOF
@@ -253,6 +254,38 @@ case_k05_identity_mismatch_is_stale_even_though_the_pid_is_alive() {
     assert_equal "$(cat "$TEST_ROOT/k05.contender")" 'RC=0' \
         'K05 contender with mismatched LOCK_IDENTITY reclaims despite the real holder being alive'
     kill -9 "$holder_pid" 2>/dev/null || :
+    wait "$holder_pid" 2>/dev/null || :
+}
+
+# ---------------------------------------------------------------------------
+# K05b: after the lock is reclaimed from a process that still believes it holds
+# it, that process's release_lock must not delete the new holder's lock. This
+# guards against a scenario where the holder is killed externally (or times out
+# in a previous holder's eyes) while the holder believes it still owns the lock.
+# Mirrors K03 structure: holder sleeps with lock, we externally reclaim it,
+# then a test process with LOCK_HELD=1 calls release_lock and verifies it leaves
+# the new holder's lock alone.
+# ---------------------------------------------------------------------------
+case_k05b_reclaimed_lock_release_does_not_delete_new_holder() {
+    begin_case K05b 'after reclaim, a process that believed it held the lock does not delete the new holder'"'"'s lock'
+    lockdir="$TEST_ROOT/k05b.lock"
+    run_lock_bg "$TEST_ROOT/k05b.holder" "$lockdir" 'acquire_lock; /bin/sleep 3; release_lock' 300 5
+    holder_pid=$!
+    assert_success 'K05b holder published the lock link' wait_for_symlink "$lockdir"
+    # Externally reclaim the holder's lock: move the old link away and create a new one
+    # pointing to the main test process ($$)
+    stale_lock="$lockdir.stale"
+    mv "$lockdir" "$stale_lock" 2>/dev/null || :
+    rm -f "$stale_lock"
+    ln -s "/proc/$$" "$lockdir" 2>/dev/null
+    assert_success 'K05b main process published the new lock link' test -L "$lockdir"
+    # A process that thinks it holds the lock (LOCK_HELD=1) calls release_lock.
+    # It should detect the link now points elsewhere and leave it alone.
+    run_lock "$TEST_ROOT/k05b.release" "$lockdir" 'LOCK_HELD=1; release_lock; [ -L "$LOCK_LINK" ] && echo LINK_EXISTS'
+    assert_equal "$(cat "$TEST_ROOT/k05b.release")" 'LINK_EXISTS' \
+        'K05b release_lock left the reclaimed lock link intact'
+    assert_equal "$(readlink "$lockdir")" "/proc/$$" \
+        'K05b lock still points to the new holder after old holder'"'"'s release_lock'
     wait "$holder_pid" 2>/dev/null || :
 }
 
@@ -448,6 +481,7 @@ main() {
     case_k03_non_owner_release_leaves_holders_lock_intact
     case_k04_stale_lock_from_dead_pid_is_reclaimed
     case_k05_identity_mismatch_is_stale_even_though_the_pid_is_alive
+    case_k05b_reclaimed_lock_release_does_not_delete_new_holder
     case_k06_live_matching_holder_blocks_reclaim_until_it_releases
     case_k07_timeout_reachable_with_exact_sleep_call_count
     case_k08_sigkilled_holder_lock_is_reclaimed
@@ -455,9 +489,9 @@ main() {
     case_k10_release_lock_is_idempotent
     case_k11_lock_never_exists_without_a_usable_identity
     case_km01_mutation_probe_ln_sf_is_caught
-    assert_equal "$CASES" 12 'all required lock cases executed'
-    if [ "$ASSERTIONS" -ne 40 ]; then
-        fail "all required assertions executed (expected=40, actual=$ASSERTIONS)"
+    assert_equal "$CASES" 13 'all required lock cases executed'
+    if [ "$ASSERTIONS" -ne 44 ]; then
+        fail "all required assertions executed (expected=44, actual=$ASSERTIONS)"
     fi
     if [ "$FAILED" -ne 0 ]; then
         printf 'cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"
