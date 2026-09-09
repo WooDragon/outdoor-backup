@@ -94,21 +94,25 @@ exit 0
 
 ### 文件：`/opt/outdoor-backup/scripts/backup-manager.sh`
 
-管理器先由 [`config.sh`](../files/opt/outdoor-backup/scripts/config.sh) 加载有效配置。有效值的顺序是 defaults < legacy `backup.conf` < 显式 UCI option。`TARGET_MOUNT` 的默认值为 `/mnt/ssd`，`TARGET_UUID` 的默认值为空。`add` 事件要求用户配置非空的目标 UUID；`remove` 事件不依赖目标介质在场，仍进入清理路径。
+管理器先由 [`config.sh`](../files/opt/outdoor-backup/scripts/config.sh) 加载有效配置。有效值的顺序是 defaults < legacy `backup.conf` < 显式 UCI option。`TARGET_MOUNT` 的默认值为 `/mnt/ssd`。`TARGET_UUID` 的默认值为空。`add` 事件要求用户配置非空的目标 UUID。`remove` 事件不要求目标介质在场，仍进入清理路径。
 
-目标守卫在加载 `common.sh`、注册 cleanup trap、操作 LED 或锁、挂载来源卡、读取别名和创建应用日志之前运行。管理器按以下顺序调用当前实现：
+目标守卫在加载 `common.sh`、注册 cleanup trap、获取锁、挂载来源卡、读取别名和创建应用日志之前运行。管理器按以下顺序调用当前实现：
 
-1. [`target.sh`](../files/opt/outdoor-backup/scripts/target.sh) 以 FD 9 打开目标挂载，要求配置路径本身不是符号链接、目录存在、挂载记录精确匹配该路径，并同时具有 VFS 与文件系统级 `rw` 选项。
-2. [`target-device.sh`](../files/opt/outdoor-backup/scripts/target-device.sh) 校验官方 `block info` 返回的 UUID，并用 sysfs 证明目标、来源卡和系统 backing disk 的物理盘不同。它接受 direct `sd`、`mmc`、`nvme`，只为明确指向 `/dev/` 分区的 R5S 系统 loop 追溯 backing；unknown、file-backed loop、`dm` 与 `md` 均失败关闭。它解析 `block info` 的整条键值 token；`LABEL` 值内的同形文本不算 UUID，畸形引号会被拒绝。
-3. `target_prepare_root` 要求 `BACKUP_ROOT` 是目标挂载的严格子目录，并经 `/proc/<manager-pid>/fd/9` 创建目录。既有符号链接组件，包括 `.logs`，会被拒绝。守卫拒绝覆盖目标挂载点、`BACKUP_ROOT` 祖先或备份树内子挂载；不相交目录的挂载不会被误拒。
+1. [`target.sh`](../files/opt/outdoor-backup/scripts/target.sh) 以 FD 9 打开目标挂载。它要求配置路径不是符号链接。它要求目录存在。它要求内核 `/proc/<manager-pid>/mountinfo` 中的挂载记录精确匹配该路径。它还要求 VFS 与文件系统级选项均为 `rw`。
+2. [`target-device.sh`](../files/opt/outdoor-backup/scripts/target-device.sh) 校验官方 `block info` 返回的 UUID。它用 sysfs 证明目标、来源卡和系统 backing disk 的物理盘不同。它接受 direct `sd`、`mmc`、`nvme`。系统 loop 仅在 backing file 明确指向 `/dev/` 分区时可追溯。unknown 或 deleted backing、file-backed loop、`dm` 与 `md` 均失败关闭。它解析 `block info` 的完整键值 token。`LABEL` 值内的同形文本不算 UUID。畸形引号会被拒绝。
+3. `target_prepare_root` 要求 `BACKUP_ROOT` 是目标挂载的严格子目录。它通过 `/proc/<manager-pid>/fd/9` 创建目录。既有符号链接组件，包括 `.logs`，会被拒绝。守卫拒绝覆盖目标挂载点、`BACKUP_ROOT` 祖先或备份树内子挂载。不相交目录的挂载不会被误拒。
 
-守卫失败时向 stderr 和 syslog 报错，然后在应用资源操作前退出。守卫成功后，目标目录和日志都经 FD 9 引用。管理器在目标准备、`rsync` 前、`rsync` 后及末尾的设备复验中检查锚点。目标卸载、替换或只读重挂载不应产生成功结果。日志摘要写入失败，以及摘要后的 detached 或只读复检失败，均返回非零。
+初始守卫失败时，管理器向 stderr 和 error 级 syslog 报错。它可触发可选红灯。它不进入来源挂载、`rsync`、别名、锁或应用日志生命周期。LED helper 创建延时子进程前，管理器关闭目标 FD。缺少 LED 不改变失败的非零退出状态。`enabled=0` 的 `add` 事件在任何 LED 副作用前退出。
 
-静态符号链接检查不是 `openat2`。恶意 root 并发替换目标目录不在此 shell 实现的保证范围内。来源卡配置仍可执行，REPLICA 方向的语义尚未随 #14b 改动，将由 #15 处理。现有 rsync 管道的整体退出码处理仍属 PR9 范围；本文档不声称所有 `ENOSPC` 均被正确报告，也不声称实现完全安全。
+守卫成功后，目标目录和日志都经 FD 9 引用。管理器在目标准备、`rsync` 前、`rsync` 后及末尾的设备复验中检查锚点。目标卸载、替换或只读重挂载不应产生成功结果。日志摘要写入失败，以及摘要后的 detached 或只读复检失败，均返回非零。
+
+静态符号链接检查不是 `openat2`。恶意 root 并发替换目标目录不在此 shell 实现的保证范围内。未知或 deleted loop backing 无法证明身份时会失败关闭。本文档不声称真机全兼容。`FieldBackup.conf` 由 [`card-config.sh`](../files/opt/outdoor-backup/scripts/card-config.sh) 按数据读取，绝不 `source` 或 `eval`。该读取器只导出 `SD_UUID`、`BACKUP_MODE`、`CREATED_AT` 与旧 `SD_NAME`。其他合法赋值会被忽略。畸形数据或缺失、非法 UUID 会失败，且不会重写现有卡配置。当前 PRIMARY/REPLICA 语义仍保留。#15 的剩余范围是身份稳定、只读卡、克隆卡与默认禁止 REPLICA，不包含执行卡配置。现有 rsync 管道的整体退出码处理仍属既有 PR 和 Issue；#14 未结项包括最终包 CI、固件 CI 与真机验证。
+
+LuCI 表单提供 `target_mount`、`target_uuid` 和 `backup_root` 说明。表单在 `enabled=1` 时要求 UUID。表单在 `enabled=0` 时允许空 UUID。字段的合法值和路径检查不代表表单会自动挂载或格式化介质。
 
 > **前置阅读**：目标存储的可执行配置、重试方法和用户可见限制，修改部署或运维行为前必须先读取：[README.md 的 Configuration 章节](../README.md#configuration)。
 
-运行时细节以 [`backup-manager.sh`](../files/opt/outdoor-backup/scripts/backup-manager.sh)、[`target.sh`](../files/opt/outdoor-backup/scripts/target.sh) 和 [`target-device.sh`](../files/opt/outdoor-backup/scripts/target-device.sh) 为单一事实源；本文档不复制生产算法。
+运行时细节以 [`backup-manager.sh`](../files/opt/outdoor-backup/scripts/backup-manager.sh)、[`card-config.sh`](../files/opt/outdoor-backup/scripts/card-config.sh)、[`target.sh`](../files/opt/outdoor-backup/scripts/target.sh) 和 [`target-device.sh`](../files/opt/outdoor-backup/scripts/target-device.sh) 为单一事实源；本文档不复制生产算法。
 
 ## 3. 公共函数库
 

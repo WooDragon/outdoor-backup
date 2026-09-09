@@ -8,7 +8,7 @@
 # Emit a validation failure to stderr and syslog. Argument: failure reason.
 target_device_notice() {
     printf 'outdoor-backup: target device error: %s\n' "$1" >&2
-    logger -t outdoor-backup "$1" 2>/dev/null || :
+    logger -t outdoor-backup -p err "$1" 2>/dev/null || :
 }
 
 # Clear only state exported by target_device_validate. No arguments.
@@ -241,36 +241,9 @@ target_device_is_pseudo_filesystem() {
     esac
 }
 
-# Validate target block UUID and prove it is distinct from source and system.
-# Arguments: target major:minor, expected UUID, source DEVNAME.
-# Success exports TARGET_BLOCK_NODE and TARGET_PHYSICAL_DISK; failure exports none.
-target_device_validate() {
-    target_device_clear_state
-    target_device_target_mm=$1
-    target_device_expected_uuid=$2
-    target_device_source_name=$3
-
-    target_device_valid_major_minor "$target_device_target_mm" || {
-        target_device_notice 'target device identity is not major:minor'
-        return 1
-    }
-    case "$target_device_expected_uuid" in
-        '' ) target_device_notice 'target UUID is unconfigured'; return 1 ;;
-        *[!A-Za-z0-9-]* ) target_device_notice 'target UUID contains unsafe characters'; return 1 ;;
-    esac
-    target_device_valid_devname "$target_device_source_name" || {
-        target_device_notice 'source device name is unsafe'
-        return 1
-    }
-    target_device_root=$(target_device_sysfs_root) || {
-        target_device_notice 'sysfs block topology is unavailable'
-        return 1
-    }
-    command -v block >/dev/null 2>&1 || {
-        target_device_notice 'official block CLI is unavailable'
-        return 1
-    }
-
+# Resolve target/source physical disks from temporary state initialized by validate.
+# No arguments; returns 0 after resolving both disks, or 1 on failure.
+target_device_resolve_pair() {
     target_device_node=$(target_device_node_for_major_minor \
         "$target_device_root" "$target_device_target_mm") || {
         target_device_notice 'target major:minor has no trustworthy sysfs node'
@@ -305,13 +278,12 @@ target_device_validate() {
         target_device_notice 'target and source share a physical disk'
         return 1
     fi
-    target_device_block_node="/dev/$target_device_target_name"
-    target_device_uuid_matches_block "$target_device_block_node" \
-        "$target_device_expected_uuid" || {
-        target_device_notice 'block UUID does not uniquely match the configured target UUID'
-        return 1
-    }
+    return 0
+}
 
+# Exclude physical system backing disks using temporary state initialized by validate.
+# No arguments; returns 0 after exclusion, or 1 when no safe exclusion is proven.
+target_device_exclude_system_disks() {
     target_device_mountinfo=${TARGET_MOUNTINFO_FILE:-/proc/$$/mountinfo}
     target_device_records=$(target_device_system_mount_records \
         "$target_device_mountinfo") || {
@@ -344,6 +316,48 @@ EOF
         target_device_notice 'no physical system backing disk was proven'
         return 1
     fi
+    return 0
+}
+
+# Validate target block UUID and prove it is distinct from source and system.
+# Arguments: target major:minor, expected UUID, source DEVNAME.
+# Success exports TARGET_BLOCK_NODE and TARGET_PHYSICAL_DISK; failure exports none.
+target_device_validate() {
+    target_device_clear_state
+    target_device_target_mm=$1
+    target_device_expected_uuid=$2
+    target_device_source_name=$3
+
+    target_device_valid_major_minor "$target_device_target_mm" || {
+        target_device_notice 'target device identity is not major:minor'
+        return 1
+    }
+    case "$target_device_expected_uuid" in
+        '' ) target_device_notice 'target UUID is unconfigured'; return 1 ;;
+        *[!A-Za-z0-9-]* ) target_device_notice 'target UUID contains unsafe characters'; return 1 ;;
+    esac
+    target_device_valid_devname "$target_device_source_name" || {
+        target_device_notice 'source device name is unsafe'
+        return 1
+    }
+    target_device_root=$(target_device_sysfs_root) || {
+        target_device_notice 'sysfs block topology is unavailable'
+        return 1
+    }
+    command -v block >/dev/null 2>&1 || {
+        target_device_notice 'official block CLI is unavailable'
+        return 1
+    }
+
+    target_device_resolve_pair || return 1
+    target_device_block_node="/dev/$target_device_target_name"
+    target_device_uuid_matches_block "$target_device_block_node" \
+        "$target_device_expected_uuid" || {
+        target_device_notice 'block UUID does not uniquely match the configured target UUID'
+        return 1
+    }
+
+    target_device_exclude_system_disks || return 1
 
     TARGET_BLOCK_NODE=$target_device_block_node
     TARGET_PHYSICAL_DISK=$target_device_target_disk

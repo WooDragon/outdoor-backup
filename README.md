@@ -136,13 +136,19 @@ When a target-storage failure occurs, prepare the target storage first and then 
 
 ### Target guard behavior and limits
 
-Before an `add` event can create application state, the manager opens the configured target through FD 9 and requires an exact live mount record. Both VFS and filesystem-specific mount options must be `rw`. The target's `block info` UUID must equal `target_uuid`. Sysfs must prove that the source card, target storage, and physical system backing disks are different.
+Before an `add` event can create application state, the manager opens the configured target through FD 9 and requires an exact live `/proc/<manager-pid>/mountinfo` record. Both VFS and filesystem-specific mount options must be `rw`. The target's `block info` UUID must equal `target_uuid`. Sysfs must prove that the source card, target storage, and physical system backing disks are different.
 
-The guard accepts direct `sd`, `mmc`, and `nvme` disks. It can trace the R5S system loop backing file only when the backing file explicitly names a `/dev/` block partition. Unknown devices, file-backed loops, `dm`, and `md` devices fail closed. It parses complete key-value tokens from `block info`; UUID-shaped text inside a `LABEL` value is not treated as a UUID, and malformed quoting is rejected. The manager uses `/proc/<manager-pid>/fd/9` for target directories and per-backup logs. It checks the anchor before work, before `rsync`, and after `rsync`; target detach or a read-only remount cannot produce a successful backup. A log-summary write failure and a detached or read-only recheck failure after the summary return nonzero.
+The guard accepts direct `sd`, `mmc`, and `nvme` disks. It can trace a system loop device only when its backing file explicitly names a `/dev/` block partition. Unknown backing, a deleted backing file, a file-backed loop, `dm`, and `md` devices fail closed because the manager cannot prove their identity. It parses complete key-value tokens from `block info`; UUID-shaped text inside a `LABEL` value is not treated as a UUID, and malformed quoting is rejected. The manager uses `/proc/<manager-pid>/fd/9` for target directories and per-backup logs. It checks the anchor before work, before `rsync`, and after `rsync`; target detach or a read-only remount cannot produce a successful backup. A log-summary write failure and a detached or read-only recheck failure after the summary return nonzero.
 
-The static directory check rejects a symlink at the configured mount path or in an existing target-directory component, including `BACKUP_ROOT/.logs`. The guard rejects mounts covering the target mount point, an ancestor of `BACKUP_ROOT`, or a child mount inside the backup tree; mounts in disjoint directories are not rejected. It is not `openat2`; a malicious root process that concurrently replaces target directories is outside the guarantee of this shell implementation.
+The static directory check rejects a symlink at the configured mount path or in an existing target-directory component, including `BACKUP_ROOT/.logs`. The guard rejects mounts covering the target mount point, an ancestor of `BACKUP_ROOT`, or a child mount inside the backup tree; mounts in disjoint directories are not rejected. This shell implementation does not provide an `openat2` guarantee against a malicious root process that replaces target directories concurrently. It does not claim complete real-device compatibility.
 
-The guard protects the PRIMARY path. Source-card configuration can still be executed, and the REPLICA direction remains unchanged pending #15. The existing rsync pipeline still does not preserve the complete pipeline exit status, so this release does not claim that every `ENOSPC` error is reported correctly or that the implementation is completely safe.
+If the initial target guard fails, the manager writes the reason to stderr and error-level syslog. It may signal the optional red LED, but it does not enter the source mount, `rsync`, alias, lock, or application-log lifecycle. The manager closes the target FD before the LED helper starts its delayed child process. A missing LED does not turn this failure into success. `enabled=0` exits an `add` event before any LED side effect.
+
+The guard protects the PRIMARY path. The current parser retains PRIMARY and REPLICA values and their current directions. Remaining #15 work concerns stable card identity, read-only cards, cloned cards, and default prohibition of REPLICA; it does not authorize executing card configuration. The existing rsync pipeline still does not preserve the complete pipeline exit status, so this release does not claim that every `ENOSPC` error is reported correctly or that the implementation is completely safe.
+
+### LuCI storage fields
+
+The LuCI form exposes `target_mount`, `target_uuid`, and the `backup_root` boundary. It requires a valid UUID when `enabled=1`. It permits an empty UUID when `enabled=0`. Field validation only checks submitted values and paths. It does not mount or format a disk. Use the fstab procedure above to mount the real target UUID.
 
 ### Set other UCI overrides
 
@@ -170,7 +176,7 @@ Edit `/opt/outdoor-backup/conf/backup.conf` only when a legacy value should appl
 
 ### Per-SD Card Configuration
 
-Each SD card gets a `FieldBackup.conf` file:
+When a writable card has no configuration, the manager creates `{SD_ROOT}/FieldBackup.conf` with a new UUID and `PRIMARY` mode. The manager reads an existing file as data. It never `source`s or `eval`s the file.
 
 ```bash
 # Automatically generated on first insertion
@@ -179,11 +185,13 @@ BACKUP_MODE="PRIMARY"                # PRIMARY or REPLICA
 CREATED_AT="2024-01-15 10:30:00"
 ```
 
-**Note**: To set a friendly name for your SD card, use the WebUI alias management feature instead of editing this file.
+The reader exports only `SD_UUID`, `BACKUP_MODE`, `CREATED_AT`, and the legacy `SD_NAME`. It ignores other syntactically valid assignments. It rejects malformed records, duplicate recognized fields, an absent UUID, or an invalid UUID. On rejection, it does not rewrite the existing card file or replace the in-memory card identity. `BACKUP_MODE` defaults to `PRIMARY` when absent.
+
+To set a friendly name for an SD card, use the WebUI alias management feature instead of editing this file.
 
 **Modes**:
 - `PRIMARY`: SD → Internal Storage (default)
-- `REPLICA`: Internal Storage → SD (for restoring backups)
+- `REPLICA`: Internal Storage → SD (current restoration direction)
 
 ## Package Structure
 

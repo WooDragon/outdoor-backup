@@ -9,7 +9,7 @@
 # Argument: human-readable failure reason.
 target_notice() {
     printf 'outdoor-backup: target error: %s\n' "$1" >&2
-    logger -t outdoor-backup "$1" 2>/dev/null || :
+    logger -t outdoor-backup -p err "$1" 2>/dev/null || :
 }
 
 # Remove only state owned by this library. This function does not close an FD.

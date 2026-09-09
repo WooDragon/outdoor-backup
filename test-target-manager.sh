@@ -106,6 +106,58 @@ assert_not_contains() {
     fi
 }
 
+# A target guard failure may emit syslog and the red LED only. The fixture sleep
+# stub records the production 60-second auto-off request. Individual cases choose
+# either a capped wait or a release-controlled wait to make timer lifetime explicit.
+assert_guard_failure_effects() {
+    case_id=$1
+    assert_contains '-t outdoor-backup -p err' "$NOTICES" \
+        "$case_id guard syslog uses error severity"
+    assert_equal "$(cat "$TEST_ROOT/red/trigger")" timer \
+        "$case_id guard sets red LED timer trigger"
+    assert_equal "$(cat "$TEST_ROOT/red/delay_on")" 500 \
+        "$case_id guard sets red LED on delay"
+    assert_equal "$(cat "$TEST_ROOT/red/delay_off")" 500 \
+        "$case_id guard sets red LED off delay"
+    assert_contains 'sleep duration=60' "$EFFECTS" \
+        "$case_id LED auto-off requests its production duration through the stub"
+    assert_not_contains 'mount argc=' "$EFFECTS" \
+        "$case_id guard did not mount source media"
+    assert_not_contains rsync "$EFFECTS" \
+        "$case_id guard did not start a backup"
+    assert_absent "$RUNTIME/log/backup.log" \
+        "$case_id guard did not create an application log"
+    assert_absent /opt/outdoor-backup/conf/aliases.json \
+        "$case_id guard did not create aliases"
+    assert_absent "$TEST_ROOT/green/trigger" \
+        "$case_id guard did not signal backup completion"
+}
+
+assert_guard_failure_observable() {
+    assert_guard_failure_effects "$1"
+    /bin/sleep 1
+}
+
+wait_for_path() {
+    path=$1
+    attempts=0
+    while [ ! -e "$path" ] && [ "$attempts" -lt 5 ]; do
+        /bin/sleep 1
+        attempts=$((attempts + 1))
+    done
+    [ -e "$path" ]
+}
+
+wait_for_timer_exit() {
+    timer_pid=$(cat "$TEST_ROOT/timer-pid" 2>/dev/null) || return 1
+    attempts=0
+    while kill -0 "$timer_pid" 2>/dev/null && [ "$attempts" -lt 5 ]; do
+        /bin/sleep 1
+        attempts=$((attempts + 1))
+    done
+    ! kill -0 "$timer_pid" 2>/dev/null
+}
+
 mount_target() {
     mkdir -p "$TARGET_MOUNT"
     mount -t tmpfs -o rw,size=2m tmpfs "$TARGET_MOUNT"
@@ -186,6 +238,7 @@ prepare_runtime() {
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/backup-manager.sh" "$SCRIPTS/backup-manager.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/config.sh" "$SCRIPTS/config.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/common.sh" "$SCRIPTS/common.sh"
+    ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/card-config.sh" "$SCRIPTS/card-config.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/target.sh" "$SCRIPTS/target.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/target-device.sh" "$SCRIPTS/target-device.sh"
     : > "$EFFECTS"
@@ -211,11 +264,21 @@ EOF
 #!/bin/sh
 printf 'mount argc=%s target=[%s]\n' "$#" "$4" >> "$TEST_EFFECTS"
 mkdir -p "$4"
-cat > "$4/FieldBackup.conf" <<'CARD'
+if [ -n "${TEST_CARD_CONFIG:-}" ]; then
+    printf '%s\n' "$TEST_CARD_CONFIG" > "$4/FieldBackup.conf"
+else
+    cat > "$4/FieldBackup.conf" <<'CARD'
 SD_UUID="550e8400-e29b-41d4-a716-446655440000"
 BACKUP_MODE="PRIMARY"
 BACKUP_ROOT="/escaped-by-card-config"
+TARGET_FD_ROOT="/escaped-by-card-config/fd"
+TARGET_BACKUP_ROOT="/escaped-by-card-config/backups"
+TARGET_UUID="ATTACKER-UUID"
+TARGET_SYSFS_ROOT="/escaped-by-card-config/sys"
+PATH="/escaped-by-card-config/bin"
+IFS="attacker"
 CARD
+fi
 EOF
     cat > "$BIN/mountpoint" <<'EOF'
 #!/bin/sh
@@ -257,6 +320,21 @@ EOF
 #!/bin/sh
 printf 'sync\n' >> "$TEST_EFFECTS"
 EOF
+    cat > "$BIN/sleep" <<'EOF'
+#!/bin/sh
+# The production helper still requests 60 seconds. M02d switches to a controlled
+# wait so the test can prove the timer is alive while it tries a normal umount.
+printf 'sleep duration=%s\n' "$1" >> "$TEST_EFFECTS"
+if [ "${TEST_TIMER_CONTROLLED:-0}" = 1 ] && [ "$1" = 60 ]; then
+    printf '%s\n' "$$" > "$TEST_TIMER_PID"
+    : > "$TEST_TIMER_READY"
+    while [ ! -e "$TEST_TIMER_RELEASE" ]; do
+        /bin/sleep 1
+    done
+    exit 0
+fi
+/bin/sleep 1
+EOF
     chmod 755 "$BIN"/*
 }
 
@@ -269,7 +347,12 @@ run_manager() {
         TARGET_TEST_BLOCK_NODE="$TARGET_TEST_BLOCK_NODE" \
         TARGET_SYSFS_ROOT="$SYSFS" TARGET_MOUNTINFO_FILE="$MOUNTINFO" \
         TEST_TARGET_MOUNT="$TARGET_MOUNT" TEST_CAT_INJECT="${TEST_CAT_INJECT:-}" \
-        PATH="$BIN:$PATH" /bin/ash "$SCRIPTS/backup-manager.sh" "$@"
+        TEST_TIMER_CONTROLLED="${TEST_TIMER_CONTROLLED:-0}" \
+        TEST_TIMER_READY="$TEST_ROOT/timer-ready" \
+        TEST_TIMER_RELEASE="$TEST_ROOT/timer-release" \
+        TEST_TIMER_PID="$TEST_ROOT/timer-pid" \
+        DEBUG="${DEBUG:-0}" PATH="$BIN:$PATH" \
+        /bin/ash "$SCRIPTS/backup-manager.sh" "$@"
 }
 
 reset_case() {
@@ -290,10 +373,34 @@ case_m01_unconfigured_uuid_stops_before_common_side_effects() {
         fail 'M01 empty target UUID unexpectedly succeeded'
     fi
     assert_contains 'target UUID is unconfigured' "$TEST_ROOT/error" 'M01 reports UUID decision'
-    assert_equal "$(wc -l < "$EFFECTS")" 0 'M01 did not mount source or rsync'
     assert_equal "$(wc -l < "$NOTICES")" 1 'M01 only emitted guard observability'
-    assert_absent "$RUNTIME/log/backup.log" 'M01 created application log'
-    assert_absent /opt/outdoor-backup/conf/aliases.json 'M01 created aliases'
+    assert_guard_failure_observable M01
+}
+
+case_m01b_missing_led_keeps_guard_failure_and_error_syslog() {
+    begin_case M01b 'missing optional red LED cannot hide unconfigured target failure'
+    reset_case || { fail 'M01b fixture setup failed'; return; }
+    set_config_target_uuid ''
+    rm -rf "$TEST_ROOT/red"
+    assert_failure 'M01b missing LED still leaves manager failure nonzero' run_manager add sda1 /devices/mock
+    assert_contains '-t outdoor-backup -p err' "$NOTICES" \
+        'M01b missing LED still reports error-severity syslog'
+    assert_equal "$(wc -l < "$EFFECTS")" 1 \
+        'M01b missing LED emitted only its controlled auto-off sleep effect'
+    assert_contains 'sleep duration=60' "$EFFECTS" \
+        'M01b missing LED retained the production auto-off request'
+    assert_absent "$RUNTIME/log/backup.log" 'M01b missing LED did not create application log'
+    assert_absent /opt/outdoor-backup/conf/aliases.json 'M01b missing LED did not create aliases'
+    assert_absent "$TEST_ROOT/green/trigger" 'M01b missing LED did not signal completion'
+    /bin/sleep 1
+}
+
+case_m01c_debug_guard_failure_does_not_create_application_log() {
+    begin_case M01c 'DEBUG guard failure signals externally without application logging'
+    reset_case || { fail 'M01c fixture setup failed'; return; }
+    set_config_target_uuid ''
+    DEBUG=1 assert_failure 'M01c DEBUG fixture manager still fails' run_manager add sda1 /devices/mock
+    assert_guard_failure_observable M01c
 }
 
 case_m02_target_device_mismatch_stops_before_source_mount() {
@@ -301,8 +408,34 @@ case_m02_target_device_mismatch_stops_before_source_mount() {
     reset_case || { fail 'M02 fixture setup failed'; return; }
     set_config_target_uuid 'WRONG-UUID'
     assert_failure 'M02 mismatched target UUID fails manager' run_manager add sda1 /devices/mock
-    assert_equal "$(wc -l < "$EFFECTS")" 0 'M02 did not mount source or rsync'
-    assert_absent "$RUNTIME/log/backup.log" 'M02 created application log'
+    assert_guard_failure_observable M02
+}
+
+case_m02d_uuid_mismatch_releases_anchor_before_led_timer() {
+    begin_case M02d 'UUID mismatch closes the target anchor before its red LED timer waits'
+    reset_case || { fail 'M02d fixture setup failed'; return; }
+    set_config_target_uuid 'WRONG-UUID'
+    TEST_TIMER_CONTROLLED=1
+    export TEST_TIMER_CONTROLLED
+    assert_failure 'M02d mismatched target UUID fails manager' run_manager add sda1 /devices/mock
+    assert_success 'M02d LED timer reached its controlled wait' \
+        wait_for_path "$TEST_ROOT/timer-ready"
+    assert_success 'M02d LED timer remains alive before target unmount' \
+        kill -0 "$(cat "$TEST_ROOT/timer-pid")"
+    assert_guard_failure_effects M02d
+    assert_success 'M02d regular umount succeeds while LED timer is waiting' \
+        /bin/umount "$TARGET_MOUNT"
+    : > "$TEST_ROOT/timer-release"
+    assert_success 'M02d LED timer exits after fixture release' wait_for_timer_exit
+    unset TEST_TIMER_CONTROLLED
+}
+
+case_m02a_read_only_target_stops_before_common_side_effects() {
+    begin_case M02a 'read-only target rejects add before common lifecycle effects'
+    reset_case || { fail 'M02a fixture setup failed'; return; }
+    assert_success 'M02a remounted target read-only' /bin/mount -o remount,ro "$TARGET_MOUNT"
+    assert_failure 'M02a read-only target fails manager' run_manager add sda1 /devices/mock
+    assert_guard_failure_observable M02a
 }
 
 case_m02b_missing_mount_stops_before_common_side_effects() {
@@ -310,9 +443,7 @@ case_m02b_missing_mount_stops_before_common_side_effects() {
     reset_case || { fail 'M02b fixture setup failed'; return; }
     unmount_target
     assert_failure 'M02b missing target mount fails manager' run_manager add sda1 /devices/mock
-    assert_equal "$(wc -l < "$EFFECTS")" 0 'M02b did not mount source or rsync'
-    assert_absent "$RUNTIME/log/backup.log" 'M02b created application log'
-    assert_absent /opt/outdoor-backup/conf/aliases.json 'M02b created aliases'
+    assert_guard_failure_observable M02b
 }
 
 case_m02c_same_source_or_system_disk_stops_before_common() {
@@ -320,30 +451,41 @@ case_m02c_same_source_or_system_disk_stops_before_common() {
     reset_case || { fail 'M02c source fixture setup failed'; return; }
     map_target_to_physical_disk sda sda12
     assert_failure 'M02c source physical disk target fails manager' run_manager add sda1 /devices/mock
-    assert_equal "$(wc -l < "$EFFECTS")" 0 'M02c source disk did not mount source or rsync'
-    assert_absent "$RUNTIME/log/backup.log" 'M02c source disk created application log'
+    assert_guard_failure_observable M02c-source
 
     reset_case || { fail 'M02c system fixture setup failed'; return; }
     map_target_to_physical_disk mmcblk0 mmcblk0p3
     assert_failure 'M02c system physical disk target fails manager' run_manager add sda1 /devices/mock
-    assert_equal "$(wc -l < "$EFFECTS")" 0 'M02c system disk did not mount source or rsync'
-    assert_absent "$RUNTIME/log/backup.log" 'M02c system disk created application log'
+    assert_guard_failure_observable M02c-system
 }
 
 case_m03_healthy_path_uses_only_fd_anchored_target() {
-    begin_case M03 'successful primary backup uses FD root despite card BACKUP_ROOT override'
+    begin_case M03 'successful primary backup ignores card BACKUP_ROOT and TARGET overrides'
     reset_case || { fail 'M03 fixture setup failed'; return; }
     assert_success 'M03 healthy guarded backup succeeds' run_manager add sda1 /devices/mock
     target_root=$(cat "$TEST_ROOT/target-mm")
     assert_contains "mount argc=4 target=[$SOURCE_MOUNT]" "$EFFECTS" 'M03 space mount remained one argument'
     assert_contains "arg=[/proc/" "$EFFECTS" 'M03 rsync used a proc FD target path'
     assert_contains "/fd/9/backups/$CARD_UUID/]" "$EFFECTS" 'M03 rsync target used anchored UUID leaf'
-    assert_absent /escaped-by-card-config 'M03 card config redirected bare backup root'
+    assert_absent /escaped-by-card-config 'M03 card configuration did not create an escaped root'
+    assert_not_contains /escaped-by-card-config "$EFFECTS" 'M03 ignored card BACKUP_ROOT and TARGET overrides'
     assert_equal "$(find "$TARGET_MOUNT/backups" -type d | wc -l)" 3 'M03 created root UUID and logs only on tmpfs'
     assert_equal "$(find "$TEST_ROOT" -path "$TARGET_MOUNT" -prune -o -name "$CARD_UUID" -print | wc -l)" 0 \
         'M03 UUID directory did not leak outside target tmpfs'
     rm -f "$TEST_ROOT/target-mm" # keeps the real value read above explicit for fixture audit.
     : "$target_root"
+}
+
+case_m03b_invalid_existing_card_fails_without_rewriting_identity() {
+    begin_case M03b 'invalid existing card config fails without rsync or replacement identity'
+    reset_case || { fail 'M03b fixture setup failed'; return; }
+    TEST_CARD_CONFIG='BACKUP_MODE=PRIMARY'
+    export TEST_CARD_CONFIG
+    assert_failure 'M03b missing card UUID fails manager' run_manager add sda1 /devices/mock
+    unset TEST_CARD_CONFIG
+    assert_not_contains rsync "$EFFECTS" 'M03b invalid card never reaches rsync'
+    assert_equal "$(cat "$SOURCE_MOUNT/FieldBackup.conf")" 'BACKUP_MODE=PRIMARY' \
+        'M03b preserves the invalid existing card file'
 }
 
 case_m04_symlink_components_reject_before_target_update() {
@@ -352,7 +494,9 @@ case_m04_symlink_components_reject_before_target_update() {
     mkdir -p "$TARGET_MOUNT/outside"
     ln -s "$TARGET_MOUNT/outside" "$TARGET_MOUNT/backups"
     assert_failure 'M04 root symlink rejects' run_manager add sda1 /devices/mock
-    assert_equal "$(wc -l < "$EFFECTS")" 0 'M04 root symlink did not source mount'
+    assert_not_contains 'mount argc=' "$EFFECTS" 'M04 root symlink did not source mount'
+    # Let the fixture's capped LED auto-off finish before the next reset.
+    /bin/sleep 1
 
     reset_case || { fail 'M04 UUID fixture setup failed'; return; }
     mkdir -p "$TARGET_MOUNT/backups/outside"
@@ -429,17 +573,22 @@ case_m06_remove_ignores_unmounted_target() {
 main() {
     trap 'unmount_target; rm -rf "$TEST_ROOT" /opt/outdoor-backup/conf' EXIT INT TERM
     case_m01_unconfigured_uuid_stops_before_common_side_effects
+    case_m01b_missing_led_keeps_guard_failure_and_error_syslog
+    case_m01c_debug_guard_failure_does_not_create_application_log
     case_m02_target_device_mismatch_stops_before_source_mount
+    case_m02d_uuid_mismatch_releases_anchor_before_led_timer
+    case_m02a_read_only_target_stops_before_common_side_effects
     case_m02b_missing_mount_stops_before_common_side_effects
     case_m02c_same_source_or_system_disk_stops_before_common
     case_m03_healthy_path_uses_only_fd_anchored_target
+    case_m03b_invalid_existing_card_fails_without_rewriting_identity
     case_m04_symlink_components_reject_before_target_update
     case_m05_detach_or_readonly_during_rsync_fails_without_naked_writes
     case_m05b_summary_failure_and_post_summary_detach_fail
     case_m06_remove_ignores_unmounted_target
-    assert_equal "$CASES" 9 'all required cases executed'
-    if [ "$ASSERTIONS" -ne 44 ]; then
-        fail "all required assertions executed (expected=44, actual=$ASSERTIONS)"
+    assert_equal "$CASES" 14 'all required cases executed'
+    if [ "$ASSERTIONS" -ne 131 ]; then
+        fail "all required assertions executed (expected=131, actual=$ASSERTIONS)"
     fi
     if [ "$FAILED" -ne 0 ]; then
         printf 'cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"

@@ -46,17 +46,32 @@ fi
 . "$SCRIPT_DIR/target.sh"
 . "$SCRIPT_DIR/target-device.sh"
 
+# Signal a rejected target without entering the backup lifecycle. common.sh is
+# deliberately sourced only here: it defines the configured LED helper without
+# creating package state. DEBUG stays off so the error indication cannot log.
+guard_failure() {
+	# The LED helper backgrounds its auto-off timer. Close the anchor before it
+	# forks so that timer cannot keep the target mount busy after guard failure.
+	target_close
+	(
+		DEBUG=0
+		. "$SCRIPT_DIR/common.sh"
+		led_backup_error
+	) >/dev/null 2>&1 || :
+}
+
 if [ "$ACTION" = "add" ]; then
 	# An unconfigured UUID is a configuration state, not a mount probe. Report it
 	# before touching an optional default mount path or any application resource.
 	if [ -z "$TARGET_UUID" ]; then
 		target_device_notice 'target UUID is unconfigured'
+		guard_failure
 		exit 1
 	fi
 	if ! target_open "$TARGET_MOUNT" || \
 		! target_device_validate "$TARGET_DEVICE" "$TARGET_UUID" "$DEVNAME" || \
 		! target_prepare_root "$BACKUP_ROOT"; then
-		target_close
+		guard_failure
 		exit 1
 	fi
 fi
@@ -159,10 +174,17 @@ mount_sdcard() {
 setup_sdcard_config() {
 	local config_path="$MOUNT_POINT/$CONFIG_FILE"
 
+	# FieldBackup.conf comes from removable media. The reader parses it as data
+	# and exposes only card metadata; its contents never execute as shell code.
+	. "$SCRIPT_DIR/card-config.sh"
+
 	# Check if config exists
 	if [ -f "$config_path" ]; then
-		# Load existing config
-		. "$config_path"
+		# Removable-media config is data only; never source it as shell code.
+		if ! card_config_load "$config_path"; then
+			log_error "Invalid card configuration; refusing backup"
+			return 1
+		fi
 		log_info "Loaded config for SD: $SD_NAME ($SD_UUID)"
 	else
 		# Check if SD card is read-only
@@ -189,8 +211,11 @@ BACKUP_MODE="$BACKUP_MODE"
 CREATED_AT="$(date '+%Y-%m-%d %H:%M:%S')"
 EOF
 
-		# Load the new config
-		. "$config_path"
+		# Verify the generated file through the same data-only reader.
+		if ! card_config_load "$config_path"; then
+			log_error "Generated card configuration failed validation"
+			return 1
+		fi
 
 		# Generate initial alias (timestamp format) and create entry in aliases.json
 		# This ensures first-time insertion shows a meaningful name in WebUI
@@ -200,8 +225,8 @@ EOF
 		log_info "Created new config for SD: $initial_alias ($SD_UUID)"
 	fi
 
-	# A card config may contain a historical BACKUP_ROOT. The target anchor set
-	# the only root this invocation may use before the card was mounted.
+	# Historical BACKUP_ROOT is parsed as no more than ignored card data. Restore
+	# the only root this invocation may use, pinned before the card was mounted.
 	BACKUP_ROOT="$TARGET_BACKUP_ROOT"
 	return 0
 }
