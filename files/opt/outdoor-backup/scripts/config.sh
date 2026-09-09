@@ -93,6 +93,12 @@ config_apply_uci_option() {
         mount_point)
             MOUNT_POINT="$option_value"
             ;;
+        target_mount)
+            TARGET_MOUNT="$option_value"
+            ;;
+        target_uuid)
+            TARGET_UUID="$option_value"
+            ;;
         debug)
             DEBUG="$option_value"
             ;;
@@ -116,6 +122,8 @@ config_load() {
     ENABLED=1
     BACKUP_ROOT="/mnt/ssd/SDMirrors"
     MOUNT_POINT="/mnt/sdcard"
+    TARGET_MOUNT="/mnt/ssd"
+    TARGET_UUID=""
     DEBUG=0
     LED_GREEN="/sys/class/leds/green:lan"
     LED_RED="/sys/class/leds/red:sys"
@@ -140,6 +148,8 @@ config_load() {
             config_apply_uci_option "$uci_dir" enabled
             config_apply_uci_option "$uci_dir" backup_root
             config_apply_uci_option "$uci_dir" mount_point
+            config_apply_uci_option "$uci_dir" target_mount
+            config_apply_uci_option "$uci_dir" target_uuid
             config_apply_uci_option "$uci_dir" debug
             config_apply_uci_option "$uci_dir" led_green
             config_apply_uci_option "$uci_dir" led_red
@@ -165,5 +175,14 @@ config_load() {
 
     BACKUP_ROOT=$(config_normalize_path "$BACKUP_ROOT" backup_root) || return 1
     MOUNT_POINT=$(config_normalize_path "$MOUNT_POINT" mount_point) || return 1
+    TARGET_MOUNT=$(config_normalize_path "$TARGET_MOUNT" target_mount) || return 1
+    case "$TARGET_UUID" in
+        ''|*[!A-Za-z0-9-]*)
+            [ -z "$TARGET_UUID" ] || {
+                config_error "target_uuid contains unsafe characters"
+                return 1
+            }
+            ;;
+    esac
     config_paths_are_disjoint "$BACKUP_ROOT" "$MOUNT_POINT"
 }

@@ -41,7 +41,43 @@ if [ "$ACTION" = "add" ] && [ "$ENABLED" = "0" ]; then
 	exit 0
 fi
 
-# Load common functions only after an enabled add or a valid remove event.
+# Target libraries are inert when sourced. An add must prove and pin its target
+# before common.sh can create logs, aliases, LEDs, locks, or source mounts.
+. "$SCRIPT_DIR/target.sh"
+. "$SCRIPT_DIR/target-device.sh"
+
+# Signal a rejected target without entering the backup lifecycle. common.sh is
+# deliberately sourced only here: it defines the configured LED helper without
+# creating package state. DEBUG stays off so the error indication cannot log.
+guard_failure() {
+	# The LED helper backgrounds its auto-off timer. Close the anchor before it
+	# forks so that timer cannot keep the target mount busy after guard failure.
+	target_close
+	(
+		DEBUG=0
+		. "$SCRIPT_DIR/common.sh"
+		led_backup_error
+	) >/dev/null 2>&1 || :
+}
+
+if [ "$ACTION" = "add" ]; then
+	# An unconfigured UUID is a configuration state, not a mount probe. Report it
+	# before touching an optional default mount path or any application resource.
+	if [ -z "$TARGET_UUID" ]; then
+		target_device_notice 'target UUID is unconfigured'
+		guard_failure
+		exit 1
+	fi
+	if ! target_open "$TARGET_MOUNT" || \
+		! target_device_validate "$TARGET_DEVICE" "$TARGET_UUID" "$DEVNAME" || \
+		! target_prepare_root "$BACKUP_ROOT"; then
+		guard_failure
+		exit 1
+	fi
+fi
+
+# Load common functions only after target guard success for add, or a valid
+# remove event, which intentionally does not require the target to be mounted.
 . "$SCRIPT_DIR/common.sh"
 
 # Cleanup function
@@ -66,6 +102,9 @@ cleanup() {
 
 	# Final sync
 	sync
+
+	# The target FD is owned by this manager. Closing is idempotent for remove.
+	target_close
 
 	if [ $exit_code -eq 0 ]; then
 		led_backup_done
@@ -135,10 +174,17 @@ mount_sdcard() {
 setup_sdcard_config() {
 	local config_path="$MOUNT_POINT/$CONFIG_FILE"
 
+	# FieldBackup.conf comes from removable media. The reader parses it as data
+	# and exposes only card metadata; its contents never execute as shell code.
+	. "$SCRIPT_DIR/card-config.sh"
+
 	# Check if config exists
 	if [ -f "$config_path" ]; then
-		# Load existing config
-		. "$config_path"
+		# Removable-media config is data only; never source it as shell code.
+		if ! card_config_load "$config_path"; then
+			log_error "Invalid card configuration; refusing backup"
+			return 1
+		fi
 		log_info "Loaded config for SD: $SD_NAME ($SD_UUID)"
 	else
 		# Check if SD card is read-only
@@ -165,8 +211,11 @@ BACKUP_MODE="$BACKUP_MODE"
 CREATED_AT="$(date '+%Y-%m-%d %H:%M:%S')"
 EOF
 
-		# Load the new config
-		. "$config_path"
+		# Verify the generated file through the same data-only reader.
+		if ! card_config_load "$config_path"; then
+			log_error "Generated card configuration failed validation"
+			return 1
+		fi
 
 		# Generate initial alias (timestamp format) and create entry in aliases.json
 		# This ensures first-time insertion shows a meaningful name in WebUI
@@ -176,6 +225,9 @@ EOF
 		log_info "Created new config for SD: $initial_alias ($SD_UUID)"
 	fi
 
+	# Historical BACKUP_ROOT is parsed as no more than ignored card data. Restore
+	# the only root this invocation may use, pinned before the card was mounted.
+	BACKUP_ROOT="$TARGET_BACKUP_ROOT"
 	return 0
 }
 
@@ -185,6 +237,19 @@ perform_backup() {
 	local target_dir=""
 	local log_file=""
 	local display_name=""
+	local target_relative=""
+
+	# Card configuration is root-managed data only for this run: restore the
+	# target root that was pinned before the source card was mounted.
+	BACKUP_ROOT="$TARGET_BACKUP_ROOT"
+	target_anchor_healthy || return 1
+	if ! is_valid_uuid "$SD_UUID"; then
+		log_error "Invalid SD UUID; refusing target tree update"
+		return 1
+	fi
+	target_relative=${TARGET_BACKUP_ROOT#"$TARGET_FD_ROOT"/}
+	target_prepare_directory "$target_relative/$SD_UUID" || return 1
+	target_prepare_directory "$target_relative/.logs" || return 1
 
 	# Get display name with alias support
 	display_name=$(get_display_name "$SD_UUID")
@@ -219,9 +284,9 @@ perform_backup() {
 		return 1
 	fi
 
-	# Create target directory
-	mkdir -p "$target_dir"
-	mkdir -p "$(dirname "$log_file")"
+	# Directories were created through the anchor FD above; no bare mount path
+	# may create or resolve target state from this point onward.
+	target_anchor_healthy || return 1
 
 	# Record start time
 	local start_time=$(date +%s)
@@ -261,8 +326,9 @@ perform_backup() {
 	# Log summary
 	log_info "Backup completed in ${duration}s (exit code: $rsync_exit)"
 
-	# Write summary to log file
-	cat >> "$log_file" << EOF
+	# Write summary to log file. This function is invoked with `||` by main, so
+	# do not rely on set -e to propagate a failed redirection or cat process.
+	if ! cat >> "$log_file" << EOF
 
 === Backup Summary ===
 SD Card: $display_name ($SD_UUID)
@@ -271,7 +337,17 @@ Duration: ${duration} seconds
 Exit Code: $rsync_exit
 Completed: $(date '+%Y-%m-%d %H:%M:%S')
 EOF
+	then
+		log_error "Failed to write backup summary"
+		return 1
+	fi
 
+	# The summary is the final target write. Revalidate after it so a detach or
+	# device change during that write cannot be reported as a completed backup.
+	target_anchor_healthy || return 1
+	if ! target_device_validate "$TARGET_DEVICE" "$TARGET_UUID" "$DEVNAME"; then
+		return 1
+	fi
 	return $rsync_exit
 }
 

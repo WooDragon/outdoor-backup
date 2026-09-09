@@ -2,6 +2,9 @@
 # Defaults live in the runtime loader so this conffile never overwrites legacy
 # user settings merely because it was installed. Set only intended overrides:
 # uci set outdoor-backup.config.backup_root='/your/path'
+# Target identity is intentionally unconfigured; set verified values explicitly:
+# uci set outdoor-backup.config.target_mount='/mnt/ssd'
+# uci set outdoor-backup.config.target_uuid='A1B2-C3D4'
 # uci commit outdoor-backup
 
 config outdoor-backup 'config'

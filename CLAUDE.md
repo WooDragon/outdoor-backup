@@ -109,10 +109,12 @@ outdoor-backup/
 
 ### 三层配置架构
 1. **内置默认值与兼容配置**：运行时先使用内置默认值，再读取 root 管理的 `/opt/outdoor-backup/conf/backup.conf`。
-2. **UCI 覆盖层**：`/etc/config/outdoor-backup` 的命名 section `outdoor-backup.config` 仅以显式 option 覆盖下层值。运行时只能通过 `uci` CLI 读取它，禁止将 UCI 文件作为 shell 脚本 `source` 或 `eval`。
-3. **SD 卡配置** (`{SD_ROOT}/FieldBackup.conf`): UUID、备份模式、创建时间。
+2. **UCI 覆盖层**：`/etc/config/outdoor-backup` 的命名 section `outdoor-backup.config` 仅以显式 option 覆盖下层值。运行时只能通过 `uci` CLI 读取它，不应将 UCI 文件作为 shell 脚本 `source` 或 `eval`。
+3. **SD 卡配置**（`{SD_ROOT}/FieldBackup.conf`）：卡配置来自可移除介质，必须由 `card-config.sh` 按数据读取，绝不 `source` 或 `eval`。读取器只导出 `SD_UUID`、`BACKUP_MODE`、`CREATED_AT` 和旧 `SD_NAME`。其他合法赋值应忽略。畸形内容或缺失、非法 UUID 应拒绝，且不重写原卡配置。PRIMARY/REPLICA 语义当前保留；#15 的剩余范围是身份稳定、只读卡、克隆卡和默认禁止 REPLICA。
 
-配置加载、校验、升级兼容和运维命令的权威说明在 [README.md 的 Configuration 章节](README.md#configuration)。修改配置加载逻辑前，应同时读取 [config.sh](files/opt/outdoor-backup/scripts/config.sh)、[backup-manager.sh](files/opt/outdoor-backup/scripts/backup-manager.sh) 和 [test-config.sh](test-config.sh)。
+目标存储的稳定约束：`TARGET_MOUNT` 默认 `/mnt/ssd`，`TARGET_UUID` 默认空；有效优先级始终为 defaults < legacy < UCI。`add` 事件只有在用户配置了非空目标 UUID 后才能进入备份。目标挂载必须已存在且精确匹配内核 mountinfo 中的配置路径，`BACKUP_ROOT` 必须是其严格子目录。管理器不猜测磁盘、不格式化磁盘、也不自行挂载目标介质。初始目标守卫失败只允许 stderr、error 级 syslog 和可选红灯；它不应进入来源挂载、`rsync`、别名、锁或应用日志生命周期。`enabled=0` 的 `add` 事件不应产生 LED 副作用。
+
+目标存储的配置命令和运维流程以 [README.md 的 Configuration 章节](README.md#configuration) 为权威入口。守卫拓扑、FD 锚定、LuCI 字段边界和已知限制见 [docs/component-implementation.md](docs/component-implementation.md)。修改加载或守卫逻辑前，应读取 [config.sh](files/opt/outdoor-backup/scripts/config.sh)、[card-config.sh](files/opt/outdoor-backup/scripts/card-config.sh)、[target.sh](files/opt/outdoor-backup/scripts/target.sh)、[target-device.sh](files/opt/outdoor-backup/scripts/target-device.sh)、[backup-manager.sh](files/opt/outdoor-backup/scripts/backup-manager.sh) 及对应测试。
 
 ### 别名管理机制
 
@@ -151,6 +153,8 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
     ↓
 [启动备份管理器] → backup-manager.sh add sda1 /devices/...
     ↓
+[验证并锚定目标存储] → 精确挂载、UUID、物理盘分离、FD 9
+    ↓
 [获取 PID 锁] → /opt/outdoor-backup/var/lock/backup.pid
     ↓
 [挂载 SD 卡] → /mnt/sdcard/
@@ -175,10 +179,10 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 - **僵尸锁清理**: 自动检测并移除无效锁
 
 ### 数据安全
-- **增量备份**: `rsync --ignore-existing` 不覆盖已有文件
-- **只读检测**: 无法写入 SD 卡时终止
-- **完整性保证**: 备份后执行 `sync`
-- **错误恢复**: 信号处理确保清理
+- **目标身份守卫**：`add` 先验证目标 UUID、精确挂载和源卡、系统盘、目标盘三者的物理盘分离。
+- **FD 锚定**：管理器通过 `/proc/<manager-pid>/fd/9` 使用已验证目标，目标卸载、替换或转为只读均不应视为成功。
+- **增量备份**：`rsync --ignore-existing` 不覆盖已有文件。
+- **错误恢复**：信号处理确保清理；`remove` 不依赖目标存储在场。
 
 ### 路径安全
 - **目录遍历防护**: `is_safe_path()` 检查 `../`
@@ -368,8 +372,8 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 **核心系统设计**：
 - **[docs/architecture-design.md](docs/architecture-design.md)**: 系统架构设计
   - 组件划分、数据流、接口定义
-- **[docs/component-implementation.md](docs/component-implementation.md)**: 组件实现细节
-  - 核心脚本代码、函数说明
+- **[docs/component-implementation.md](docs/component-implementation.md)**: 组件边界与目标存储守卫
+  - FD 锚定、设备身份判定、失败关闭边界和源码入口
 - **[docs/technical-research.md](docs/technical-research.md)**: 技术调研
   - 待验证技术点、硬件兼容性
 - **[docs/deployment-guide.md](docs/deployment-guide.md)**: 部署指南

@@ -8,8 +8,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=outdoor-backup
-PKG_VERSION:=1.0.0
-PKG_RELEASE:=3
+PKG_VERSION:=1.1.0
+PKG_RELEASE:=1
 
 PKG_MAINTAINER:=Your Name <your.email@example.com>
 PKG_LICENSE:=GPL-2.0-only
