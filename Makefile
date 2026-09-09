@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=outdoor-backup
 PKG_VERSION:=1.2.0
-PKG_RELEASE:=1
+PKG_RELEASE:=3
 
 PKG_MAINTAINER:=Your Name <your.email@example.com>
 PKG_LICENSE:=GPL-2.0-only
@@ -21,7 +21,7 @@ define Package/outdoor-backup
   SECTION:=utils
   CATEGORY:=Utilities
   TITLE:=Outdoor Backup - SD card auto backup system
-  DEPENDS:=+rsync +block-mount +kmod-usb-storage +kmod-fs-ext4 +kmod-fs-vfat +kmod-fs-exfat +kmod-fs-ntfs3
+  DEPENDS:=+rsync +jq +block-mount +kmod-usb-storage +kmod-fs-ext4 +kmod-fs-vfat +kmod-fs-exfat +kmod-fs-ntfs3
   PKGARCH:=all
 endef
 
@@ -34,12 +34,12 @@ define Package/outdoor-backup/description
 
   Features:
   - Automatic hotplug-triggered backups
-  - Incremental rsync with --partial (resumes interrupted transfers safely)
-  - Differentiated LED status indication (per error type)
-  - Real-time progress reporting to the WebUI (status.json)
-  - Concurrent backup protection (PID lock)
+  - Incremental rsync that updates changed files and preserves partial transfers
+  - Reliable atomic backup status snapshots and LED status indication
+  - Concurrent backup protection (atomic symlink lock)
+  - Configurable card reader whitelist (USB VID:PID / device path)
   - Support for multiple filesystems (ext4/exFAT/NTFS/FAT32)
-  - Primary and Replica backup modes
+  - One-way automatic backup from SD card to SSD
 endef
 
 define Package/outdoor-backup/conffiles
@@ -85,8 +85,6 @@ define Package/outdoor-backup/postinst
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] && exit 0
 
-# Create backup storage directory
-mkdir -p /mnt/ssd/SDMirrors/.logs
 
 # Set proper permissions
 chmod 755 /opt/outdoor-backup/scripts/*.sh

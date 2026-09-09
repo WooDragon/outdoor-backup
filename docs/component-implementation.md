@@ -92,305 +92,39 @@ exit 0
 
 ## 2. 备份管理器主脚本
 
-### 文件: `/opt/outdoor-backup/scripts/backup-manager.sh`
+### 文件：`/opt/outdoor-backup/scripts/backup-manager.sh`
 
-```bash
-#!/bin/sh
-#
-# OpenWrt SD Card Backup - Main Backup Manager
-# Handles the actual backup process with all safety checks
-#
+管理器先由 [`config.sh`](../files/opt/outdoor-backup/scripts/config.sh) 加载有效配置。有效值的顺序是 defaults < legacy `backup.conf` < 显式 UCI option。`TARGET_MOUNT` 的默认值为 `/mnt/ssd`。`TARGET_UUID` 的默认值为空。`add` 事件要求用户配置非空的目标 UUID。`remove` 事件不要求目标介质在场，仍进入清理路径。
 
-set -e
+目标守卫在加载 `common.sh`、注册 cleanup trap、获取锁、挂载来源卡、读取别名和创建应用日志之前运行。管理器按以下顺序调用当前实现：
 
-# Constants
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-BASE_DIR="$(dirname "$SCRIPT_DIR")"
-MOUNT_POINT="/mnt/sdcard"
-BACKUP_ROOT="/mnt/ssd/SDMirrors"
-LOCK_FILE="$BASE_DIR/var/lock/backup.pid"
-CONFIG_FILE="FieldBackup.conf"
-LOG_TAG="outdoor-backup"
+1. [`target.sh`](../files/opt/outdoor-backup/scripts/target.sh) 以 FD 9 打开目标挂载。它要求配置路径不是符号链接。它要求目录存在。它要求内核 `/proc/<manager-pid>/mountinfo` 中的挂载记录精确匹配该路径。它还要求 VFS 与文件系统级选项均为 `rw`。
+2. [`target-device.sh`](../files/opt/outdoor-backup/scripts/target-device.sh) 校验官方 `block info` 返回的 UUID。它用 sysfs 证明目标、来源卡和系统 backing disk 的物理盘不同。它接受 direct `sd`、`mmc`、`nvme`。系统 loop 仅在 backing file 明确指向 `/dev/` 分区时可追溯。unknown 或 deleted backing、file-backed loop、`dm` 与 `md` 均失败关闭。它解析 `block info` 的完整键值 token。`LABEL` 值内的同形文本不算 UUID。畸形引号会被拒绝。
+3. `target_prepare_root` 要求 `BACKUP_ROOT` 是目标挂载的严格子目录。它通过 `/proc/<manager-pid>/fd/9` 创建目录。既有符号链接组件，包括 `.logs`，会被拒绝。守卫拒绝覆盖目标挂载点、`BACKUP_ROOT` 祖先或备份树内子挂载。不相交目录的挂载不会被误拒。
 
-# Load common functions
-. "$SCRIPT_DIR/common.sh"
+初始守卫失败时，管理器向 stderr 和 error 级 syslog 报错。它可触发可选红灯。它不进入来源挂载、`rsync`、别名、锁或应用日志生命周期。LED helper 创建延时子进程前，管理器关闭目标 FD。缺少 LED 不改变失败的非零退出状态。`enabled=0` 的 `add` 事件在任何 LED 副作用前退出。
 
-# Arguments
-ACTION="$1"
-DEVNAME="$2"
-DEVPATH="$3"
+守卫成功后，目标目录和日志都经 FD 9 引用。管理器在目标准备、`rsync` 前、`rsync` 后及末尾的设备复验中检查锚点。目标卸载、替换或只读重挂载不应产生成功结果。日志摘要写入失败，以及摘要后的 detached 或只读复检失败，均返回非零。
 
-# Cleanup function
-cleanup() {
-    local exit_code=$?
+静态符号链接检查不是 `openat2`。恶意 root 并发替换目标目录不在此 shell 实现的保证范围内。未知或 deleted loop backing 无法证明身份时会失败关闭。本文档不声称真机全兼容。`FieldBackup.conf` 由 [`card-config.sh`](../files/opt/outdoor-backup/scripts/card-config.sh) 按数据读取，绝不 `source` 或 `eval`。该读取器只导出 `SD_UUID`、`BACKUP_MODE`、`CREATED_AT` 与旧 `SD_NAME`。其他合法赋值会被忽略。畸形数据或缺失、非法 UUID 会失败，且不会重写现有卡配置。读取器为兼容数据仍接受 `REPLICA`。自动管理器仅执行 `PRIMARY` 的 SD 卡到目标存储方向；它读取既有 `REPLICA` 卡后明确失败，不执行 `rsync`，不改变卡文件或 UUID，不更新 alias，也不创建目标 UUID 叶目录或备份日志。管理器不会将 `REPLICA` 自动改为 `PRIMARY`。新卡配置只生成 `PRIMARY`。#15 的稳定身份、只读卡和克隆卡工作仍未完成。`backup-transfer.sh` 直接调用正式 `rsync` 并保留真实退出码；#14 的旧管道退出码限制不再适用。最终包 CI、固件 CI 与真机验证仍未完成。
 
-    # Stop LED blinking
-    led_backup_stop
+LuCI 表单提供 `target_mount`、`target_uuid` 和 `backup_root` 说明。表单在 `enabled=1` 时要求 UUID。表单在 `enabled=0` 时允许空 UUID。字段的合法值和路径检查不代表表单会自动挂载或格式化介质。
 
-    # Remove lock file if we own it
-    if [ -f "$LOCK_FILE" ]; then
-        if [ "$(cat "$LOCK_FILE" 2>/dev/null)" = "$$" ]; then
-            rm -f "$LOCK_FILE"
-            log_info "Lock released"
-        fi
-    fi
+> **前置阅读**：目标存储的可执行配置、重试方法和用户可见限制，修改部署或运维行为前必须先读取：[README.md 的 Configuration 章节](../README.md#configuration)。
 
-    # Unmount if needed
-    if mountpoint -q "$MOUNT_POINT" 2>/dev/null; then
-        umount "$MOUNT_POINT" 2>/dev/null || true
-    fi
+运行时细节以 [`backup-manager.sh`](../files/opt/outdoor-backup/scripts/backup-manager.sh)、[`card-config.sh`](../files/opt/outdoor-backup/scripts/card-config.sh)、[`target.sh`](../files/opt/outdoor-backup/scripts/target.sh) 和 [`target-device.sh`](../files/opt/outdoor-backup/scripts/target-device.sh) 为单一事实源；本文档不复制生产算法。
 
-    # Final sync
-    sync
+## 3. 传输、空间与状态模块
 
-    if [ $exit_code -eq 0 ]; then
-        led_backup_done
-        log_info "Backup completed successfully"
-    else
-        led_backup_error
-        log_error "Backup failed with code $exit_code"
-    fi
+`backup-transfer.sh` 是在 add 事件的目标守卫成功后才由管理器显式加载的 inert source-only 模块。它不安装 trap，也不改变 disabled 事件或初始 guard 的资源约束。该模块直接运行正式 `rsync --archive --recursive --times --prune-empty-dirs --partial --stats`，并从该命令捕获真实退出码。它不会使用 pipeline、退出码文件、`--ignore-existing`、任何 append 家族选项或 `--delete`。rsync 根据 size/mtime quick check 更新文件，因而不能保证发现 size 和 mtime 都未变的内容变更。只有诊断含 `No space left on device` 或 `ENOSPC` 时，失败才分类为 `no_space`；单独的 rsync exit 11 或 12 不是满盘结论。
 
-    exit $exit_code
-}
+`check_minimum_free_space` 在创建备份叶目录后，经 FD 9 的目标路径调用 `df`。它不对整张卡或备份树执行 `du` 扫描。`MIN_FREE_SPACE` 默认为 1024 MB；非负十进制整数合法，`0` 禁用余量。无法取得可信 `df` 值时，守卫失败关闭。
 
-# Get exclusive lock
-acquire_lock() {
-    local timeout=300  # 5 minutes
-    local elapsed=0
+`status.sh` 依赖 `jq`。它把 `current_backup`、经活 FD 获取的 `storage` 和 `history` 原子写入唯一的 `status.json` 快照。它不维护 `history.jsonl`。history 以 UUID 去重，最新终态在前，最多 20 条。运行期间 `current_backup` 仅表达 active/running，未知进度和速率字段均为 0。成功终态的文件数和字节数来自 `rsync --stats`；管理器仅在 rsync、汇总写入和最后的锚点健康及身份复验均成功后才写 `completed`。
 
-    while [ $elapsed -lt $timeout ]; do
-        # Check if lock exists
-        if [ -f "$LOCK_FILE" ]; then
-            local pid=$(cat "$LOCK_FILE" 2>/dev/null)
+`cleanup` 先清理传输临时文件并关闭目标 FD，再启动成功或错误 LED 定时器。`ERROR_TYPE` 的现有调用映射为 `device_unknown`、`lock_timeout`、`no_space`、`card_config`（红灯 4 闪，SD 卡配置被策略拒绝，例如既有 `REPLICA` 卡）、`rsync` 和 `verify_failed`。本文档不把未覆盖的 LED 类型表述为端到端验证。
 
-            # Check if process is still running
-            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-                log_debug "Waiting for lock (PID $pid)..."
-                sleep 5
-                elapsed=$((elapsed + 5))
-            else
-                # Stale lock, remove it
-                rm -f "$LOCK_FILE"
-                log_info "Removed stale lock"
-            fi
-        else
-            # Try to create lock
-            echo "$$" > "$LOCK_FILE"
-
-            # Verify we got the lock (race condition check)
-            if [ "$(cat "$LOCK_FILE" 2>/dev/null)" = "$$" ]; then
-                log_info "Lock acquired"
-                return 0
-            fi
-        fi
-    done
-
-    log_error "Failed to acquire lock after ${timeout}s"
-    return 1
-}
-
-# Mount SD card
-mount_sdcard() {
-    # Create mount point
-    mkdir -p "$MOUNT_POINT"
-
-    # Try to mount with different filesystems
-    for fs in auto exfat ntfs-3g ntfs ext4 ext3 ext2 vfat; do
-        if mount -t "$fs" "/dev/$DEVNAME" "$MOUNT_POINT" 2>/dev/null; then
-            log_info "Mounted $DEVNAME as $fs"
-            return 0
-        fi
-    done
-
-    log_error "Failed to mount $DEVNAME"
-    return 1
-}
-
-# Setup SD card configuration
-setup_sdcard_config() {
-    local config_path="$MOUNT_POINT/$CONFIG_FILE"
-
-    # Check if config exists
-    if [ -f "$config_path" ]; then
-        # Load existing config
-        . "$config_path"
-        local display_name=$(get_display_name "$SD_UUID")
-        log_info "Loaded config for SD: $display_name ($SD_UUID)"
-    else
-        # Check if SD card is read-only
-        if ! touch "$config_path" 2>/dev/null; then
-            log_error "SD card is read-only, cannot create config"
-            return 1
-        fi
-
-        # Generate new config
-        SD_UUID=$(generate_uuid)
-        BACKUP_MODE="PRIMARY"
-
-        cat > "$config_path" << EOF
-# OpenWrt SD Card Backup Configuration
-# Generated: $(date '+%Y-%m-%d %H:%M:%S')
-
-# Unique identifier for this SD card
-SD_UUID="$SD_UUID"
-
-# Backup mode: PRIMARY (SD→SSD) or REPLICA (SSD→SD)
-BACKUP_MODE="$BACKUP_MODE"
-
-# Creation timestamp
-CREATED_AT="$(date '+%Y-%m-%d %H:%M:%S')"
-EOF
-
-        # Load the new config
-        . "$config_path"
-
-        # Generate initial alias and create entry in aliases.json
-        local initial_alias="SDCard_$(date +%Y%m%d_%H%M%S)"
-        update_alias_last_seen "$SD_UUID" "$initial_alias" || log_warn "Failed to create initial alias"
-
-        log_info "Created new config for SD: $initial_alias ($SD_UUID)"
-    fi
-
-    return 0
-}
-
-# Perform rsync backup
-perform_backup() {
-    local source_dir=""
-    local target_dir=""
-    local log_file=""
-    local display_name=""
-
-    # Get display name with alias support
-    display_name=$(get_display_name "$SD_UUID")
-
-    # Update last_seen timestamp in aliases.json
-    update_alias_last_seen "$SD_UUID" || log_warn "Failed to update alias timestamp"
-
-    # Determine backup direction
-    if [ "$BACKUP_MODE" = "REPLICA" ]; then
-        # Replica mode: SSD → SD
-        source_dir="$BACKUP_ROOT/$SD_UUID/"
-        target_dir="$MOUNT_POINT/"
-        log_file="$BACKUP_ROOT/.logs/replica_${SD_UUID}_$(date +%Y%m%d_%H%M%S).log"
-
-        log_info "Starting REPLICA backup: SSD → SD ($display_name)"
-    else
-        # Primary mode: SD → SSD
-        source_dir="$MOUNT_POINT/"
-        target_dir="$BACKUP_ROOT/$SD_UUID/"
-        log_file="$BACKUP_ROOT/.logs/backup_${SD_UUID}_$(date +%Y%m%d_%H%M%S).log"
-
-        log_info "Starting PRIMARY backup: SD → SSD ($display_name)"
-    fi
-
-    # Create target directory
-    mkdir -p "$target_dir"
-    mkdir -p "$(dirname "$log_file")"
-
-    # Record start time
-    local start_time=$(date +%s)
-
-    # Perform rsync
-    log_info "Executing rsync from $source_dir to $target_dir"
-
-    rsync \
-        --archive \
-        --recursive \
-        --times \
-        --prune-empty-dirs \
-        --ignore-existing \
-        --stats \
-        --human-readable \
-        --progress \
-        --log-file="$log_file" \
-        --exclude="$CONFIG_FILE" \
-        --exclude=".Trash*" \
-        --exclude=".Spotlight*" \
-        --exclude=".fseventsd" \
-        --exclude="System Volume Information" \
-        --exclude="\$RECYCLE.BIN" \
-        "$source_dir" "$target_dir" 2>&1 | while read line; do
-            # Parse progress for logging (optional)
-            echo "$line" | grep -q "%" && log_debug "Progress: $line"
-        done
-
-    local rsync_exit=$?
-    local end_time=$(date +%s)
-    local duration=$((end_time - start_time))
-
-    # Log summary
-    log_info "Backup completed in ${duration}s (exit code: $rsync_exit)"
-
-    # Write summary to log file
-    cat >> "$log_file" << EOF
-
-=== Backup Summary ===
-SD Card: $display_name ($SD_UUID)
-Mode: $BACKUP_MODE
-Duration: ${duration} seconds
-Exit Code: $rsync_exit
-Completed: $(date '+%Y-%m-%d %H:%M:%S')
-EOF
-
-    return $rsync_exit
-}
-
-# Handle remove action
-handle_remove() {
-    log_info "Handling SD card removal"
-
-    # Kill any running rsync for this device
-    pkill -f "rsync.*$MOUNT_POINT" 2>/dev/null || true
-
-    # Cleanup will be done by trap
-    exit 0
-}
-
-# Main execution
-main() {
-    # Setup signal handlers
-    trap cleanup EXIT
-    trap cleanup SIGINT SIGTERM
-
-    case "$ACTION" in
-        add)
-            # Start LED indication
-            led_backup_start
-
-            # Acquire lock
-            acquire_lock || exit 1
-
-            # Mount SD card
-            mount_sdcard || exit 1
-
-            # Setup configuration
-            setup_sdcard_config || exit 1
-
-            # Perform backup
-            perform_backup || exit 1
-
-            # Success - cleanup will handle the rest
-            exit 0
-            ;;
-
-        remove)
-            handle_remove
-            ;;
-
-        *)
-            log_error "Invalid action: $ACTION"
-            exit 1
-            ;;
-    esac
-}
-
-# Run main function
-main "$@"
-```
-
-## 3. 公共函数库
+## 4. 公共函数库
 
 ### 文件: `/opt/outdoor-backup/scripts/common.sh`
 
@@ -557,7 +291,7 @@ EOF
 }
 ```
 
-## 4. 安装脚本
+## 5. 安装脚本
 
 ### 文件: `/opt/outdoor-backup/install.sh`
 
@@ -600,7 +334,6 @@ echo "Creating directory structure..."
 mkdir -p "$SCRIPT_DIR/var/lock"
 mkdir -p "$SCRIPT_DIR/var/status"
 mkdir -p "$SCRIPT_DIR/log"
-mkdir -p "/mnt/ssd/SDMirrors/.logs"
 
 # Set permissions
 echo "Setting permissions..."
@@ -687,7 +420,7 @@ echo "0" > /sys/class/leds/green:lan/brightness 2>/dev/null || true
 echo "Setup complete!"
 ```
 
-## 5. 配置文件模板
+## 6. 配置文件模板
 
 ### 文件: `/opt/outdoor-backup/conf/backup.conf`
 

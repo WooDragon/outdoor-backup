@@ -16,6 +16,7 @@
   - block-mount
   - kmod-usb-storage
   - rsync
+  - jq
   - kmod-fs-ext4
   - kmod-fs-exfat（可选）
   - kmod-fs-ntfs3（可选）
@@ -55,7 +56,7 @@ opkg update
 
 ```bash
 # 核心包
-opkg install block-mount kmod-usb-storage rsync
+opkg install block-mount kmod-usb-storage rsync jq
 
 # 文件系统支持
 opkg install kmod-fs-ext4 kmod-fs-vfat
@@ -209,24 +210,15 @@ ls -la /mnt/ssd/SDMirrors/.logs/
 **设置友好名称**：
 使用 WebUI 别名管理功能设置SD卡的友好名称，而不是手动编辑配置文件。
 
-**切换备份模式**：
-如需将备份数据恢复回 SD 卡，可编辑配置文件：
-
-```bash
-# 在SD卡上编辑配置
-vi /mnt/sdcard/FieldBackup.conf
-
-# 切换备份模式
-BACKUP_MODE="REPLICA"  # 从SSD恢复到SD卡
-```
+**恢复数据**：自动备份只支持 SD 卡 → SSD，不提供热插拔恢复。已有 `BACKUP_MODE="REPLICA"` 的卡会被明确拒绝，不会自动改为 `PRIMARY`。如需恢复，应在备份任务停止后由操作人员从目标存储人工复制所需文件；先确认目标卡和待恢复数据，本文不提供自动恢复或格式化命令。
 
 注意：`FieldBackup.conf` 文件只包含 UUID、备份模式和创建时间，不包含名称字段。
 
 ### 5.3 查看备份统计
 
 ```bash
-# 统计所有备份大小
-du -sh /mnt/ssd/SDMirrors/*/
+# 查看运行时状态快照（current_backup、storage 和 history）
+jq . /opt/outdoor-backup/var/status.json
 
 # 查看最近备份
 ls -lt /mnt/ssd/SDMirrors/.logs/ | head -10
@@ -445,10 +437,10 @@ A: 支持FAT32、exFAT、NTFS、ext4等常见格式。
 A: 默认不支持，可通过修改MAX_CONCURRENT配置启用。
 
 **Q: 备份会删除已有文件吗？**
-A: 不会，使用增量备份，只添加新文件。
+A: 不会。传输不使用 `--delete`，并按 rsync 的 size/mtime quick check 更新不同的文件；它不保证发现 size 和 mtime 均相同的内容变化。
 
 **Q: 如何从备份恢复到SD卡？**
-A: 修改SD卡上的FieldBackup.conf，设置BACKUP_MODE="REPLICA"。
+A: 自动备份不执行恢复，也不要通过设置 `REPLICA` 触发恢复；请按本指南“恢复数据”说明人工操作。
 
 **Q: 支持定时自动备份吗？**
 A: 当前版本基于热插拔触发，不支持定时备份。

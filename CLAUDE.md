@@ -13,6 +13,7 @@
 - **硬件平台**: ARM/MIPS 路由器，需内置存储（SSD/HDD/eMMC）
 - **Shell**: POSIX 兼容 Shell (ash)
 - **备份引擎**: rsync 3.x
+- **状态序列化**: jq
 - **触发机制**: hotplug.d 事件系统
 - **状态指示**: LED 控制接口（/sys/class/leds/）
 - **包格式**: OpenWrt IPK
@@ -92,7 +93,7 @@ outdoor-backup/
 ### 2. 备份管理器
 - **文件**: `backup-manager.sh`
 - **职责**: 执行完整备份流程，处理所有错误情况
-- **执行流程**: PID 锁 → 挂载 → 配置 → rsync → 状态更新 → 清理
+- **执行流程**: 符号链接锁 → 挂载 → 配置 → rsync → 状态更新 → 清理
 
 ### 3. 公共函数库
 - **文件**: `common.sh`
@@ -108,9 +109,13 @@ outdoor-backup/
 ## 配置系统
 
 ### 三层配置架构
-1. **全局配置** (`/opt/outdoor-backup/conf/backup.conf`): 备份路径、LED 路径、调试开关
-2. **UCI 配置** (`/etc/config/outdoor-backup`): OpenWrt 标准配置接口
-3. **SD 卡配置** (`{SD_ROOT}/FieldBackup.conf`): UUID、备份模式、创建时间
+1. **内置默认值与兼容配置**：运行时先使用内置默认值，再读取 root 管理的 `/opt/outdoor-backup/conf/backup.conf`。
+2. **UCI 覆盖层**：`/etc/config/outdoor-backup` 的命名 section `outdoor-backup.config` 仅以显式 option 覆盖下层值。运行时只能通过 `uci` CLI 读取它，不应将 UCI 文件作为 shell 脚本 `source` 或 `eval`。
+3. **SD 卡配置**（`{SD_ROOT}/FieldBackup.conf`）：卡配置来自可移除介质，必须由 `card-config.sh` 按数据读取，绝不 `source` 或 `eval`。读取器为兼容既有数据接受 `REPLICA`，但自动备份只执行 `PRIMARY` 的 SD 卡到目标存储方向；管理器应明确拒绝既有 `REPLICA` 卡，绝不反向写卡或改成 `PRIMARY`。新卡配置只生成 `PRIMARY`。#15 的稳定身份、只读卡和克隆卡问题仍未完成。
+
+目标存储的稳定约束：`TARGET_MOUNT` 默认 `/mnt/ssd`，`TARGET_UUID` 默认空；有效优先级始终为 defaults < legacy < UCI。`add` 事件只有在用户配置了非空目标 UUID 后才能进入备份。目标挂载必须已存在且精确匹配内核 mountinfo 中的配置路径，`BACKUP_ROOT` 必须是其严格子目录。管理器不猜测磁盘、不格式化磁盘、也不自行挂载目标介质。初始目标守卫失败只允许 stderr、error 级 syslog 和可选红灯；它不应进入来源挂载、`rsync`、别名、锁或应用日志生命周期。`enabled=0` 的 `add` 事件不应产生 LED 副作用。
+
+目标存储的配置命令和运维流程以 [README.md 的 Configuration 章节](README.md#configuration) 为权威入口。守卫拓扑、FD 锚定、LuCI 字段边界和已知限制见 [docs/component-implementation.md](docs/component-implementation.md)。修改加载或守卫逻辑前，应读取 [config.sh](files/opt/outdoor-backup/scripts/config.sh)、[card-config.sh](files/opt/outdoor-backup/scripts/card-config.sh)、[target.sh](files/opt/outdoor-backup/scripts/target.sh)、[target-device.sh](files/opt/outdoor-backup/scripts/target-device.sh)、[backup-manager.sh](files/opt/outdoor-backup/scripts/backup-manager.sh) 及对应测试。
 
 ### 别名管理机制
 
@@ -134,11 +139,9 @@ outdoor-backup/
 WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 ```
 
-**备份模式**:
-- `PRIMARY`: SD → 内置存储（默认）
-- `REPLICA`: 内置存储 → SD（恢复模式）
+**自动备份方向**：自动备份仅允许 `PRIMARY` 的 SD 卡到目标存储方向。`REPLICA` 是读取旧卡配置时保留的兼容数据值；管理器会明确拒绝该卡，而不会执行反向写入。
 
-*配置示例见 [README.md](README.md#configuration)*
+*用户可见的配置与拒绝边界以 [README.md 的 Configuration 章节](README.md#configuration) 为权威入口。*
 
 ## 数据流
 
@@ -149,7 +152,9 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
     ↓
 [启动备份管理器] → backup-manager.sh add sda1 /devices/...
     ↓
-[获取 PID 锁] → /opt/outdoor-backup/var/lock/backup.pid
+[验证并锚定目标存储] → 精确挂载、UUID、物理盘分离、FD 9
+    ↓
+[获取符号链接锁] → /opt/outdoor-backup/var/lock/backup.lock
     ↓
 [挂载 SD 卡] → /mnt/sdcard/
     ↓
@@ -167,16 +172,18 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 ## 安全机制
 
 ### 并发控制
-- **PID 锁文件**: `/opt/outdoor-backup/var/lock/backup.pid`
-- **活跃进程检查**: `kill -0 $pid`
+- **锁**: 符号链接 `/opt/outdoor-backup/var/lock/backup.lock`，原子指向持有者的 `/proc/<pid>`（`ln -s`，禁止 `ln -sf`；链接的存在与持有者身份是同一次系统调用发布，不存在中间态）
+- **存活 + 身份校验**: 读取 `$LOCK_LINK/cmdline` 是否含预期进程名；持有者已死则链接悬空、`cmdline` 不可读，天然判定为失效
 - **超时机制**: 5 分钟未获取锁则放弃
-- **僵尸锁清理**: 自动检测并移除无效锁
+- **僵尸锁清理**: 自动检测并移除失效（悬空或身份不匹配）的锁
 
 ### 数据安全
-- **增量备份**: `rsync --ignore-existing` 不覆盖已有文件
-- **只读检测**: 无法写入 SD 卡时终止
-- **完整性保证**: 备份后执行 `sync`
-- **错误恢复**: 信号处理确保清理
+- **目标身份守卫**：`add` 先验证目标 UUID、精确挂载和源卡、系统盘、目标盘三者的物理盘分离。
+- **FD 锚定**：管理器通过 `/proc/<manager-pid>/fd/9` 使用已验证目标，目标卸载、替换或转为只读均不应视为成功。
+- **增量备份**：传输模块应直接调用 `rsync` 并保留真实退出码。它应使用 `--partial`，不应使用 `--ignore-existing`、`--append`、`--append-verify` 或 `--delete`。rsync 的 size/mtime quick check 不保证发现值相同的内容变化。
+- **状态单一来源**：`status.sh` 应使用 `jq` 原子替换唯一的 `status.json` 快照。它不得创建 `history.jsonl` 或手写 JSON。状态仅在守卫建立后写入，且只有 rsync、摘要写入、最终锚点健康和设备身份复验均成功时才可写 `completed`。
+- **空间守卫**：管理器应通过已锚定目标 FD 执行 `df`，而非扫描备份树计算空间。`MIN_FREE_SPACE` 的默认值为 1024 MB；合法非负整数 `0` 禁用余量，未知 `df` 值必须失败关闭。只有明确 ENOSPC 诊断可把 rsync 失败归类为满盘。
+- **错误恢复**：信号处理确保清理；`remove` 不依赖目标存储在场。清理应先释放 FD，再启动 LED 定时器。广泛 `pkill` 的限制由 #16 跟踪。
 
 ### 路径安全
 - **目录遍历防护**: `is_safe_path()` 检查 `../`
@@ -201,7 +208,7 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 - **依赖明确**: `DEPENDS:=+rsync +block-mount ...`
 - **架构标识**: `PKGARCH:=all` (纯脚本包)
 - **版本递增**: 功能变更递增 `PKG_VERSION`，打包变更递增 `PKG_RELEASE`
-- **安装脚本**: postinst 创建目录，prerm 清理进程
+- **安装/启动规则**: 安装/启动仅初始化运行目录，不预建备份介质目录；prerm 负责清理进程。
 
 ### GitHub Workflow 规范
 - **构建策略**: 使用 OpenWrt SDK，不使用完整源码（避免超时）
@@ -269,7 +276,7 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 **luci-app-outdoor-backup** - LuCI 网页管理界面
 
 ### 核心功能
-- ✅ **实时状态监控**：进度条、文件数、速度、ETA
+- ✅ **状态快照监控**：运行状态、已锚定目标的空间计数和完成后的 rsync 统计；不提供实时进度、速度或 ETA
 - ✅ **别名管理系统**：解决 UUID 可读性问题
 - ✅ **批量清理功能**：多重确认机制，防止误删
 - ✅ **日志查看**：过滤、高亮、下载
@@ -366,8 +373,8 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 **核心系统设计**：
 - **[docs/architecture-design.md](docs/architecture-design.md)**: 系统架构设计
   - 组件划分、数据流、接口定义
-- **[docs/component-implementation.md](docs/component-implementation.md)**: 组件实现细节
-  - 核心脚本代码、函数说明
+- **[docs/component-implementation.md](docs/component-implementation.md)**: 组件边界与目标存储守卫
+  - FD 锚定、设备身份判定、失败关闭边界和源码入口
 - **[docs/technical-research.md](docs/technical-research.md)**: 技术调研
   - 待验证技术点、硬件兼容性
 - **[docs/deployment-guide.md](docs/deployment-guide.md)**: 部署指南
