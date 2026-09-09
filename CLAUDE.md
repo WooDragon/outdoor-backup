@@ -93,7 +93,7 @@ outdoor-backup/
 ### 2. 备份管理器
 - **文件**: `backup-manager.sh`
 - **职责**: 执行完整备份流程，处理所有错误情况
-- **执行流程**: PID 锁 → 挂载 → 配置 → rsync → 状态更新 → 清理
+- **执行流程**: 符号链接锁 → 挂载 → 配置 → rsync → 状态更新 → 清理
 
 ### 3. 公共函数库
 - **文件**: `common.sh`
@@ -154,7 +154,7 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
     ↓
 [验证并锚定目标存储] → 精确挂载、UUID、物理盘分离、FD 9
     ↓
-[获取 PID 锁] → /opt/outdoor-backup/var/lock/backup.pid
+[获取符号链接锁] → /opt/outdoor-backup/var/lock/backup.lock
     ↓
 [挂载 SD 卡] → /mnt/sdcard/
     ↓
@@ -172,10 +172,10 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 ## 安全机制
 
 ### 并发控制
-- **PID 锁文件**: `/opt/outdoor-backup/var/lock/backup.pid`
-- **活跃进程检查**: `kill -0 $pid`
+- **锁**: 符号链接 `/opt/outdoor-backup/var/lock/backup.lock`，原子指向持有者的 `/proc/<pid>`（`ln -s`，禁止 `ln -sf`；链接的存在与持有者身份是同一次系统调用发布，不存在中间态）
+- **存活 + 身份校验**: 读取 `$LOCK_LINK/cmdline` 是否含预期进程名；持有者已死则链接悬空、`cmdline` 不可读，天然判定为失效
 - **超时机制**: 5 分钟未获取锁则放弃
-- **僵尸锁清理**: 自动检测并移除无效锁
+- **僵尸锁清理**: 自动检测并移除失效（悬空或身份不匹配）的锁
 
 ### 数据安全
 - **目标身份守卫**：`add` 先验证目标 UUID、精确挂载和源卡、系统盘、目标盘三者的物理盘分离。
@@ -183,7 +183,7 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 - **增量备份**：传输模块应直接调用 `rsync` 并保留真实退出码。它应使用 `--partial`，不应使用 `--ignore-existing`、`--append`、`--append-verify` 或 `--delete`。rsync 的 size/mtime quick check 不保证发现值相同的内容变化。
 - **状态单一来源**：`status.sh` 应使用 `jq` 原子替换唯一的 `status.json` 快照。它不得创建 `history.jsonl` 或手写 JSON。状态仅在守卫建立后写入，且只有 rsync、摘要写入、最终锚点健康和设备身份复验均成功时才可写 `completed`。
 - **空间守卫**：管理器应通过已锚定目标 FD 执行 `df`，而非扫描备份树计算空间。`MIN_FREE_SPACE` 的默认值为 1024 MB；合法非负整数 `0` 禁用余量，未知 `df` 值必须失败关闭。只有明确 ENOSPC 诊断可把 rsync 失败归类为满盘。
-- **错误恢复**：信号处理确保清理；`remove` 不依赖目标存储在场。清理应先释放 FD，再启动 LED 定时器。旧 PID 锁与广泛 `pkill` 的限制由 #8/PR10 和 #16 跟踪。
+- **错误恢复**：信号处理确保清理；`remove` 不依赖目标存储在场。清理应先释放 FD，再启动 LED 定时器。广泛 `pkill` 的限制由 #16 跟踪。
 
 ### 路径安全
 - **目录遍历防护**: `is_safe_path()` 检查 `../`

@@ -12,7 +12,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BASE_DIR="$(dirname "$SCRIPT_DIR")"
 MOUNT_POINT="/mnt/sdcard"
 BACKUP_ROOT="/mnt/ssd/SDMirrors"
-LOCK_FILE="$BASE_DIR/var/lock/backup.pid"
+LOCK_LINK="$BASE_DIR/var/lock/backup.lock"
+LOCK_HELD=0
+LOCK_IDENTITY="${LOCK_IDENTITY:-backup-manager.sh}"
 CONFIG_FILE="FieldBackup.conf"
 LOG_TAG="outdoor-backup"
 
@@ -152,10 +154,7 @@ cleanup() {
 		write_failed_status "${ERROR_TYPE:-rsync}" || :
 	fi
 	led_backup_stop
-	if [ -f "$LOCK_FILE" ] && [ "$(cat "$LOCK_FILE" 2>/dev/null)" = "$$" ]; then
-		rm -f "$LOCK_FILE"
-		log_info 'Lock released'
-	fi
+	release_lock
 	if mountpoint -q "$MOUNT_POINT" 2>/dev/null; then
 		umount "$MOUNT_POINT" 2>/dev/null || true
 	fi
@@ -172,31 +171,65 @@ cleanup() {
 	exit "$exit_code"
 }
 
-# Get exclusive lock. Args: none. Returns 0, or nonzero after a bounded wait.
+# Judge whether the lock link's target is still a live, genuine holder. The
+# link payload (the holder's /proc/<pid> path) and its publication are the
+# same syscall, so there is no state where a link exists without an already
+# usable identity: dereferencing a dead holder's link yields a dangling
+# /proc entry, and cmdline is simply unreadable through it. Args: none.
+# Returns 0 when alive, nonzero when stale (dead, reused PID, or zombie).
+lock_holder_alive() {
+	[ -r "$LOCK_LINK/cmdline" ] || return 1
+	# Body identity check requires literal match: "." in regex matches any char
+	tr '\0' ' ' < "$LOCK_LINK/cmdline" 2>/dev/null | grep -Fq -- "$LOCK_IDENTITY"
+}
+
+# Get exclusive lock via an atomic symlink publish. Args: none. Returns 0, or
+# nonzero after a bounded wait. Every loop iteration advances elapsed so
+# timeout is reachable. Never use `ln -sf`: -f overwrites an existing link
+# instead of failing, which destroys the mutual exclusion this depends on.
 acquire_lock() {
-	timeout=300
+	timeout=${LOCK_TIMEOUT:-300}
+	interval=${LOCK_INTERVAL:-5}
 	elapsed=0
+	mkdir -p "$(dirname "$LOCK_LINK")"
 	while [ "$elapsed" -lt "$timeout" ]; do
-		if [ -f "$LOCK_FILE" ]; then
-			pid=$(cat "$LOCK_FILE" 2>/dev/null)
-			if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-				log_debug "Waiting for lock (PID $pid)..."
-				sleep 5
-				elapsed=$((elapsed + 5))
-			else
-				rm -f "$LOCK_FILE"
+		if ln -s "/proc/$$" "$LOCK_LINK" 2>/dev/null; then
+			LOCK_HELD=1
+			log_info 'Lock acquired'
+			return 0
+		fi
+		if ! lock_holder_alive; then
+			stale="$LOCK_LINK.stale.$$"
+			if mv "$LOCK_LINK" "$stale" 2>/dev/null; then
+				rm -f "$stale"
 				log_info 'Removed stale lock'
 			fi
-		else
-			echo "$$" > "$LOCK_FILE"
-			if [ "$(cat "$LOCK_FILE" 2>/dev/null)" = "$$" ]; then
-				log_info 'Lock acquired'
-				return 0
-			fi
 		fi
+		sleep "$interval"
+		elapsed=$((elapsed + interval))
 	done
 	log_error "Failed to acquire lock after ${timeout}s"
 	return 1
+}
+
+# Release the lock only if this process is its actual holder; a competitor that
+# lost the race must never delete the winner's lock. The in-process flag is not
+# enough: if this lock was reclaimed while we still believed we held it, the
+# name now belongs to someone else and removing it would take their lock.
+# Reading the link and unlinking it are two calls, so a reclaim landing between
+# them still removes the newcomer's link. There is no "unlink only if it still
+# points here" syscall; closing that gap would mean a different primitive. It is
+# reachable only if a competitor judges a live, identity-matching holder stale,
+# which lock_holder_alive does not do.
+release_lock() {
+	[ "$LOCK_HELD" = "1" ] || return 0
+	LOCK_HELD=0
+	if [ "$(readlink "$LOCK_LINK" 2>/dev/null)" != "/proc/$$" ]; then
+		log_warn 'Lock was reclaimed by another process; leaving it alone'
+		return 0
+	fi
+	rm -f "$LOCK_LINK" 2>/dev/null || true
+	log_info 'Lock released'
 }
 
 # Mount the source card. Args: none. Returns nonzero when no supported FS mounts.

@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=outdoor-backup
 PKG_VERSION:=1.2.0
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_MAINTAINER:=Your Name <your.email@example.com>
 PKG_LICENSE:=GPL-2.0-only
@@ -36,7 +36,7 @@ define Package/outdoor-backup/description
   - Automatic hotplug-triggered backups
   - Incremental rsync that updates changed files and preserves partial transfers
   - Reliable atomic backup status snapshots and LED status indication
-  - Concurrent backup protection (PID lock)
+  - Concurrent backup protection (atomic symlink lock)
   - Support for multiple filesystems (ext4/exFAT/NTFS/FAT32)
   - One-way automatic backup from SD card to SSD
 endef

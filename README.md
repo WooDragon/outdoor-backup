@@ -79,6 +79,26 @@ Configure and mount the target storage before inserting an SD card. The manager 
    tail -f /opt/outdoor-backup/log/backup.log
    ```
 
+## LED Status Reference
+
+In the field there is no screen or SSH — the LED is the only diagnostic
+interface. Each state maps to a distinct, countable pattern so you can tell at
+a glance what happened:
+
+| State | LED pattern | Meaning |
+|-------|-------------|---------|
+| Backup in progress | Green fast blink | Transfer running |
+| Backup complete | Green solid (30s) | Done, verified |
+| Device not recognized | Red, **1 flash** + pause | Inserted device not detected as an SD card / reader |
+| Lock timeout / busy | Red, **2 flashes** + pause | Another backup is already running; waited and gave up |
+| Insufficient space | Red, **3 flashes** + pause | Target free space below `MIN_FREE_SPACE` (or disk full) |
+| Card configuration rejected | Red, **4 flashes** + pause | SD card configuration was rejected by policy (e.g. an existing REPLICA card) |
+| rsync transfer failed | Red slow blink | rsync exited non-zero (read/write error) |
+| Integrity verify failed | Red/green alternating | Transfer reported done but post-check disagreed |
+
+Count the red flashes between pauses to identify the fault. All error patterns
+auto-clear after 60 seconds.
+
 ## Configuration
 
 ### Runtime precedence and compatibility
@@ -288,12 +308,12 @@ SUBSYSTEM=block ACTION=add DEVNAME=sda1 DEVTYPE=partition \
 
 **Backup not starting?**
 ```bash
-# Check lock file
-cat /opt/outdoor-backup/var/lock/backup.pid
-ps | grep $(cat /opt/outdoor-backup/var/lock/backup.pid)
+# Check the lock: it is a symlink pointing at the holder's /proc/<pid>
+ls -l /opt/outdoor-backup/var/lock/backup.lock
+cat /opt/outdoor-backup/var/lock/backup.lock/cmdline
 
-# Remove stale lock
-rm /opt/outdoor-backup/var/lock/backup.pid
+# Force-clear a lock (only if you have confirmed no backup is really running)
+rm -f /opt/outdoor-backup/var/lock/backup.lock
 
 # Check rsync
 which rsync
