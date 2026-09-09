@@ -19,7 +19,7 @@ Automatic SD card backup system for OpenWrt routers with internal storage (SSD/H
 ### Prerequisites
 
 - OpenWrt 19.07+ (tested on Lean's LEDE)
-- Internal storage mounted at `/mnt/ssd/`
+- A user-configured target storage mount; `/mnt/ssd/` is the compatibility default
 - USB port for SD card reader
 - Required kernel modules (auto-installed with package):
   - `kmod-usb-storage`
@@ -63,11 +63,9 @@ ssh root@router "opkg install /tmp/outdoor-backup_*.ipk"
 
 ### First Run
 
-1. **Insert SD card** - The system automatically:
-   - Detects the card via hotplug
-   - Creates `FieldBackup.conf` on the card
-   - Starts rsync backup to `/mnt/ssd/SDMirrors/{UUID}/`
-   - Shows LED status
+Configure and mount the target storage before inserting an SD card. The manager does not format, mount, or select a target disk automatically. Follow [Configure target storage](#configure-target-storage) first.
+
+1. **Insert an SD card**. After the target guard accepts the configured target, the system detects the card through hotplug, creates `FieldBackup.conf` when necessary, starts the backup, and shows LED status.
 
 2. **Monitor progress**:
    ```bash
@@ -91,17 +89,67 @@ The runtime loader applies values in this order:
 2. The root-owned legacy file `/opt/outdoor-backup/conf/backup.conf`.
 3. Explicit options in the named UCI section `outdoor-backup.config`.
 
-The loader reads UCI through the `uci` CLI. It does not `source` or `eval` `/etc/config/outdoor-backup`; a UCI value is data, not shell code. The legacy file remains sourced for backward compatibility and can retain legacy-only settings.
+`TARGET_MOUNT` defaults to `/mnt/ssd`. `TARGET_UUID` defaults to an empty value. The loader reads UCI through the `uci` CLI. It does not `source` or `eval` `/etc/config/outdoor-backup`; a UCI value is data, not shell code. The legacy file remains sourced for backward compatibility and can retain legacy-only settings.
 
 The factory UCI conffile contains only `config outdoor-backup 'config'`. OpenWrt preserves a modified conffile during upgrades. The package does not migrate values from `backup.conf`, remove that file, or delete existing UCI options. Therefore, an existing explicit UCI option continues to override the legacy value after an upgrade.
 
-### Set UCI overrides
+### Configure target storage
 
-Set only values that must override the lower layers. The supported UCI options are `enabled`, `backup_root`, `mount_point`, `debug`, `led_green`, and `led_red`.
+The target UUID is a required user choice. The manager rejects an `add` event while `target_uuid` is empty. It never guesses which disk is an SSD, formats a disk, or mounts a disk itself.
+
+1. Read the block inventory. Identify the intended SSD line yourself and copy its UUID exactly. Do not use a shell expression that selects a disk by position or name.
+
+   ```sh
+   block info
+   ```
+
+2. Configure `/etc/config/fstab` manually with that same UUID and a mount point you choose. The following UCI form creates one explicit mount entry. Replace both placeholders before running it.
+
+   ```sh
+   TARGET_UUID='<UUID_FROM_THE_INTENDED_SSD>'
+   TARGET_MOUNT='/mnt/ssd'
+
+   uci set fstab.outdoor_backup_target='mount'
+   uci set fstab.outdoor_backup_target.uuid="$TARGET_UUID"
+   uci set fstab.outdoor_backup_target.target="$TARGET_MOUNT"
+   uci set fstab.outdoor_backup_target.enabled='1'
+   uci commit fstab
+   block mount
+   ```
+
+   Confirm that the same UUID is mounted at exactly `$TARGET_MOUNT` and that the mount is writable. Do not configure a subdirectory as `target_mount`.
+
+3. Configure the manager. `backup_root` must be a strict child of `target_mount`.
+
+   ```sh
+   BACKUP_ROOT="$TARGET_MOUNT/SDMirrors"
+
+   uci set outdoor-backup.config.target_mount="$TARGET_MOUNT"
+   uci set outdoor-backup.config.target_uuid="$TARGET_UUID"
+   uci set outdoor-backup.config.backup_root="$BACKUP_ROOT"
+   uci commit outdoor-backup
+   ```
+
+`/mnt/ssd` is a compatibility default, not a requirement. For example, choose `/mnt/nvme`, mount the selected UUID there, and set both `target_mount` and `backup_root` to `/mnt/nvme` and `/mnt/nvme/SDMirrors`. A future firmware image can configure those values once for all devices. This package does not deploy PhotoPrism.
+
+When a target-storage failure occurs, prepare the target storage first and then remove and reinsert the source SD card. Do not run `rsync` manually as a retry. This release does not provide an automatic SSD-ready queue or a coldplug retry mechanism.
+
+### Target guard behavior and limits
+
+Before an `add` event can create application state, the manager opens the configured target through FD 9 and requires an exact live mount record. Both VFS and filesystem-specific mount options must be `rw`. The target's `block info` UUID must equal `target_uuid`. Sysfs must prove that the source card, target storage, and physical system backing disks are different.
+
+The guard accepts direct `sd`, `mmc`, and `nvme` disks. It can trace the R5S system loop backing file only when the backing file explicitly names a `/dev/` block partition. Unknown devices, file-backed loops, `dm`, and `md` devices fail closed. It parses complete key-value tokens from `block info`; UUID-shaped text inside a `LABEL` value is not treated as a UUID, and malformed quoting is rejected. The manager uses `/proc/<manager-pid>/fd/9` for target directories and per-backup logs. It checks the anchor before work, before `rsync`, and after `rsync`; target detach or a read-only remount cannot produce a successful backup. A log-summary write failure and a detached or read-only recheck failure after the summary return nonzero.
+
+The static directory check rejects a symlink at the configured mount path or in an existing target-directory component, including `BACKUP_ROOT/.logs`. The guard rejects mounts covering the target mount point, an ancestor of `BACKUP_ROOT`, or a child mount inside the backup tree; mounts in disjoint directories are not rejected. It is not `openat2`; a malicious root process that concurrently replaces target directories is outside the guarantee of this shell implementation.
+
+The guard protects the PRIMARY path. Source-card configuration can still be executed, and the REPLICA direction remains unchanged pending #15. The existing rsync pipeline still does not preserve the complete pipeline exit status, so this release does not claim that every `ENOSPC` error is reported correctly or that the implementation is completely safe.
+
+### Set other UCI overrides
+
+Set only values that must override the lower layers. The supported UCI options are `enabled`, `backup_root`, `mount_point`, `target_mount`, `target_uuid`, `debug`, `led_green`, and `led_red`.
 
 ```sh
 # Use absolute, non-root, non-nested paths.
-uci set outdoor-backup.config.backup_root='/srv/camera-backups'
 uci set outdoor-backup.config.mount_point='/run/outdoor-card'
 uci set outdoor-backup.config.debug='1'
 uci commit outdoor-backup
@@ -114,9 +162,7 @@ uci delete outdoor-backup.config.backup_root
 uci commit outdoor-backup
 ```
 
-An empty UCI option is normalized by UCI as unset, so it also inherits the lower layer. Final empty or invalid storage paths in `backup_root` or `mount_point`, and values other than `0` or `1` for `enabled` or `debug`, make the manager stop before resource operations and report the reason to stderr and syslog with the `outdoor-backup` tag. The `enabled=0` switch exits an `add` event before LED, lock, mount, or I/O work. A `remove` event still reaches cleanup. LED paths retain their existing optional semantics: an empty legacy LED value falls back to the default in `common.sh`, and LED sysfs paths do not use the storage-path validation.
-
-The storage-path checks are lexical: they require an absolute non-root path, remove trailing slashes, reject control characters and ambiguous path segments, and reject equal or nested backup and mount paths. They do not prove that a path is an SSD or protect SSD identity. That protection is tracked by unfinished #14.
+An empty UCI option is normalized by UCI as unset, so it also inherits the lower layer. Final empty or invalid storage paths in `backup_root`, `mount_point`, or `target_mount`, invalid target UUID characters, and values other than `0` or `1` for `enabled` or `debug` make the manager stop before resource operations and report the reason to stderr and syslog with the `outdoor-backup` tag. The `enabled=0` switch exits an `add` event before target checks, LED, lock, mount, or I/O work. A `remove` event still reaches cleanup. LED paths retain their existing optional semantics: an empty legacy LED value falls back to the default in `common.sh`, and LED sysfs paths do not use storage-path validation.
 
 ### Maintain legacy configuration
 

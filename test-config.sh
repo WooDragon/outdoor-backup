@@ -73,8 +73,8 @@ prepare_config_state() {
     rm -rf "$UCI_DIR"
     mkdir -p "$UCI_DIR"
     rm -f "$LEGACY_FILE"
-    unset ENABLED BACKUP_ROOT MOUNT_POINT DEBUG LED_GREEN LED_RED EXTRA_LEGACY \
-        CONFIG_PACKAGE CONFIG_SECTION
+    unset ENABLED BACKUP_ROOT MOUNT_POINT TARGET_MOUNT TARGET_UUID DEBUG LED_GREEN \
+        LED_RED EXTRA_LEGACY CONFIG_PACKAGE CONFIG_SECTION
     PATH=$ORIGINAL_PATH
     export PATH
     export UCI_CONFIG_DIR="$UCI_DIR"
@@ -102,6 +102,10 @@ prepare_manager_runtime() {
         "$RUNTIME_SCRIPTS/config.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/common.sh" \
         "$RUNTIME_SCRIPTS/common.sh"
+    ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/target.sh" \
+        "$RUNTIME_SCRIPTS/target.sh"
+    ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/target-device.sh" \
+        "$RUNTIME_SCRIPTS/target-device.sh"
     cat > "$RUNTIME_BASE/conf/backup.conf" <<EOF
 BACKUP_ROOT="$TEST_ROOT/backups"
 MOUNT_POINT="$TEST_ROOT/card"
@@ -195,10 +199,13 @@ case_c14_factory_config_reaches_task_decision() {
     cp "$FACTORY_UCI" "$UCI_DIR/outdoor-backup"
     write_effect_stubs
 
-    if run_manager add sda1 /devices/test >/dev/null 2>&1; then
-        fail "C14 manager unexpectedly completed with mount stub"
+    c14_manager_err="$TEST_ROOT/c14-manager.err"
+    if run_manager add sda1 /devices/test > /dev/null 2> "$c14_manager_err"; then
+        fail "C14 manager unexpectedly completed without a configured target UUID"
     fi
-    assert_effect_present "mount argc=4" "C14 manager never reached mount decision"
+    assert_file_contains "target UUID is unconfigured" "$c14_manager_err" \
+        "C14 factory config did not reach the target UUID decision"
+    assert_effect_absent "C14 factory config reached a source mount despite no target UUID"
 }
 
 case_c01_no_configuration_uses_defaults() {
@@ -207,6 +214,8 @@ case_c01_no_configuration_uses_defaults() {
     assert_success load_config
     assert_equal "$ENABLED" "1" "C01 enabled default"
     assert_equal "$BACKUP_ROOT" "/mnt/ssd/SDMirrors" "C01 backup root default"
+    assert_equal "$TARGET_MOUNT" "/mnt/ssd" "C01 target mount default"
+    assert_equal "$TARGET_UUID" "" "C01 target UUID defaults unconfigured"
     assert_equal "$MOUNT_POINT" "/mnt/sdcard" "C01 mount point default"
 }
 
@@ -255,6 +264,39 @@ EOF
     assert_equal "$BACKUP_ROOT" "/legacy/backups" "C04 omitted root keeps legacy value"
     assert_equal "$MOUNT_POINT" "/legacy/card" "C04 omitted mount keeps legacy value"
     assert_equal "$DEBUG" "1" "C04 explicit debug overrides legacy value"
+}
+
+case_c04b_target_options_follow_legacy_then_named_uci_precedence() {
+    begin_case C04b "target mount and UUID preserve precedence and normalize mount"
+    prepare_config_state
+    cat > "$LEGACY_FILE" <<'EOF'
+TARGET_MOUNT="/legacy/target/"
+TARGET_UUID="LEGACY-1234"
+EOF
+    write_uci "config outdoor-backup 'config'
+	option target_mount '/uci/target/'
+	option target_uuid 'UCI-5678'"
+    assert_success load_config
+    assert_equal "$TARGET_MOUNT" "/uci/target" "C04b UCI target mount overrides legacy"
+    assert_equal "$TARGET_UUID" "UCI-5678" "C04b UCI target UUID overrides legacy"
+
+    prepare_config_state
+    cat > "$LEGACY_FILE" <<'EOF'
+TARGET_MOUNT="/legacy/target/"
+TARGET_UUID="LEGACY-1234"
+EOF
+    write_uci "config outdoor-backup 'config'
+	option target_mount ''
+	option target_uuid ''"
+    assert_success load_config
+    assert_equal "$TARGET_MOUNT" "/legacy/target" "C04b empty UCI target mount retains legacy"
+    assert_equal "$TARGET_UUID" "LEGACY-1234" "C04b empty UCI target UUID retains legacy"
+
+    prepare_config_state
+    write_uci "config outdoor-backup 'config'
+	option target_mount '/target with space/'
+	option target_uuid 'bad value'"
+    assert_failure load_config
 }
 
 case_c05_empty_uci_options_inherit_lower_precedence() {
@@ -466,15 +508,14 @@ case_trailing_slashes_are_normalized() {
     assert_equal "$MOUNT_POINT" "/data/card" "EDGE01 mount point normalization"
 }
 
-case_spaces_remain_one_manager_argument() {
-    begin_case EDGE02 "space-containing mount path remains one mount argument"
+case_spaces_survive_loader_normalization() {
+    begin_case EDGE02 "space-containing target mount remains one normalized loader value"
     prepare_config_state
     write_uci "config outdoor-backup 'config'
-	option mount_point '/tmp/card mount'"
-    prepare_manager_runtime
-    write_effect_stubs
-    run_manager add sda1 /devices/test >/dev/null 2>&1 || true
-    assert_effect_present "arg4=[/tmp/card mount]" "EDGE02 mount point was shell-split"
+	option target_mount '/tmp/target mount/'"
+    assert_success load_config
+    assert_equal "$TARGET_MOUNT" "/tmp/target mount" \
+        "EDGE02 target mount was changed or shell-split by the loader"
 }
 
 case_uci_shell_text_is_not_executed() {
@@ -550,6 +591,7 @@ main() {
     case_c02_legacy_only_preserves_extra_values
     case_c03_uci_only_overrides_defaults
     case_c04_only_explicit_uci_options_override_legacy
+    case_c04b_target_options_follow_legacy_then_named_uci_precedence
     case_c05_empty_uci_options_inherit_lower_precedence
     case_c06_bad_uci_and_missing_cli_fail_loud
     case_c07_enabled_defaults_to_one
@@ -560,15 +602,15 @@ main() {
     case_c12_invalid_enabled_and_debug_fail
     case_c13_non_target_section_cannot_override
     case_trailing_slashes_are_normalized
-    case_spaces_remain_one_manager_argument
+    case_spaces_survive_loader_normalization
     case_uci_shell_text_is_not_executed
     case_legacy_variable_names_do_not_control_uci
     case_common_sources_preserve_legacy_led_values
 
-    assert_equal "$CASES" "19" "all required cases executed"
+    assert_equal "$CASES" "20" "all required cases executed"
     ASSERTIONS=$((ASSERTIONS + 1))
-    if [ "$ASSERTIONS" -ne 81 ]; then
-        fail "all required assertions executed (expected=81, actual=$ASSERTIONS)"
+    if [ "$ASSERTIONS" -ne 92 ]; then
+        fail "all required assertions executed (expected=92, actual=$ASSERTIONS)"
     fi
     if [ "$FAILED" -ne 0 ]; then
         printf 'cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"
