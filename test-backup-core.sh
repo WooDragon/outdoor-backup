@@ -1,545 +1,532 @@
-#!/bin/bash
+#!/bin/sh
 #
-# BDD test suite for backup core reliability fixes
-# Covers issues #1 (append-verify), #4 (LED codes), #5 (space check),
-# #6 (rsync exit code), #7 (status.json writer).
-#
-# macOS openrsync lacks --append-verify / --info=progress2, so a mock rsync
-# on PATH simulates success/failure/progress deterministically.
+# BDD integration tests for the source-only rsync transfer helper. The host
+# starts one disposable, pinned OpenWrt container; source code is mounted
+# read-only and every fixture lives in container-local /tmp.
 #
 
-# Note: intentionally NOT using `set -e` — this suite probes failure paths
-# (nonzero rsync exits, missing hardware), so a nonzero must be inspected by
-# the test, not abort the whole run.
+set -u
 
-# Test directories
-TEST_ROOT="/tmp/outdoor-backup-core-test"
-BASE_DIR="$TEST_ROOT/opt"
-MOCK_BIN="$TEST_ROOT/bin"
-SCRIPTS_SRC="$(cd "$(dirname "$0")/files/opt/outdoor-backup/scripts" && pwd)"
+IMAGE="openwrt/rootfs:x86_64-24.10.8"
+IMAGE_DIGEST="sha256:9972a4b4747cd136abd597475d7b88c51a49fd849d0d53f069a2f4bf446061b9"
 
-# Colors
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-YELLOW='\033[0;33m'
-NC='\033[0m'
+if [ "${1:-}" != "--inside" ]; then
+	REPO_ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+	exec docker run --rm --platform linux/amd64 --network bridge \
+		--cap-add SYS_ADMIN --security-opt seccomp=unconfined --tmpfs /tmp:rw,exec \
+		-v "$REPO_ROOT:/src:ro" \
+		"$IMAGE@$IMAGE_DIGEST" /bin/ash /src/test-backup-core.sh --inside
+fi
 
-TESTS_PASSED=0
-TESTS_FAILED=0
-
-test_passed() {
-	echo -e "${GREEN}✓ PASSED${NC}: $1"
-	TESTS_PASSED=$((TESTS_PASSED + 1))
+[ -f /.dockerenv ] && [ -r /etc/openwrt_release ] || {
+	printf '%s\n' 'FAIL: --inside requires the pinned OpenWrt rootfs' >&2
+	exit 1
 }
 
-test_failed() {
-	echo -e "${RED}✗ FAILED${NC}: $1"
-	TESTS_FAILED=$((TESTS_FAILED + 1))
+mkdir -p /var/lock
+opkg update >/dev/null
+opkg install rsync >/dev/null
+
+REPO_ROOT=/src
+TRANSFER_SCRIPT="$REPO_ROOT/files/opt/outdoor-backup/scripts/backup-transfer.sh"
+TEST_ROOT="/tmp/outdoor-backup-transfer.$$"
+BASE_DIR="$TEST_ROOT/runtime/opt/outdoor-backup"
+SOURCE_DIR="$TEST_ROOT/source"
+TARGET_ROOT="$TEST_ROOT/target"
+LOG_DIR="$TEST_ROOT/logs"
+BIN_DIR="$TEST_ROOT/bin"
+NO_RSYNC_BIN="$TEST_ROOT/no-rsync-bin"
+FULL_TARGET="$TEST_ROOT/full-target"
+CASES=0
+ASSERTIONS=0
+FAILED=0
+
+fail() {
+	printf 'FAIL: %s\n' "$1" >&2
+	FAILED=$((FAILED + 1))
 }
 
-test_warning() {
-	echo -e "${YELLOW}⚠ WARNING${NC}: $1"
+begin_case() {
+	CASES=$((CASES + 1))
+	printf 'CASE %s: %s\n' "$1" "$2"
 }
 
-# JSON field extractor.
-# Uses jq when available (jq filter syntax, e.g. '.current_backup.active').
-# Falls back to a safe python3 key-walker that splits the same dotted path —
-# no eval, only literal dict/list indexing of trusted, test-controlled paths.
-json_field() {
-	local file="$1"
-	local filter="$2"
-	if command -v jq >/dev/null 2>&1; then
-		jq -r "$filter" "$file" 2>/dev/null
-	else
-		FILTER="$filter" python3 - "$file" << 'PYEOF' 2>/dev/null
-import json, os, sys
-data = json.load(open(sys.argv[1]))
-# Walk a leading-dot path like ".a.b.0.c" by literal key/index lookups only.
-path = os.environ["FILTER"].lstrip(".")
-node = data
-for part in [p for p in path.split(".") if p != ""]:
-    if isinstance(node, list):
-        node = node[int(part)]
-    else:
-        node = node[part]
-print(node)
-PYEOF
+assert_equal() {
+	actual=$1
+	expected=$2
+	message=$3
+	ASSERTIONS=$((ASSERTIONS + 1))
+	[ "$actual" = "$expected" ] || fail "$message (expected=[$expected], actual=[$actual])"
+}
+
+assert_success() {
+	message=$1
+	shift
+	ASSERTIONS=$((ASSERTIONS + 1))
+	"$@" || fail "$message"
+}
+
+assert_failure() {
+	message=$1
+	shift
+	ASSERTIONS=$((ASSERTIONS + 1))
+	if "$@"; then
+		fail "$message"
 	fi
 }
 
-# Validate that a file is well-formed JSON
-json_valid() {
-	local file="$1"
-	if command -v jq >/dev/null 2>&1; then
-		jq empty "$file" >/dev/null 2>&1
-	else
-		python3 -c "import json; json.load(open('$file'))" >/dev/null 2>&1
+assert_file_hash_equal() {
+	left=$1
+	right=$2
+	message=$3
+	ASSERTIONS=$((ASSERTIONS + 1))
+	left_hash=$(sha256sum "$left" | awk '{print $1}')
+	right_hash=$(sha256sum "$right" | awk '{print $1}')
+	[ "$left_hash" = "$right_hash" ] || fail "$message (left=$left_hash, right=$right_hash)"
+}
+
+assert_file_absent() {
+	path=$1
+	message=$2
+	ASSERTIONS=$((ASSERTIONS + 1))
+	[ ! -e "$path" ] || fail "$message (path=[$path])"
+}
+
+assert_tree_hashes_equal() {
+	source_root=$1
+	target_root=$2
+	message=$3
+	ASSERTIONS=$((ASSERTIONS + 1))
+	source_hashes=$(cd "$source_root" && find . -type f -exec sha256sum {} \; | LC_ALL=C sort)
+	target_hashes=$(cd "$target_root" && find . -type f -exec sha256sum {} \; | LC_ALL=C sort)
+	[ "$source_hashes" = "$target_hashes" ] || fail "$message"
+}
+
+assert_contains() {
+	needle=$1
+	file=$2
+	message=$3
+	ASSERTIONS=$((ASSERTIONS + 1))
+	grep -F -q -- "$needle" "$file" || fail "$message (missing=[$needle])"
+}
+
+assert_not_contains() {
+	needle=$1
+	file=$2
+	message=$3
+	ASSERTIONS=$((ASSERTIONS + 1))
+	if grep -F -q -- "$needle" "$file"; then
+		fail "$message (unexpected=[$needle])"
 	fi
 }
 
-setup_env() {
+assert_no_runtime_temp_files() {
+	set -- "$BASE_DIR/var/.backup-transfer."*
+	ASSERTIONS=$((ASSERTIONS + 1))
+	[ "$1" = "$BASE_DIR/var/.backup-transfer.*" ] || fail 'transfer runtime output files were not cleaned'
+}
+
+cleanup_test_data() {
+	if mountpoint -q "$FULL_TARGET" 2>/dev/null; then
+		umount "$FULL_TARGET" || :
+	fi
 	rm -rf "$TEST_ROOT"
-	mkdir -p "$BASE_DIR/var/lock" "$BASE_DIR/log" "$BASE_DIR/conf" "$MOCK_BIN"
-	cp "$SCRIPTS_SRC/common.sh" "$BASE_DIR/scripts.common.sh" 2>/dev/null || true
-	mkdir -p "$BASE_DIR/scripts"
-	cp "$SCRIPTS_SRC/common.sh" "$BASE_DIR/scripts/common.sh"
-	# Minimal globals common.sh expects when sourced standalone
-	export BASE_DIR
-	export LOG_TAG="outdoor-backup-test"
-	export STATUS_FILE="$BASE_DIR/var/status.json"
-	export ALIASES_FILE="$BASE_DIR/conf/aliases.json"
+}
+
+setup_fixture() {
+	cleanup_test_data
+	mkdir -p "$BASE_DIR/var" "$SOURCE_DIR" "$TARGET_ROOT" "$LOG_DIR" "$BIN_DIR" "$NO_RSYNC_BIN"
+	CONFIG_FILE=FieldBackup.conf
+	# shellcheck disable=SC1090
+	. "$TRANSFER_SCRIPT"
+}
+
+run_transfer() {
+	backup_transfer "$1" "$2" "$3"
+}
+
+snapshot_source() {
+	find "$SOURCE_DIR" -type f -exec sha256sum {} \; | LC_ALL=C sort
+}
+
+create_rsync_double() {
+	cat > "$BIN_DIR/rsync" << 'DOUBLE'
+#!/bin/sh
+printf '%s\n' "$@" > "$RSYNC_ARGS_FILE"
+if [ "${RSYNC_DOUBLE_DIAGNOSTIC:-}" != "" ]; then
+	printf '%s\n' "$RSYNC_DOUBLE_DIAGNOSTIC" >&2
+fi
+if [ "${RSYNC_DOUBLE_STATS:-}" != "" ]; then
+	printf '%s\n' 'Number of regular files transferred: 7'
+	printf '%s\n' 'Total transferred file size: 1,234 bytes'
+fi
+exit "${RSYNC_DOUBLE_EXIT:-0}"
+DOUBLE
+	chmod 755 "$BIN_DIR/rsync"
+}
+
+create_rsync_mutation() {
+	mutation_flag=$1
+	cat > "$BIN_DIR/rsync" << DOUBLE
+#!/bin/sh
+exec /usr/bin/rsync "$mutation_flag" "\$@"
+DOUBLE
+	chmod 755 "$BIN_DIR/rsync"
+}
+
+create_mktemp_double() {
+	cat > "$BIN_DIR/mktemp" << 'DOUBLE'
+#!/bin/sh
+case "${MK_TEMP_DOUBLE_MODE:-}" in
+	fail-second)
+		case "$1" in
+		"$MK_TEMP_DOUBLE_BASE"/var/.backup-transfer.*.XXXXXX) ;;
+		*) exit 97 ;;
+		esac
+		calls=0
+		[ -f "$MK_TEMP_DOUBLE_STATE" ] && IFS= read -r calls < "$MK_TEMP_DOUBLE_STATE"
+		calls=$((calls + 1))
+		printf '%s\n' "$calls" > "$MK_TEMP_DOUBLE_STATE"
+		[ "$calls" -ne 2 ] || exit 1
+		exec /bin/mktemp "$@"
+		;;
+	fail-stdout-redirect)
+		[ "$1" = "$MK_TEMP_DOUBLE_BASE/var/.backup-transfer.stdout.XXXXXX" ] || exit 97
+		printf '%s\n' "$MK_TEMP_DOUBLE_BASE/missing/stdout"
+		;;
+	fail-stderr-redirect)
+		case "$1" in
+		"$MK_TEMP_DOUBLE_BASE/var/.backup-transfer.stdout.XXXXXX")
+			exec /bin/mktemp "$@"
+			;;
+		"$MK_TEMP_DOUBLE_BASE/var/.backup-transfer.stderr.XXXXXX")
+			printf '%s\n' "$MK_TEMP_DOUBLE_BASE/missing/stderr"
+			;;
+		*) exit 97 ;;
+		esac
+		;;
+	*) exit 97 ;;
+	esac
+DOUBLE
+	chmod 755 "$BIN_DIR/mktemp"
+}
+
+prepare_no_rsync_path() {
+	for command_name in mktemp rm grep tr; do
+		ln -sf /bin/busybox "$NO_RSYNC_BIN/$command_name"
+	done
+}
+
+case_source_is_inert() {
+	begin_case T01 'sourcing only defines the transfer API without runtime output'
+	setup_fixture
+	ASSERTIONS=$((ASSERTIONS + 1))
+	command -v backup_transfer >/dev/null 2>&1 || fail 'T01 backup_transfer is defined after source'
+	ASSERTIONS=$((ASSERTIONS + 1))
+	command -v backup_transfer_cleanup >/dev/null 2>&1 || fail 'T01 cleanup API is defined after source'
+	assert_no_runtime_temp_files
+}
+
+case_real_transfer_and_fd_target() {
+	begin_case T02 'real rsync preserves spaced source, FD target, and log arguments'
+	setup_fixture
+	SOURCE_DIR="$TEST_ROOT/source with space"
+	fd_target_dir="$TARGET_ROOT/fd target with space"
+	transfer_log="$LOG_DIR/logs with space/first transfer.log"
+	mkdir -p "$SOURCE_DIR" "$fd_target_dir" "$(dirname "$transfer_log")"
+	printf '%s\n' 'first version' > "$SOURCE_DIR/alpha.txt"
+	printf '%s\n' 'unchanged' > "$SOURCE_DIR/unchanged.txt"
+	before=$(snapshot_source)
+	exec 9<"$TARGET_ROOT"
+	fd_target="/proc/$$/fd/9/fd target with space/"
+	if run_transfer "$SOURCE_DIR/" "$fd_target" "$transfer_log"; then
+		assert_equal "$BACKUP_TRANSFER_EXIT" 0 'T02 reports real rsync success'
+	else
+		fail 'T02 real rsync unexpectedly failed'
+	fi
+	assert_file_hash_equal "$SOURCE_DIR/alpha.txt" "$fd_target_dir/alpha.txt" 'T02 first file hash matches'
+	assert_file_hash_equal "$SOURCE_DIR/unchanged.txt" "$fd_target_dir/unchanged.txt" 'T02 unchanged file hash matches'
+	assert_equal "$(snapshot_source)" "$before" 'T02 source snapshot remains unchanged'
+	assert_no_runtime_temp_files
+	exec 9<&-
+}
+
+case_incremental_update_and_preservation() {
+	begin_case T03 'real rsync transfers only new, size-changed, and newer same-size files'
+	setup_fixture
+	printf '%s\n' 'old content' > "$SOURCE_DIR/change.txt"
+	printf '%s\n' 'same-size-old' > "$SOURCE_DIR/same-size.txt"
+	printf '%s\n' 'unchanged content' > "$SOURCE_DIR/unchanged.txt"
+	printf '%s\n' 'remove source only' > "$SOURCE_DIR/remove-me.txt"
+	touch -t 202609090101 "$SOURCE_DIR/same-size.txt"
+	assert_success 'T03 initial copy succeeds' run_transfer "$SOURCE_DIR/" "$TARGET_ROOT/" "$LOG_DIR/initial.log"
+	printf '%s\n' 'new content with a different size' > "$SOURCE_DIR/change.txt"
+	printf '%s\n' 'same-size-new' > "$SOURCE_DIR/same-size.txt"
+	touch -t 202609090102 "$SOURCE_DIR/same-size.txt"
+	printf '%s\n' 'new file' > "$SOURCE_DIR/new.txt"
+	printf '%s\n' 'preserve me' > "$TARGET_ROOT/target-only.txt"
+	rm "$SOURCE_DIR/remove-me.txt"
+	before=$(snapshot_source)
+	expected_bytes=$(($(wc -c < "$SOURCE_DIR/change.txt") + $(wc -c < "$SOURCE_DIR/same-size.txt") + $(wc -c < "$SOURCE_DIR/new.txt")))
+	if run_transfer "$SOURCE_DIR/" "$TARGET_ROOT/" "$LOG_DIR/incremental.log"; then
+		assert_equal "$BACKUP_TRANSFER_FILES" 3 'T03 stats count only expected incremental files'
+		assert_equal "$BACKUP_TRANSFER_BYTES" "$expected_bytes" 'T03 stats bytes include only expected incremental files'
+	else
+		fail 'T03 incremental real rsync unexpectedly failed'
+	fi
+	assert_file_hash_equal "$SOURCE_DIR/change.txt" "$TARGET_ROOT/change.txt" 'T03 size-changed file is updated'
+	assert_file_hash_equal "$SOURCE_DIR/same-size.txt" "$TARGET_ROOT/same-size.txt" 'T03 newer same-size file is updated'
+	assert_file_hash_equal "$SOURCE_DIR/new.txt" "$TARGET_ROOT/new.txt" 'T03 new file is copied'
+	assert_file_hash_equal "$SOURCE_DIR/unchanged.txt" "$TARGET_ROOT/unchanged.txt" 'T03 unchanged source file remains identical'
+	assert_equal "$(cat "$TARGET_ROOT/remove-me.txt")" 'remove source only' 'T03 source deletion does not delete target file'
+	assert_equal "$(cat "$TARGET_ROOT/target-only.txt")" 'preserve me' 'T03 target-only file is retained'
+	assert_equal "$(snapshot_source)" "$before" 'T03 source snapshot remains unchanged'
+	assert_no_runtime_temp_files
+}
+
+case_incremental_mutation_probes() {
+	begin_case T04 'temporary rsync mutations prove same-size incremental assertions detect drift'
+	for mutation_flag in --ignore-times --size-only; do
+		setup_fixture
+		printf '%s\n' 'same-size-old' > "$SOURCE_DIR/same-size.txt"
+		printf '%s\n' 'unchanged content' > "$SOURCE_DIR/unchanged.txt"
+		touch -t 202609090101 "$SOURCE_DIR/same-size.txt"
+		assert_success "T04 $mutation_flag initial copy succeeds" run_transfer "$SOURCE_DIR/" "$TARGET_ROOT/" "$LOG_DIR/initial.log"
+		printf '%s\n' 'same-size-new' > "$SOURCE_DIR/same-size.txt"
+		touch -t 202609090102 "$SOURCE_DIR/same-size.txt"
+		create_rsync_mutation "$mutation_flag"
+		old_path=$PATH
+		PATH="$BIN_DIR:$PATH"
+		assert_success "T04 $mutation_flag transfer completes" run_transfer "$SOURCE_DIR/" "$TARGET_ROOT/" "$LOG_DIR/mutation.log"
+		PATH=$old_path
+		if [ "$mutation_flag" = --ignore-times ]; then
+			assert_failure 'T04 --ignore-times makes expected file-count assertion red' test "$BACKUP_TRANSFER_FILES" -eq 1
+		else
+			assert_failure 'T04 --size-only makes same-size hash assertion red' cmp -s "$SOURCE_DIR/same-size.txt" "$TARGET_ROOT/same-size.txt"
+		fi
+		assert_no_runtime_temp_files
+	done
+}
+
+case_partial_target_recovery() {
+	begin_case T04 'real rsync restores a partial target file to the source hash'
+	setup_fixture
+	dd if=/dev/zero of="$SOURCE_DIR/payload.bin" bs=1024 count=256 >/dev/null 2>&1
+	dd if="$SOURCE_DIR/payload.bin" of="$TARGET_ROOT/payload.bin" bs=1024 count=8 >/dev/null 2>&1
+	before=$(snapshot_source)
+	assert_success 'T03 partial target transfer succeeds' run_transfer "$SOURCE_DIR/" "$TARGET_ROOT/" "$LOG_DIR/partial.log"
+	assert_file_hash_equal "$SOURCE_DIR/payload.bin" "$TARGET_ROOT/payload.bin" 'T03 partial file recovers fully'
+	assert_equal "$(snapshot_source)" "$before" 'T03 source snapshot remains unchanged'
+	assert_no_runtime_temp_files
+}
+
+case_failure_exit_and_classification() {
+	begin_case T05 'controlled rsync failures preserve exit codes and classify only diagnostics'
+	setup_fixture
+	create_rsync_double
+	printf '%s\n' fixture > "$SOURCE_DIR/input.txt"
+	RSYNC_ARGS_FILE="$TEST_ROOT/args.log"
+	export RSYNC_ARGS_FILE
+	old_path=$PATH
+	PATH="$BIN_DIR:$PATH"
+
+	for spec in '0::' '11::rsync' '12::rsync' '23::rsync' '23:ENOSPC:no_space' '23:No space left on device:no_space'; do
+		exit_code=${spec%%:*}
+		rest=${spec#*:}
+		diagnostic=${rest%%:*}
+		expected_error=${rest#*:}
+		RSYNC_DOUBLE_EXIT=$exit_code
+		RSYNC_DOUBLE_DIAGNOSTIC=$diagnostic
+		RSYNC_DOUBLE_STATS=1
+		export RSYNC_DOUBLE_EXIT RSYNC_DOUBLE_DIAGNOSTIC RSYNC_DOUBLE_STATS
+		if run_transfer "$SOURCE_DIR/" "$TARGET_ROOT/" "$LOG_DIR/double-$exit_code.log"; then
+			actual_return=0
+		else
+			actual_return=$?
+		fi
+		assert_equal "$actual_return" "$exit_code" "T04 rsync exit $exit_code propagates"
+		assert_equal "$BACKUP_TRANSFER_EXIT" "$exit_code" "T04 global exit records $exit_code"
+		assert_equal "$BACKUP_TRANSFER_ERROR" "$expected_error" "T04 error classification for $exit_code"
+	done
+	PATH=$old_path
+	assert_no_runtime_temp_files
+}
+
+case_argv_contract() {
+	begin_case T06 'transfer argv preserves spaced source, target, and log arguments'
+	setup_fixture
+	SOURCE_DIR="$TEST_ROOT/source with space"
+	TARGET_ROOT="$TEST_ROOT/target with space"
+	transfer_log="$LOG_DIR/logs with space/argv transfer.log"
+	mkdir -p "$SOURCE_DIR" "$TARGET_ROOT" "$(dirname "$transfer_log")"
+	create_rsync_double
+	printf '%s\n' fixture > "$SOURCE_DIR/input.txt"
+	RSYNC_ARGS_FILE="$TEST_ROOT/args.log"
+	RSYNC_DOUBLE_EXIT=0
+	RSYNC_DOUBLE_DIAGNOSTIC=''
+	RSYNC_DOUBLE_STATS=1
+	export RSYNC_ARGS_FILE RSYNC_DOUBLE_EXIT RSYNC_DOUBLE_DIAGNOSTIC RSYNC_DOUBLE_STATS
+	old_path=$PATH
+	PATH="$BIN_DIR:$PATH"
+	assert_success 'T06 controlled success returns zero' run_transfer "$SOURCE_DIR/" "$TARGET_ROOT/" "$transfer_log"
+	PATH=$old_path
+	assert_contains --archive "$RSYNC_ARGS_FILE" 'T05 archive flag retained'
+	assert_contains --recursive "$RSYNC_ARGS_FILE" 'T05 recursive flag retained'
+	assert_contains --times "$RSYNC_ARGS_FILE" 'T05 times flag retained'
+	assert_contains --prune-empty-dirs "$RSYNC_ARGS_FILE" 'T05 prune-empty-dirs retained'
+	assert_contains --partial "$RSYNC_ARGS_FILE" 'T05 partial retained'
+	assert_contains --stats "$RSYNC_ARGS_FILE" 'T05 stats retained'
+	assert_contains "--log-file=$transfer_log" "$RSYNC_ARGS_FILE" 'T06 actual spaced log-file argument retained'
+	assert_contains '--exclude=FieldBackup.conf' "$RSYNC_ARGS_FILE" 'T05 config exclude retained'
+	assert_contains '--exclude=.Trash*' "$RSYNC_ARGS_FILE" 'T05 Trash exclude retained'
+	assert_contains '--exclude=.Spotlight*' "$RSYNC_ARGS_FILE" 'T05 Spotlight exclude retained'
+	assert_contains '--exclude=.fseventsd' "$RSYNC_ARGS_FILE" 'T05 fseventsd exclude retained'
+	assert_contains '--exclude=System Volume Information' "$RSYNC_ARGS_FILE" 'T05 Windows metadata exclude retained'
+	assert_contains '--exclude=$RECYCLE.BIN' "$RSYNC_ARGS_FILE" 'T05 recycle exclude retained'
+	for forbidden_flag in --ignore-existing --append --append-verify --human-readable --progress --info=progress2 --delete; do
+		assert_not_contains "$forbidden_flag" "$RSYNC_ARGS_FILE" "T05 forbidden $forbidden_flag is absent"
+	done
+	last_two=$(awk '{ previous=current; current=$0 } END { printf "%s|%s|", previous, current }' "$RSYNC_ARGS_FILE")
+	assert_equal "$last_two" "$SOURCE_DIR/|$TARGET_ROOT/|" 'T06 source and target remain complete final argv entries'
+	assert_equal "$BACKUP_TRANSFER_FILES" 7 'T06 stats files parsed from actual helper output'
+	assert_equal "$BACKUP_TRANSFER_BYTES" 1234 'T06 stats bytes parsed without invented units'
+	assert_no_runtime_temp_files
+}
+
+case_missing_rsync_and_runtime_failure_reset_state() {
+	begin_case T07 'missing rsync and runtime-output preparation failures cannot retain success state'
+	setup_fixture
+	printf '%s\n' fixture > "$SOURCE_DIR/input.txt"
+	assert_success 'T06 establishes a prior success state' run_transfer "$SOURCE_DIR/" "$TARGET_ROOT/" "$LOG_DIR/success.log"
+	prepare_no_rsync_path
+	old_path=$PATH
+	PATH=$NO_RSYNC_BIN
+	if run_transfer "$SOURCE_DIR/" "$TARGET_ROOT/" "$LOG_DIR/missing.log"; then
+		missing_return=0
+	else
+		missing_return=$?
+	fi
+	PATH=$old_path
+	assert_equal "$missing_return" 127 'T06 missing rsync returns shell command-not-found code'
+	assert_equal "$BACKUP_TRANSFER_EXIT" 127 'T06 missing rsync updates exit global'
+	assert_equal "$BACKUP_TRANSFER_FILES" 0 'T06 missing rsync resets transferred files'
+	assert_equal "$BACKUP_TRANSFER_BYTES" 0 'T06 missing rsync resets transferred bytes'
+	assert_equal "$BACKUP_TRANSFER_ERROR" rsync 'T06 missing rsync is an rsync error'
+	assert_no_runtime_temp_files
+
+	old_base_dir=$BASE_DIR
+	BASE_DIR="$TEST_ROOT/no-runtime"
+	if run_transfer "$SOURCE_DIR/" "$TARGET_ROOT/" "$LOG_DIR/preparation.log"; then
+		preparation_return=0
+	else
+		preparation_return=$?
+	fi
+	BASE_DIR=$old_base_dir
+	assert_equal "$preparation_return" 1 'T06 temporary output creation failure returns nonzero'
+	assert_equal "$BACKUP_TRANSFER_EXIT" 1 'T06 preparation failure records its exit code'
+	assert_equal "$BACKUP_TRANSFER_FILES" 0 'T06 preparation failure does not retain files'
+	assert_equal "$BACKUP_TRANSFER_BYTES" 0 'T06 preparation failure does not retain bytes'
+	assert_equal "$BACKUP_TRANSFER_ERROR" rsync 'T06 preparation failure has a defined failure class'
+	assert_no_runtime_temp_files
+}
+
+case_runtime_output_failure_injections() {
+	begin_case T08 'strict mktemp and redirection doubles reset state and clean registered files'
+	setup_fixture
+	printf '%s\n' fixture > "$SOURCE_DIR/input.txt"
+	assert_success 'T08 establishes a real prior success state' run_transfer "$SOURCE_DIR/" "$TARGET_ROOT/" "$LOG_DIR/success.log"
+	create_mktemp_double
+	old_path=$PATH
+	PATH="$BIN_DIR:$PATH"
+	MK_TEMP_DOUBLE_MODE=fail-second
+	MK_TEMP_DOUBLE_BASE=$BASE_DIR
+	MK_TEMP_DOUBLE_STATE="$TEST_ROOT/mktemp-calls"
+	export MK_TEMP_DOUBLE_MODE MK_TEMP_DOUBLE_BASE MK_TEMP_DOUBLE_STATE
+	if run_transfer "$SOURCE_DIR/" "$TARGET_ROOT/" "$LOG_DIR/mktemp.log"; then
+		mktemp_return=0
+	else
+		mktemp_return=$?
+	fi
+	PATH=$old_path
+	assert_failure 'T08 second mktemp must fail' test "$mktemp_return" -eq 0
+	assert_equal "$BACKUP_TRANSFER_EXIT" "$mktemp_return" 'T08 second mktemp exit global matches return'
+	assert_equal "$BACKUP_TRANSFER_FILES" 0 'T08 second mktemp resets files'
+	assert_equal "$BACKUP_TRANSFER_BYTES" 0 'T08 second mktemp resets bytes'
+	assert_failure 'T08 second mktemp records a nonempty error' test -z "$BACKUP_TRANSFER_ERROR"
+	assert_no_runtime_temp_files
+
+	for redirect_mode in fail-stdout-redirect fail-stderr-redirect; do
+		setup_fixture
+		printf '%s\n' fixture > "$SOURCE_DIR/input.txt"
+		assert_success "T08 $redirect_mode establishes a real prior success state" run_transfer "$SOURCE_DIR/" "$TARGET_ROOT/" "$LOG_DIR/success.log"
+		create_mktemp_double
+		old_path=$PATH
+		PATH="$BIN_DIR:$PATH"
+		MK_TEMP_DOUBLE_MODE=$redirect_mode
+		MK_TEMP_DOUBLE_BASE=$BASE_DIR
+		export MK_TEMP_DOUBLE_MODE MK_TEMP_DOUBLE_BASE
+		if run_transfer "$SOURCE_DIR/" "$TARGET_ROOT/" "$LOG_DIR/$redirect_mode.log"; then
+			redirect_return=0
+		else
+			redirect_return=$?
+		fi
+		PATH=$old_path
+		assert_failure "T08 $redirect_mode must fail" test "$redirect_return" -eq 0
+		assert_equal "$BACKUP_TRANSFER_EXIT" "$redirect_return" "T08 $redirect_mode exit global matches return"
+		assert_equal "$BACKUP_TRANSFER_FILES" 0 "T08 $redirect_mode resets files"
+		assert_equal "$BACKUP_TRANSFER_BYTES" 0 "T08 $redirect_mode resets bytes"
+		assert_failure "T08 $redirect_mode records a nonempty error" test -z "$BACKUP_TRANSFER_ERROR"
+		assert_no_runtime_temp_files
+	done
+}
+
+case_real_enospc_and_cleanup() {
+	begin_case T09 'real tmpfs ENOSPC is detected without touching host storage'
+	setup_fixture
+	mkdir -p "$FULL_TARGET"
+	mount -t tmpfs -o size=2m tmpfs "$FULL_TARGET" || {
+		fail 'T07 cannot create test-owned tmpfs'
+		return
+	}
+	dd if=/dev/zero of="$FULL_TARGET/filler.bin" bs=1024 count=1900 >/dev/null 2>&1 || {
+		fail 'T07 cannot fill test-owned tmpfs'
+		return
+	}
+	dd if=/dev/zero of="$SOURCE_DIR/too-large.bin" bs=1024 count=512 >/dev/null 2>&1
+	before=$(snapshot_source)
+	if run_transfer "$SOURCE_DIR/" "$FULL_TARGET/" "$LOG_DIR/full.log"; then
+		full_return=0
+	else
+		full_return=$?
+	fi
+	assert_failure 'T09 real full tmpfs must not report success' test "$full_return" -eq 0
+	assert_equal "$BACKUP_TRANSFER_EXIT" "$full_return" 'T09 actual ENOSPC exit global matches return'
+	assert_equal "$BACKUP_TRANSFER_ERROR" no_space 'T09 actual ENOSPC diagnostic maps to no_space'
+	assert_equal "$(snapshot_source)" "$before" 'T09 actual ENOSPC leaves source snapshot unchanged'
+	assert_no_runtime_temp_files
+	umount "$FULL_TARGET" || fail 'T09 unmounts test-owned tmpfs'
 }
 
 main() {
-	echo "========================================"
-	echo "  Outdoor Backup - Core Reliability Suite"
-	echo "========================================"
-	setup_env
-
-	test_status_writer_running
-	test_status_writer_completed
-	test_status_writer_failed
-	test_status_history_dedup
-	test_status_json_escaping
-	test_status_newline_in_name
-	test_led_functions_exist
-	test_led_no_hardware_safe
-	test_e2e_rsync_success
-	test_e2e_rsync_failure
-	test_e2e_append_verify_flag
-	test_e2e_no_du_precheck
-	test_error_type_led_dispatch
-
-	echo ""
-	echo "========================================"
-	echo "  Test Results"
-	echo "========================================"
-	echo -e "${GREEN}Passed: $TESTS_PASSED${NC}"
-	echo -e "${RED}Failed: $TESTS_FAILED${NC}"
-
-	rm -rf "$TEST_ROOT"
-
-	if [ $TESTS_FAILED -eq 0 ]; then
-		echo -e "${GREEN}All tests passed!${NC}"
-		exit 0
-	else
-		echo -e "${RED}Some tests failed.${NC}"
+	[ -f "$TRANSFER_SCRIPT" ] || {
+		printf 'FAIL: missing transfer helper: %s\n' "$TRANSFER_SCRIPT" >&2
 		exit 1
-	fi
+	}
+	trap cleanup_test_data EXIT INT TERM
+	case_source_is_inert
+	case_real_transfer_and_fd_target
+	case_incremental_update_and_preservation
+	case_incremental_mutation_probes
+	case_partial_target_recovery
+	case_failure_exit_and_classification
+	case_argv_contract
+	case_missing_rsync_and_runtime_failure_reset_state
+	case_runtime_output_failure_injections
+	case_real_enospc_and_cleanup
+	printf 'RESULT: cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"
+	[ "$CASES" -eq 10 ] || fail "expected 10 cases, ran $CASES"
+	[ "$ASSERTIONS" -eq 114 ] || fail "expected 114 assertions, ran $ASSERTIONS"
+	[ "$FAILED" -eq 0 ]
 }
-
-# PLACEHOLDER_TESTS
-
-# === Issue #7: status.json writer ===
-
-# Scenario: backup starts -> status.json exists, status=running, fields match
-# the frontend current_backup contract.
-test_status_writer_running() {
-	echo ""
-	echo "=== #7: status.json running state ==="
-	( . "$BASE_DIR/scripts/common.sh"
-	  write_status "running" "550e8400-e29b-41d4-a716-446655440000" \
-		"Canon Card" "sda1" 1728825000 45 1200 540 \
-		52428800000 23592960000 157286400 "$BASE_DIR" "" "" )
-
-	if [ -f "$STATUS_FILE" ]; then
-		test_passed "status.json created on running"
-	else
-		test_failed "status.json not created"
-		return
-	fi
-
-	if json_valid "$STATUS_FILE"; then
-		test_passed "status.json is valid JSON"
-	else
-		test_failed "status.json is malformed"
-		echo "--- content ---"; cat "$STATUS_FILE"
-		return
-	fi
-
-	[ "$(json_field "$STATUS_FILE" '.current_backup.active')" = "true" ] \
-		&& test_passed "current_backup.active=true" \
-		|| test_failed "current_backup.active wrong"
-
-	[ "$(json_field "$STATUS_FILE" '.current_backup.progress_percent')" = "45" ] \
-		&& test_passed "progress_percent=45" \
-		|| test_failed "progress_percent wrong"
-
-	[ "$(json_field "$STATUS_FILE" '.current_backup.name')" = "Canon Card" ] \
-		&& test_passed "name preserved" \
-		|| test_failed "name wrong"
-}
-
-# Scenario: backup completes -> current_backup=null, one history entry added
-# with status=completed.
-test_status_writer_completed() {
-	echo ""
-	echo "=== #7: status.json completed state ==="
-	rm -f "$BASE_DIR/var/history.jsonl"
-	( . "$BASE_DIR/scripts/common.sh"
-	  write_status "completed" "550e8400-e29b-41d4-a716-446655440000" \
-		"Canon Card" "sda1" 1728825000 100 1200 1200 \
-		52428800000 52428800000 0 "$BASE_DIR" "$BASE_DIR/target" "" )
-
-	json_valid "$STATUS_FILE" \
-		&& test_passed "completed status.json valid" \
-		|| test_failed "completed status.json malformed"
-
-	[ "$(json_field "$STATUS_FILE" '.current_backup')" = "null" ] \
-		&& test_passed "current_backup=null when not running" \
-		|| test_failed "current_backup should be null"
-
-	[ "$(json_field "$STATUS_FILE" '.history[0].status')" = "completed" ] \
-		&& test_passed "history[0].status=completed" \
-		|| test_failed "history status wrong"
-
-	[ "$(json_field "$STATUS_FILE" '.history[0].files_count')" = "1200" ] \
-		&& test_passed "history files_count=1200" \
-		|| test_failed "history files_count wrong"
-}
-
-# Scenario: backup fails -> history entry with status=error + error_message.
-test_status_writer_failed() {
-	echo ""
-	echo "=== #7/#6: status.json failed state ==="
-	rm -f "$BASE_DIR/var/history.jsonl"
-	( . "$BASE_DIR/scripts/common.sh"
-	  write_status "failed" "7c9e6679-7425-40de-944b-e07fc1f90ae7" \
-		"Sony Card" "sdb1" 1728825000 0 0 0 0 0 0 \
-		"$BASE_DIR" "$BASE_DIR/target" "rsync exit 11" )
-
-	[ "$(json_field "$STATUS_FILE" '.history[0].status')" = "error" ] \
-		&& test_passed "failed -> history status=error" \
-		|| test_failed "failed status wrong"
-
-	local msg
-	msg=$(json_field "$STATUS_FILE" '.history[0].error_message')
-	[ "$msg" = "rsync exit 11" ] \
-		&& test_passed "error_message recorded" \
-		|| test_failed "error_message wrong: '$msg'"
-}
-
-# Scenario: same card backed up twice -> history keeps ONE row (newest wins),
-# not two duplicate rows. Matches the frontend one-row-per-card table.
-test_status_history_dedup() {
-	echo ""
-	echo "=== #7: history dedup by UUID ==="
-	rm -f "$BASE_DIR/var/history.jsonl"
-	local uuid="3b1e7a9f-8d6c-4c3e-b2f4-9a1e7d8c4b5a"
-	( . "$BASE_DIR/scripts/common.sh"
-	  write_status "completed" "$uuid" "Card A" "sda1" 100 100 10 10 1000 1000 0 "$BASE_DIR" "/t" "" )
-	( . "$BASE_DIR/scripts/common.sh"
-	  write_status "completed" "$uuid" "Card A" "sda1" 200 100 20 20 2000 2000 0 "$BASE_DIR" "/t" "" )
-
-	local count
-	if command -v jq >/dev/null 2>&1; then
-		count=$(jq '.history | length' "$STATUS_FILE" 2>/dev/null)
-	else
-		count=$(json_field "$STATUS_FILE" '.history' | grep -c uuid || echo "?")
-	fi
-	[ "$count" = "1" ] \
-		&& test_passed "duplicate card collapses to 1 history row" \
-		|| test_failed "expected 1 history row, got $count"
-
-	# Newest entry should reflect the second write (files_count=20).
-	[ "$(json_field "$STATUS_FILE" '.history[0].files_count')" = "20" ] \
-		&& test_passed "newest backup wins in history" \
-		|| test_failed "history did not update to newest"
-}
-
-# Scenario: card name with quotes/backslashes must not break JSON.
-test_status_json_escaping() {
-	echo ""
-	echo "=== #7: JSON escaping of card names ==="
-	rm -f "$BASE_DIR/var/history.jsonl"
-	( . "$BASE_DIR/scripts/common.sh"
-	  write_status "running" "550e8400-e29b-41d4-a716-446655440000" \
-		'Quote"Back\slash' "sda1" 100 50 10 5 1000 500 100 "$BASE_DIR" "" "" )
-
-	json_valid "$STATUS_FILE" \
-		&& test_passed "special chars in name keep JSON valid" \
-		|| { test_failed "JSON broken by special chars"; cat "$STATUS_FILE"; }
-}
-
-# Scenario: a card name containing a NEWLINE (possible via WebUI alias) must
-# not break status.json parsing nor corrupt the one-object-per-line history.
-test_status_newline_in_name() {
-	echo ""
-	echo "=== #7: embedded newline in card name ==="
-	rm -f "$BASE_DIR/var/history.jsonl"
-	local nl_name
-	nl_name=$(printf 'Line1\nLine2')
-	( . "$BASE_DIR/scripts/common.sh"
-	  write_status "completed" "550e8400-e29b-41d4-a716-446655440000" \
-		"$nl_name" "sda1" 100 100 5 5 500 500 0 "$BASE_DIR" "/t" "" )
-
-	json_valid "$STATUS_FILE" \
-		&& test_passed "newline in name keeps status.json valid" \
-		|| { test_failed "newline broke status.json"; cat "$STATUS_FILE"; }
-
-	# history.jsonl must stay one-object-per-line (single line for one card).
-	local lines
-	lines=$(wc -l < "$BASE_DIR/var/history.jsonl" 2>/dev/null | tr -d ' ')
-	[ "$lines" = "1" ] \
-		&& test_passed "history.jsonl invariant intact (1 line)" \
-		|| test_failed "history.jsonl split across $lines lines"
-}
-
-# === Issue #4: differentiated LED functions ===
-
-# Scenario: all differentiated LED functions must be defined after sourcing.
-test_led_functions_exist() {
-	echo ""
-	echo "=== #4: differentiated LED functions defined ==="
-	( . "$BASE_DIR/scripts/common.sh"
-	  for fn in led_err_no_space led_err_lock_timeout led_err_device_unknown \
-		    led_err_rsync led_err_verify_failed led_blink_pattern; do
-		if ! command -v "$fn" >/dev/null 2>&1; then
-			echo "MISSING:$fn"
-		fi
-	  done ) > "$TEST_ROOT/led_check.txt" 2>&1
-
-	if grep -q MISSING "$TEST_ROOT/led_check.txt"; then
-		test_failed "LED functions missing: $(grep MISSING "$TEST_ROOT/led_check.txt" | tr '\n' ' ')"
-	else
-		test_passed "all 6 differentiated LED functions defined"
-	fi
-}
-
-# Scenario: LED functions must not error when the LED sysfs path is absent
-# (typical of the test host and many non-R5S devices).
-test_led_no_hardware_safe() {
-	echo ""
-	echo "=== #4: LED functions safe without hardware ==="
-	local rc=0
-	(
-		. "$BASE_DIR/scripts/common.sh"
-		LED_RED="/nonexistent/led/red"
-		LED_GREEN="/nonexistent/led/green"
-		led_err_no_space
-		led_err_lock_timeout
-		led_err_device_unknown
-		led_err_verify_failed
-	) >/dev/null 2>&1 || rc=$?
-
-	if [ "$rc" -eq 0 ]; then
-		test_passed "LED functions exit cleanly with no hardware"
-	else
-		test_failed "LED functions errored without hardware (rc=$rc)"
-	fi
-}
-
-# === E2E: perform_backup with mock rsync ===
-#
-# macOS openrsync can't do --append-verify/--info=progress2, so we put a mock
-# rsync first on PATH. The mock logs the args it received (to assert flags),
-# writes a fake --stats block into the --log-file, and exits with a code we
-# control via MOCK_RSYNC_EXIT. This exercises the REAL perform_backup() exit-
-# code capture path (#6), not a reimplementation.
-
-# Build a sourcable backup-manager environment under $1=envdir.
-e2e_setup() {
-	local envdir="$1"
-	rm -rf "$envdir"
-	mkdir -p "$envdir/opt/scripts" "$envdir/opt/var/lock" "$envdir/opt/log" \
-		"$envdir/opt/conf" "$envdir/bin" "$envdir/mnt/sdcard" \
-		"$envdir/mnt/ssd/SDMirrors/.logs"
-	cp "$SCRIPTS_SRC/common.sh" "$envdir/opt/scripts/common.sh"
-	cp "$SCRIPTS_SRC/backup-manager.sh" "$envdir/opt/scripts/backup-manager.sh"
-
-	# Mock rsync: record args, emit a --stats-style summary into --log-file,
-	# print one progress2-style line to stdout, then exit MOCK_RSYNC_EXIT.
-	cat > "$envdir/bin/rsync" << 'MOCKEOF'
-#!/bin/sh
-echo "$@" >> "$MOCK_RSYNC_ARGS_LOG"
-log_file=""
-for a in "$@"; do
-	case "$a" in --log-file=*) log_file="${a#--log-file=}" ;; esac
-done
-printf '   1048576  50%%  10.00MB/s    0:00:01\r'
-printf '   2097152 100%%  10.00MB/s    0:00:00 (xfr#3, to-chk=0/3)\n'
-if [ -n "$log_file" ]; then
-	cat >> "$log_file" << STATS
-
-Number of regular files transferred: 3
-Total transferred file size: 2,097,152 bytes
-STATS
-fi
-exit "${MOCK_RSYNC_EXIT:-0}"
-MOCKEOF
-	chmod +x "$envdir/bin/rsync"
-
-	E2E_BASE="$envdir/opt"
-	E2E_BIN="$envdir/bin"
-	E2E_MOUNT="$envdir/mnt/sdcard"
-	E2E_BACKUP_ROOT="$envdir/mnt/ssd/SDMirrors"
-}
-
-# Run perform_backup() in a controlled subshell. Writes "RC=<code>" as the last
-# line; status.json lands in $E2E_BASE/var/status.json.
-# Args: $1 mock_exit  $2 args_log_path
-e2e_run_backup() {
-	local mock_exit="$1" args_log="$2"
-	(
-		set +e
-		export OUTDOOR_BACKUP_SOURCED=1
-		export PATH="$E2E_BIN:$PATH"
-		export MOCK_RSYNC_EXIT="$mock_exit"
-		export MOCK_RSYNC_ARGS_LOG="$args_log"
-		# Pre-set path seams so the sourced script finds common.sh in the
-		# fixture and targets the test dirs (see backup-manager.sh constants).
-		SCRIPT_DIR="$E2E_BASE/scripts"
-		BASE_DIR="$E2E_BASE"
-		MOUNT_POINT="$E2E_MOUNT"
-		BACKUP_ROOT="$E2E_BACKUP_ROOT"
-		STATUS_FILE="$E2E_BASE/var/status.json"
-		ALIASES_FILE="$E2E_BASE/conf/aliases.json"
-		# shellcheck disable=SC1090
-		. "$E2E_BASE/scripts/backup-manager.sh" "add" "sda1" "/devices/mock"
-		# Sourcing re-enabled `set -e`; disable again so benign nonzero
-		# intermediate commands inside perform_backup don't abort the subshell.
-		set +e
-		LOG_TAG="test"
-		SD_UUID="550e8400-e29b-41d4-a716-446655440000"
-		BACKUP_MODE="PRIMARY"
-		MIN_FREE_SPACE=1
-		LED_RED="/nonexistent/red"
-		LED_GREEN="/nonexistent/green"
-		echo "source-marker" > "$E2E_MOUNT/photo.raw"
-		perform_backup
-		echo "RC=$?"
-	)
-}
-
-# Scenario #6: mock rsync exits 0 -> perform_backup returns 0, status=completed.
-test_e2e_rsync_success() {
-	echo ""
-	echo "=== #6 E2E: rsync success -> return 0 + completed ==="
-	e2e_setup "$TEST_ROOT/e2e1"
-	local out
-	out=$(e2e_run_backup 0 "$TEST_ROOT/e2e1/args.log" 2>/dev/null)
-	echo "$out" | grep -q "RC=0" \
-		&& test_passed "perform_backup returns 0 on rsync success" \
-		|| test_failed "expected RC=0, got: $(echo "$out" | grep RC=)"
-	local st="$TEST_ROOT/e2e1/opt/var/status.json"
-	[ -f "$st" ] && [ "$(json_field "$st" '.history[0].status')" = "completed" ] \
-		&& test_passed "status.json history=completed on success" \
-		|| test_failed "history status not completed"
-}
-
-# Scenario #6: mock rsync exits 11 -> perform_backup returns 11 (NOT 0).
-# This is the core data-integrity bug: failure must not masquerade as success.
-test_e2e_rsync_failure() {
-	echo ""
-	echo "=== #6 E2E: rsync failure -> nonzero return (no green light) ==="
-	e2e_setup "$TEST_ROOT/e2e2"
-	local out
-	out=$(e2e_run_backup 11 "$TEST_ROOT/e2e2/args.log" 2>/dev/null)
-	echo "$out" | grep -q "RC=11" \
-		&& test_passed "rsync exit 11 propagates (not swallowed)" \
-		|| test_failed "expected RC=11, got: $(echo "$out" | grep RC=)"
-	local st="$TEST_ROOT/e2e2/opt/var/status.json"
-	[ "$(json_field "$st" '.history[0].status')" = "error" ] \
-		&& test_passed "status.json history=error on failure" \
-		|| test_failed "history status not error"
-}
-
-# Scenario #1: rsync must use --partial (safe resume), and must NOT use the
-# corruption-prone --ignore-existing or blind --append/--append-verify.
-test_e2e_append_verify_flag() {
-	echo ""
-	echo "=== #1 E2E: --partial replaces --ignore-existing (no blind append) ==="
-	e2e_setup "$TEST_ROOT/e2e3"
-	e2e_run_backup 0 "$TEST_ROOT/e2e3/args.log" >/dev/null 2>&1
-	local args="$TEST_ROOT/e2e3/args.log"
-	grep -q -- "--partial" "$args" \
-		&& test_passed "rsync called with --partial" \
-		|| test_failed "--partial missing from rsync args"
-	grep -q -- "--ignore-existing" "$args" \
-		&& test_failed "--ignore-existing still present (bug not fixed)" \
-		|| test_passed "--ignore-existing removed"
-	grep -q -- "--append" "$args" \
-		&& test_failed "--append/--append-verify present (corruption risk)" \
-		|| test_passed "no blind --append (avoids same-name corruption)"
-}
-
-# Scenario #5: removed du precheck. Even though the test host's df free space
-# is far larger than the (tiny) source, the key assertion is that NO `du -sm`
-# over the source runs and the backup proceeds. We assert by completion when
-# MIN_FREE_SPACE is satisfied, and rejection when MIN_FREE_SPACE is impossibly
-# high (proving the new df-based guard, not the old whole-card du, is in play).
-test_e2e_no_du_precheck() {
-	echo ""
-	echo "=== #5 E2E: df-based min-free guard, no whole-card du ==="
-	e2e_setup "$TEST_ROOT/e2e4"
-	# Impossible min free (exabytes) -> must be rejected as no_space.
-	local out
-	out=$(
-		set +e
-		export OUTDOOR_BACKUP_SOURCED=1
-		export PATH="$TEST_ROOT/e2e4/bin:$PATH"
-		export MOCK_RSYNC_EXIT=0
-		export MOCK_RSYNC_ARGS_LOG="$TEST_ROOT/e2e4/args.log"
-		SCRIPT_DIR="$TEST_ROOT/e2e4/opt/scripts"
-		BASE_DIR="$TEST_ROOT/e2e4/opt"
-		MOUNT_POINT="$TEST_ROOT/e2e4/mnt/sdcard"
-		BACKUP_ROOT="$TEST_ROOT/e2e4/mnt/ssd/SDMirrors"
-		STATUS_FILE="$BASE_DIR/var/status.json"
-		ALIASES_FILE="$BASE_DIR/conf/aliases.json"
-		# shellcheck disable=SC1090
-		. "$TEST_ROOT/e2e4/opt/scripts/backup-manager.sh" "add" "sda1" "/d"
-		set +e
-		LOG_TAG=test
-		SD_UUID="550e8400-e29b-41d4-a716-446655440000"
-		BACKUP_MODE=PRIMARY
-		MIN_FREE_SPACE=999999999999
-		LED_RED="/nonexistent/red"; LED_GREEN="/nonexistent/green"
-		perform_backup
-		echo "RC=$? ERR=$ERROR_TYPE"
-	)
-	echo "$out" | grep -q "ERR=no_space" \
-		&& test_passed "impossible min-free -> no_space (df guard active)" \
-		|| test_failed "expected no_space, got: $(echo "$out" | grep RC=)"
-	# rsync must NOT have run when space check fails early.
-	if [ -f "$TEST_ROOT/e2e4/args.log" ]; then
-		test_failed "rsync ran despite failing space check"
-	else
-		test_passed "rsync skipped when space check fails (fail-fast)"
-	fi
-}
-
-# Scenario #4/#8: every ERROR_TYPE the code can set must map to a distinct LED
-# function in cleanup()'s dispatch. Guards against the regression where LED
-# functions existed but no code path ever set their ERROR_TYPE.
-test_error_type_led_dispatch() {
-	echo ""
-	echo "=== #4/#8: ERROR_TYPE -> LED dispatch coverage ==="
-	# Assert the source actually assigns each non-rsync error type somewhere.
-	local mgr="$SCRIPTS_SRC/backup-manager.sh"
-	for et in no_space lock_timeout device_unknown; do
-		if grep -q "ERROR_TYPE=\"$et\"" "$mgr"; then
-			test_passed "ERROR_TYPE=$et is assigned in backup-manager.sh"
-		else
-			test_failed "ERROR_TYPE=$et never set (LED unreachable)"
-		fi
-	done
-	# Assert cleanup() dispatches each type to its LED function.
-	for pair in "no_space:led_err_no_space" \
-		    "lock_timeout:led_err_lock_timeout" \
-		    "device_unknown:led_err_device_unknown" \
-		    "verify_failed:led_err_verify_failed"; do
-		local key="${pair%%:*}" fn="${pair##*:}"
-		if grep -q "$key)" "$mgr" && grep -q "$fn" "$mgr"; then
-			test_passed "cleanup dispatches $key -> $fn"
-		else
-			test_failed "cleanup missing dispatch $key -> $fn"
-		fi
-	done
-}
-
-
-
-
-
 
 main "$@"

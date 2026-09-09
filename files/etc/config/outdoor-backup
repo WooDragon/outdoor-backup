@@ -1,12 +1,10 @@
-# UCI Configuration for SD Card Backup System
-# This is a simpler alternative to /opt/outdoor-backup/conf/backup.conf
-# Edit with: uci set outdoor-backup.config.backup_root='/your/path'
-#            uci commit outdoor-backup
+# UCI overrides for Outdoor Backup.
+# Defaults live in the runtime loader so this conffile never overwrites legacy
+# user settings merely because it was installed. Set only intended overrides:
+# uci set outdoor-backup.config.backup_root='/your/path'
+# Target identity is intentionally unconfigured; set verified values explicitly:
+# uci set outdoor-backup.config.target_mount='/mnt/ssd'
+# uci set outdoor-backup.config.target_uuid='A1B2-C3D4'
+# uci commit outdoor-backup
 
 config outdoor-backup 'config'
-	option enabled '1'
-	option backup_root '/mnt/ssd/SDMirrors'
-	option mount_point '/mnt/sdcard'
-	option debug '0'
-	option led_green '/sys/class/leds/green:lan'
-	option led_red '/sys/class/leds/red:sys'

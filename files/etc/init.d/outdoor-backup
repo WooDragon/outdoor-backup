@@ -14,7 +14,6 @@ start_service() {
 	# Create runtime directories
 	mkdir -p /opt/outdoor-backup/var/lock
 	mkdir -p /opt/outdoor-backup/log
-	mkdir -p /mnt/ssd/SDMirrors/.logs
 
 	# Set permissions
 	chmod 755 /opt/outdoor-backup/scripts/*.sh
