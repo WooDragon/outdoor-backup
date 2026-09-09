@@ -294,6 +294,31 @@ case_l08_both_leds_missing_return_without_async_work() {
     assert_equal "$(wc -l < "$TEST_ROOT/jobs")" 0 'L08 both-missing path creates no asynchronous job'
 }
 
+case_l09_card_config_flashes_four_times_and_falls_back_safely() {
+    begin_case L09 'card config error emits a four-flash burst and returns safely with no red LED'
+    prepare_led
+    start_common_helper led_err_card_config
+    wait_for_helper 'L09 card-config helper completes'
+    assert_trace_line 1 'sleep=1 red=1 green=' 'L09 card-config first on phase'
+    assert_trace_line 3 'sleep=1 red=1 green=' 'L09 card-config second on phase'
+    assert_trace_line 5 'sleep=1 red=1 green=' 'L09 card-config third on phase'
+    assert_trace_line 7 'sleep=1 red=1 green=' 'L09 card-config fourth on phase'
+    assert_trace_line 9 'sleep=2 red=0 green=' 'L09 card-config pause follows all four flashes'
+    assert_equal "$(wc -l < "$TRACE")" 54 'L09 card-config runs six nine-wait cycles over its production sixty-second duration'
+    assert_equal "$(cat "$RED/brightness")" 0 'L09 card-config leaves red LED off'
+    assert_no_led_async_stderr L09
+
+    prepare_led
+    rm -rf "$RED"
+    TEST_CAPTURE_JOBS=1
+    export TEST_CAPTURE_JOBS
+    assert_success 'L09 missing red LED helper returns successfully' \
+        run_common_helper led_err_card_config
+    unset TEST_CAPTURE_JOBS
+    assert_equal "$(wc -l < "$TRACE")" 0 'L09 missing red LED leaves sleep trace empty'
+    assert_equal "$(wc -l < "$TEST_ROOT/jobs")" 0 'L09 missing red LED creates no asynchronous job'
+}
+
 main() {
     trap cleanup EXIT INT TERM
     case_l01_real_busybox_accepts_integer_seconds
@@ -304,9 +329,10 @@ main() {
     case_l06_missing_led_falls_back_to_unchanged_generic_timer
     case_l07_missing_red_falls_back_to_one_green_flash
     case_l08_both_leds_missing_return_without_async_work
-    assert_equal "$CASES" 8 'all required LED cases executed'
-    if [ "$ASSERTIONS" -ne 64 ]; then
-        fail "all required assertions executed (expected=64, actual=$ASSERTIONS)"
+    case_l09_card_config_flashes_four_times_and_falls_back_safely
+    assert_equal "$CASES" 9 'all required LED cases executed'
+    if [ "$ASSERTIONS" -ne 78 ]; then
+        fail "all required assertions executed (expected=78, actual=$ASSERTIONS)"
     fi
     if [ "$FAILED" -ne 0 ]; then
         printf 'cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"

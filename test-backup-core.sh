@@ -309,14 +309,14 @@ case_incremental_mutation_probes() {
 }
 
 case_partial_target_recovery() {
-	begin_case T04 'real rsync restores a partial target file to the source hash'
+	begin_case T10 'real rsync restores a partial target file to the source hash'
 	setup_fixture
 	dd if=/dev/zero of="$SOURCE_DIR/payload.bin" bs=1024 count=256 >/dev/null 2>&1
 	dd if="$SOURCE_DIR/payload.bin" of="$TARGET_ROOT/payload.bin" bs=1024 count=8 >/dev/null 2>&1
 	before=$(snapshot_source)
-	assert_success 'T03 partial target transfer succeeds' run_transfer "$SOURCE_DIR/" "$TARGET_ROOT/" "$LOG_DIR/partial.log"
-	assert_file_hash_equal "$SOURCE_DIR/payload.bin" "$TARGET_ROOT/payload.bin" 'T03 partial file recovers fully'
-	assert_equal "$(snapshot_source)" "$before" 'T03 source snapshot remains unchanged'
+	assert_success 'T10 partial target transfer succeeds' run_transfer "$SOURCE_DIR/" "$TARGET_ROOT/" "$LOG_DIR/partial.log"
+	assert_file_hash_equal "$SOURCE_DIR/payload.bin" "$TARGET_ROOT/payload.bin" 'T10 partial file recovers fully'
+	assert_equal "$(snapshot_source)" "$before" 'T10 source snapshot remains unchanged'
 	assert_no_runtime_temp_files
 }
 

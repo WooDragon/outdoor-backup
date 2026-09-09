@@ -713,6 +713,22 @@ case_m03b_invalid_existing_card_fails_without_rewriting_identity() {
         'M03b preserves the invalid existing card file'
 }
 
+case_m03c_existing_replica_card_classifies_card_config_not_rsync() {
+    begin_case M03c 'existing replica card classifies ERROR_TYPE as card_config, not the generic rsync failure'
+    reset_case || { fail 'M03c fixture setup failed'; return; }
+    TEST_CARD_CONFIG="SD_UUID=\"$CARD_UUID\"
+BACKUP_MODE=\"REPLICA\""
+    export TEST_CARD_CONFIG
+    printf '%s\n' "$TEST_CARD_CONFIG" > "$SOURCE_MOUNT/FieldBackup.conf"
+    assert_failure 'M03c existing REPLICA card fails manager' run_manager add sda1 /devices/mock
+    unset TEST_CARD_CONFIG
+    assert_equal "$(cat "$TEST_ROOT/red/trigger")" none \
+        'M03c card_config uses the manual-toggle flash pattern, not the generic rsync timer trigger'
+    assert_absent "$RUNTIME/var/status.json" \
+        'M03c guard-stage rejection precedes STATUS_STARTED, so no status.json terminal write occurs'
+    /bin/sleep 1
+}
+
 case_m04_symlink_components_reject_before_target_update() {
     begin_case M04 'root UUID and logs symlink components reject without writes'
     reset_case || { fail 'M04 root fixture setup failed'; return; }
@@ -1076,6 +1092,7 @@ main() {
     case_m03_healthy_path_uses_only_fd_anchored_target
     case_m03a_existing_replica_card_rejects_reverse_rsync_and_preserves_card_files
     case_m03b_invalid_existing_card_fails_without_rewriting_identity
+    case_m03c_existing_replica_card_classifies_card_config_not_rsync
     case_m04_symlink_components_reject_before_target_update
     case_m05_detach_or_readonly_during_rsync_fails_without_naked_writes
     case_m05b_summary_failure_and_post_summary_detach_fail
@@ -1088,9 +1105,9 @@ main() {
     case_m06_remove_ignores_unmounted_target
     assert_success 'M06 completion timer releases before test exit' settle_led_fixture
     assert_no_async_led_stderr
-    assert_equal "$CASES" 21 'all required cases executed'
-    if [ "$ASSERTIONS" -ne 209 ]; then
-        fail "all required assertions executed (expected=209, actual=$ASSERTIONS)"
+    assert_equal "$CASES" 22 'all required cases executed'
+    if [ "$ASSERTIONS" -ne 212 ]; then
+        fail "all required assertions executed (expected=212, actual=$ASSERTIONS)"
     fi
     if [ "$FAILED" -ne 0 ]; then
         replay_async_stderr

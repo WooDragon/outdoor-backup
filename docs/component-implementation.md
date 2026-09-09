@@ -122,7 +122,7 @@ LuCI 表单提供 `target_mount`、`target_uuid` 和 `backup_root` 说明。表�
 
 `status.sh` 依赖 `jq`。它把 `current_backup`、经活 FD 获取的 `storage` 和 `history` 原子写入唯一的 `status.json` 快照。它不维护 `history.jsonl`。history 以 UUID 去重，最新终态在前，最多 20 条。运行期间 `current_backup` 仅表达 active/running，未知进度和速率字段均为 0。成功终态的文件数和字节数来自 `rsync --stats`；管理器仅在 rsync、汇总写入和最后的锚点健康及身份复验均成功后才写 `completed`。
 
-`cleanup` 先清理传输临时文件并关闭目标 FD，再启动成功或错误 LED 定时器。`ERROR_TYPE` 的现有调用映射为 `device_unknown`、`lock_timeout`、`no_space`、`rsync` 和 `verify_failed`。本文档不把未覆盖的 LED 类型表述为端到端验证。
+`cleanup` 先清理传输临时文件并关闭目标 FD，再启动成功或错误 LED 定时器。`ERROR_TYPE` 的现有调用映射为 `device_unknown`、`lock_timeout`、`no_space`、`card_config`（红灯 4 闪，SD 卡配置被策略拒绝，例如既有 `REPLICA` 卡）、`rsync` 和 `verify_failed`。本文档不把未覆盖的 LED 类型表述为端到端验证。
 
 ## 4. 公共函数库
 

@@ -100,6 +100,7 @@ led_backup_error() {
 #   device unknown   -> red, 1 flash  + pause
 #   lock timeout     -> red, 2 flashes + pause
 #   no space         -> red, 3 flashes + pause
+#   card config      -> red, 4 flashes + pause
 #   rsync failure    -> red, slow blink (legacy led_backup_error)
 #   verify failed    -> red/green alternating slow blink
 # ---------------------------------------------------------------------------
@@ -160,6 +161,12 @@ led_err_lock_timeout() {
 led_err_no_space() {
 	led_blink_pattern "$LED_RED" 3 60
 	log_debug "LED error: no space (3 flashes)"
+}
+
+# SD card configuration rejected by policy (4 flashes)
+led_err_card_config() {
+	led_blink_pattern "$LED_RED" 4 60
+	log_debug "LED error: card config (4 flashes)"
 }
 
 # rsync transfer failure (legacy slow red blink)

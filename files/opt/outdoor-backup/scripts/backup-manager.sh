@@ -133,6 +133,7 @@ signal_failure_led() {
 		device_unknown) led_err_device_unknown ;;
 		lock_timeout) led_err_lock_timeout ;;
 		no_space) led_err_no_space ;;
+		card_config) led_err_card_config ;;
 		verify_failed) led_err_verify_failed ;;
 		*) led_err_rsync ;;
 	esac
@@ -396,7 +397,7 @@ main() {
 				exit 1
 			fi
 			if ! setup_sdcard_config; then
-				ERROR_TYPE=rsync
+				ERROR_TYPE=card_config
 				exit 1
 			fi
 			if perform_backup; then
