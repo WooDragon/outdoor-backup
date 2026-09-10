@@ -85,6 +85,20 @@ assert_failure_empty_output() {
     fi
 }
 
+# Args: message, command. Successful command must produce zero stdout bytes.
+assert_success_empty_output() {
+    message=$1
+    shift
+    ASSERTIONS=$((ASSERTIONS + 1))
+    "$@" > "$TEST_ROOT/getter.actual"
+    target_device_test_status=$?
+    if [ "$target_device_test_status" -ne 0 ]; then
+        fail "$message (unexpected failure status=$target_device_test_status)"
+    elif [ -s "$TEST_ROOT/getter.actual" ]; then
+        fail "$message (unexpected output)"
+    fi
+}
+
 # Args: message, expected UUID, command. Success stdout must match UUID plus one LF.
 assert_success_uuid_output() {
     message=$1
@@ -451,14 +465,14 @@ case_d11_block_uuid_reader_preserves_parser_contract() {
     assert_success_uuid_output 'D11 returns the empty UUID field unchanged' '' \
         target_device_read_block_uuid /dev/nvme0n1p12
     set_block_output '/dev/nvme0n1p12: UUID="ABCD-1234" TYPE="vfat"'
-    assert_success 'D11 wrapper matches the getter value' \
+    assert_success_empty_output 'D11 wrapper matches the getter value' \
         target_device_uuid_matches_block /dev/nvme0n1p12 ABCD-1234
-    assert_failure 'D11 wrapper rejects a different expected UUID' \
+    assert_failure_empty_output 'D11 wrapper rejects a different expected UUID' \
         target_device_uuid_matches_block /dev/nvme0n1p12 DIFFERENT
     BLOCK_STATUS=1
-    assert_failure 'D11 wrapper propagates getter failure' \
+    assert_failure_empty_output 'D11 wrapper propagates getter failure' \
         target_device_uuid_matches_block /dev/nvme0n1p12 ABCD-1234
-    assert_failure 'D11 wrapper rejects an empty expected UUID after getter failure' \
+    assert_failure_empty_output 'D11 wrapper rejects an empty expected UUID after getter failure' \
         target_device_uuid_matches_block /dev/nvme0n1p12 ''
 }
 
