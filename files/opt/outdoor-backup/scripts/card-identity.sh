@@ -20,7 +20,7 @@ card_identity_normalize_source_uuid() {
     case "$card_identity_raw_uuid" in
         ''|*[!A-Za-z0-9-]*) return 1 ;;
     esac
-    LC_ALL=C printf '%s\n' "$card_identity_raw_uuid" | tr 'A-Z' 'a-z'
+    printf '%s\n' "$card_identity_raw_uuid" | LC_ALL=C tr 'A-Z' 'a-z'
 }
 
 # Read and normalize one source filesystem UUID through the established getter.
@@ -167,7 +167,7 @@ card_identity_bind() {
             return 0
         fi
         if [ -f "$card_identity_record" ] && [ ! -L "$card_identity_record" ]; then
-            card_identity_notice 'card identity conflict'
+            card_identity_notice 'card identity record is invalid or conflicts with source'
         else
             card_identity_notice 'card identity record is not a regular file'
         fi

@@ -353,6 +353,7 @@ main() {
     case_i05_write_failures_and_anchor_health
     case_i06_mutation_proves_schema_condition_matters
     assert_equal "$CASES" 6 'all required cases executed'
+    assert_equal "$ASSERTIONS" 69 'all required assertions executed'
     if [ "$FAILED" -ne 0 ]; then
         printf 'cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"
         exit 1

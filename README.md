@@ -204,6 +204,8 @@ Edit `/opt/outdoor-backup/conf/backup.conf` only when a legacy value should appl
 
 The source card is mounted read-only. This limits user-space writes during the steady state. It is not forensic write protection: an ext4 dirty journal can still replay when the filesystem mounts. `rsync` always reads from the read-only mount.
 
+Immediately after the initial read-only mount, and before any read-write initialization window, the manager reads the source filesystem UUID through the exact `block info /dev/<DEVNAME>` reader. It normalizes ASCII letters to lowercase and rejects an empty or unsafe value. A failed UUID read stops initialization before the card is mounted read-write.
+
 The one exception is bounded and explicit. When no formal `FieldBackup.conf` exists, the manager unmounts the source and mounts it read-write. It writes the complete data to a uniquely named temporary file in that directory. It checks the write and publishes the file with a same-filesystem rename. It checks `sync` after publication. A rename is not proof against power loss. The manager then unmounts and mounts the source read-only before it does anything else.
 
 A failed read-write mount or a failed configuration write means that the manager cannot initialize the card. The manager reports a card-configuration error and does not run `rsync`. If the read-only mount cannot be restored, it also stops before `rsync`. Cleanup attempts to unmount the source; it does not promise that every failed run restores a read-only mount. After the read-only mount succeeds, the manager rereads the formal file as a flow check. That reread does not prove physical-media durability or card identity. A `SIGKILL` can leave a temporary file behind. The manager never treats that name as `FieldBackup.conf` and does not scan or delete other temporary files.
@@ -212,11 +214,13 @@ The implementation uses full unmount and mount transitions rather than `remount`
 
 The manager reads an existing formal file as data. It never `source`s or `eval`s the file. It rejects a symbolic link or another non-regular object at that name.
 
-After the read-only source mount, the manager reads the source filesystem UUID through the exact `block info /dev/<DEVNAME>` reader. It normalizes ASCII letters to lowercase and rejects an empty or unsafe value. Before an alias update or `rsync`, it checks the anchored target record `.card-identities/<SD_UUID>.json`. The v1 record contains only `version`, `sd_uuid`, and normalized `fs_uuid`. The record path is below the active `/proc/<manager-pid>/fd/9` backup root.
+Before an alias update or `rsync`, it checks the anchored target record `.card-identities/<SD_UUID>.json`. The v1 record contains only `version`, `sd_uuid`, and normalized `fs_uuid`. The record path is below the active `/proc/<manager-pid>/fd/9` backup root.
 
 When the record is missing, the manager creates it through a same-directory temporary file, `jq`, rename, `sync`, and final anchor validation. An existing record must be a non-link regular file with the exact v1 schema and the current values. A malformed object, a link, a directory, or a different source filesystem UUID rejects the backup. The manager does not replace the record, update the alias, run `rsync`, or report a successful status after that rejection.
 
 Existing backup directories without a record use first observation to establish this binding. This preserves their directory names, aliases, and data. This trust-on-first-use rule cannot prove the historical origin of existing data. A filesystem UUID identifies a filesystem rather than a physical SD card. A block-level clone with the same filesystem UUID remains indistinguishable.
+
+Batch data cleanup retains `.card-identities`, independently of the alias-retention option. Removing backup data does not reset a card binding. A rejected record may be malformed or may belong to another source filesystem; inspect the record and verify the source before any manual repair. Do not delete an identity record merely to bypass a rejection: the next insertion would establish a new first-observation binding to the existing UUID directory.
 
 ```bash
 # Automatically generated on first insertion

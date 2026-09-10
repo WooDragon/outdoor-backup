@@ -1223,7 +1223,7 @@ case_m26_newline_identity_record_rejects_before_alias_or_transfer() {
     if run_manager add sda1 /devices/mock > "$TEST_ROOT/m26.stdout" 2> "$TEST_ROOT/m26.stderr"; then
         fail 'M26 newline identity record unexpectedly succeeds'
     fi
-    assert_contains 'card identity error: card identity conflict' "$TEST_ROOT/m26.stderr" \
+    assert_contains 'card identity error: card identity record is invalid or conflicts with source' "$TEST_ROOT/m26.stderr" \
         'M26 reports the identity-layer conflict reason'
     assert_equal "$(grep -c '^rsync' "$EFFECTS")" "$rsync_before" \
         'M26 malformed record starts no rsync'
