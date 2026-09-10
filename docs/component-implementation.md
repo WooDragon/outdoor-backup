@@ -136,7 +136,7 @@ LuCI 表单提供 `target_mount`、`target_uuid` 和 `backup_root` 说明。表�
 
 持锁 `cleanup` 先清理传输临时文件和本进程拥有的来源挂载。它随后执行 `sync`。cleanup `sync` 失败时，管理器将此前成功的 transfer 转为 `rsync`/exit 1。cleanup `sync` 失败时，管理器保留既有业务失败码。cleanup `sync` 成功后，管理器才可写 `completed`。finalization 判定失败后，管理器在关闭目标 FD 前写入 failed 状态。管理器随后写 LED 终态和日志。管理器最后释放锁。`ERROR_TYPE` 的现有调用映射为 `device_unknown`、`lock_timeout`、`no_space`、`card_config`（红灯 4 闪，SD 卡配置被策略拒绝，例如既有 `REPLICA` 卡）、`rsync` 和 `verify_failed`。`remove` 仍调用现有的广泛 `pkill`；本批只确保其未持锁 cleanup 不会额外卸载来源或写 LED 成功，不能阻止该 `pkill` 杀死其他 manager。本文档不把未覆盖的 LED 类型表述为端到端验证。
 
-The pre-finalization sync gates transfer completion; summary and status publication remain atomic metadata updates without a power-loss durability guarantee.
+The pre-finalization sync gates transfer completion. The summary is appended to the backup log; `status.json` is replaced atomically. Neither update carries a power-loss durability guarantee.
 
 ## 4. 公共函数库
 
