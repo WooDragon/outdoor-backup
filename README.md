@@ -8,6 +8,7 @@ Automatic SD card backup system for OpenWrt routers with internal storage (SSD/H
 
 - ✅ **Automatic Backup**: Hotplug-triggered backup on SD card insertion
 - ✅ **Incremental Sync**: rsync updates files when size or modification time differs, preserves partial transfers, and does not delete target files
+- ✅ **Controlled Cancellation**: Before terminal publication, `SIGINT` or `SIGTERM` requests cancellation at a safe phase boundary; partial rsync data is preserved and accepted cancellation cannot report success
 - ✅ **LED Indicators**: Visual feedback for backup status
 - ✅ **Concurrent Protection**: PID-based locking prevents conflicts
 - ✅ **Multi-Filesystem**: Supports ext4, exFAT, NTFS, FAT32
@@ -19,11 +20,14 @@ Automatic SD card backup system for OpenWrt routers with internal storage (SSD/H
 ### Prerequisites
 
 - OpenWrt 19.07+ (tested on Lean's LEDE)
+- BusyBox with the `setsid` applet. ImmortalWrt 24.10.6 includes it by default. OpenWrt 19.07.10 does not; use a custom image that enables it.
 - A user-configured target storage mount; `/mnt/ssd/` is the compatibility default
 - USB port for SD card reader
 - Required kernel modules (auto-installed with package):
   - `kmod-usb-storage`
   - `kmod-fs-ext4`, `kmod-fs-exfat`, `kmod-fs-ntfs3`
+
+The package checks for `setsid` before it starts `rsync`. A missing applet causes a clear failure and starts no transfer. Installing this IPK cannot add the applet to an existing BusyBox binary.
 
 ### Installation
 
@@ -166,7 +170,9 @@ If the initial target guard fails, the manager writes the reason to stderr and e
 
 Automatic backup supports the PRIMARY direction only: SD card to the configured storage target. The data-only card reader still accepts `REPLICA` in an existing `FieldBackup.conf` for compatibility. The manager rejects that card with an explicit error before `rsync`. It does not change the card configuration or UUID, update an alias, create the target UUID directory, or create a per-backup log. The manager does not convert `REPLICA` to `PRIMARY`. #15 now binds each configured card UUID to an observed source filesystem UUID. It does not make the filesystem UUID a physical-card identity. A full clone with the same source filesystem UUID remains indistinguishable; source replacement and multi-partition handling remain #16 work.
 
-The manager calls `backup-transfer.sh` after its source and target guards succeed. That module invokes the production `rsync` command directly and captures its real exit status. It uses `--partial` so an interrupted transfer can retain partial target data. It does not use `--ignore-existing`, `--append`, `--append-verify`, or `--delete`. Normal rsync quick-check behavior updates a file when its size or modification time differs. It does not guarantee detection of a content change that preserves both values. An `ENOSPC` classification requires the transfer diagnostics to contain `No space left on device` or `ENOSPC`; other rsync exits, including exit 11 or 12 without that diagnostic, remain rsync failures.
+The manager calls `backup-transfer.sh` after its source and target guards succeed. That module launches `rsync` through `transfer_process_run` in a private session and captures its real exit status. It uses `--partial` so an interrupted transfer can retain partial target data. It does not use `--ignore-existing`, `--append`, `--append-verify`, or `--delete`. Normal rsync quick-check behavior updates a file when its size or modification time differs. It does not guarantee detection of a content change that preserves both values. An `ENOSPC` classification requires the transfer diagnostics to contain `No space left on device` or `ENOSPC`; other rsync exits, including exit 11 or 12 without that diagnostic, remain rsync failures.
+
+During an active transfer, `SIGINT` and `SIGTERM` request cancellation. The manager preserves the first signal as exit code 130 or 143, stops before later independent side-effect phases, and waits for its own rsync process group to stop before cleanup. If a running snapshot has already been created, an accepted cancellation records a history event with `status="error"` and `error_message="cancelled"`. Earlier cancellation returns nonzero without rewriting the existing snapshot. A source-card configuration publication or read-only restoration already underway may finish before the next checkpoint. The final terminal-publication boundary stops accepting new cancellation requests; signals after it are ignored. There is no LuCI cancellation control, rollback, immediate-release promise, or `SIGKILL` escalation. A process that ignores `TERM` can retain the mount and lock. The protocol requires root access on ordinary Linux with readable `/proc`; it does not make card removal, broad remove-path process matching, service stop, or crash-mount recovery safe.
 
 ### Runtime status and LuCI storage fields
 
@@ -325,6 +331,7 @@ outdoor-backup/
 │   ├── opt/outdoor-backup/
 │   │   ├── scripts/
 │   │   │   ├── backup-manager.sh    # Core backup logic
+│   │   │   ├── transfer-process.sh  # rsync process-group lifecycle
 │   │   │   └── common.sh            # Shared functions
 │   │   ├── conf/
 │   │   │   └── backup.conf          # Global config
@@ -635,6 +642,7 @@ Clear all backup data after backing up to NAS, with multi-layer protection:
   - [webui-design.md](docs/webui-design.md) - WebUI 设计文档
   - [WEBUI_USER_GUIDE.md](docs/WEBUI_USER_GUIDE.md) - WebUI 用户手册
   - [WEBUI_DEVELOPER_GUIDE.md](docs/WEBUI_DEVELOPER_GUIDE.md) - WebUI 开发者文档
+  - [component-implementation.md](docs/component-implementation.md) - 传输进程组、取消边界和测试范围
 
 ## License
 

@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=outdoor-backup
 PKG_VERSION:=1.2.0
-PKG_RELEASE:=7
+PKG_RELEASE:=8
 
 PKG_MAINTAINER:=Your Name <your.email@example.com>
 PKG_LICENSE:=GPL-2.0-only
@@ -21,7 +21,7 @@ define Package/outdoor-backup
   SECTION:=utils
   CATEGORY:=Utilities
   TITLE:=Outdoor Backup - SD card auto backup system
-  DEPENDS:=+rsync +jq +block-mount +kmod-usb-storage +kmod-fs-ext4 +kmod-fs-vfat +kmod-fs-exfat +kmod-fs-ntfs3
+  DEPENDS:=+rsync +jq +block-mount +kmod-usb-storage +kmod-fs-ext4 +kmod-fs-vfat +kmod-fs-exfat +kmod-fs-ntfs3 +@BUSYBOX_CUSTOM:BUSYBOX_CONFIG_SETSID +@!BUSYBOX_CUSTOM:BUSYBOX_DEFAULT_SETSID
   PKGARCH:=all
 endef
 

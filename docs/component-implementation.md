@@ -138,6 +138,16 @@ LuCI 表单提供 `target_mount`、`target_uuid` 和 `backup_root` 说明。表�
 
 The pre-finalization sync gates transfer completion. The summary is appended to the backup log; `status.json` is replaced atomically. Neither update carries a power-loss durability guarantee.
 
+### #16b：传输取消与进程边界
+
+[`transfer-process.sh`](../files/opt/outdoor-backup/scripts/transfer-process.sh) 是惰性 source 库，唯一公开 `transfer_process_run`。它为同一管理器的一次 `rsync` 建立私有 session/process group；`backup-transfer.sh` 的 argv、`--stats`、`--partial` 和无 `--delete` 语义不变。该库不注册 trap，也不触及 mount、lock 或 status。
+
+管理器只记录首个 `INT`/`TERM` 的 sticky 码（130/143），并在阶段边界阻止后续独立副作用。首个请求直接写入 syslog；它不写共享 `backup.log`。runner 验证 leader 的 PID、starttime、PGID 和 session 后，才向该组发送一次 `TERM`。leader 退出而子进程仍在时，它保守等待；连续两次空扫描后才返回。它向 stderr 保留自身诊断，并把首次取消等待、不可验证 leader、失败 TERM 和不可读 `/proc` 镜像到 syslog，但不转发任意 rsync stdout 或 stderr。它不猜测 PID、不用 pidfd 或原子进程快照，不能读 `/proc` 时也不升级为 `KILL`。终态出口先 ignore 信号再最后采样，故边界前已记录的取消不能写 `completed`，边界后的新信号被忽略。已建立 running 状态时，取消通过 failed 写入路径记录 history 的 `status="error"` 与 `error_message="cancelled"`；更早取消不改写既有状态。正在执行的卡配置发布或只读恢复可在下一检查点前完成，不承诺回滚。
+
+该协议要求 root、常规 Linux、可读 `/proc` 和 BusyBox `setsid`。Makefile 仅按 CUSTOM 条件选择 `BUSYBOX_CONFIG_SETSID` 或 `BUSYBOX_DEFAULT_SETSID`；ImmortalWrt 24.10.6 默认具备，OpenWrt 19.07.10 默认缺失。IPK 不会补齐既有 BusyBox，缺失时不启动 `rsync`。
+
+固定 rootfs 的记录为 process 8/40、core 11/121、cancellation 7/61；未改动复测为 target-manager 40/365、config 20/96、lock 13/45，status 9/47 是早期基线。覆盖 session 隔离、起步窗口、0/23、leader 早退、fork replacement、实际 `TERM`/`INT`、ignore 两侧和 source config/`df` 取消。未声称全仓、CI、构建或真机验证；也未独立覆盖不可读 `/proc`、zombie-only、长期忽略 `TERM` 或混合信号。
+
 ## 4. 公共函数库
 
 ### 文件: `/opt/outdoor-backup/scripts/common.sh`
