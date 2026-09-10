@@ -187,6 +187,14 @@ assert_absent() {
     fi
 }
 
+file_hash_or_absent() {
+    if [ -f "$1" ] && [ ! -L "$1" ]; then
+        sha256sum "$1" | awk '{print $1}'
+    else
+        printf '%s\n' absent
+    fi
+}
+
 assert_not_contains() {
     needle=$1
     file=$2
@@ -349,6 +357,7 @@ prepare_runtime() {
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/status.sh" "$SCRIPTS/status.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/backup-transfer.sh" "$SCRIPTS/backup-transfer.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/card-config.sh" "$SCRIPTS/card-config.sh"
+    ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/card-identity.sh" "$SCRIPTS/card-identity.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/target.sh" "$SCRIPTS/target.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/target-device.sh" "$SCRIPTS/target-device.sh"
     : > "$EFFECTS"
@@ -369,7 +378,18 @@ printf '%s\n' "$*" >> "$TEST_NOTICES"
 EOF
     cat > "$BIN/block" <<'EOF'
 #!/bin/sh
-printf '%s: UUID="A1B2-C3D4" TYPE="tmpfs"\n' "$TARGET_TEST_BLOCK_NODE"
+case "${1:-}:$2" in
+    info:"$TARGET_TEST_BLOCK_NODE")
+        printf '%s: UUID="A1B2-C3D4" TYPE="tmpfs"\n' "$TARGET_TEST_BLOCK_NODE"
+        ;;
+    info:/dev/sda1)
+        [ "${TEST_SOURCE_BLOCK_FAIL:-0}" = 1 ] && exit 1
+        printf '%s: UUID="%s" TYPE="vfat"\n' /dev/sda1 "$TEST_SOURCE_FS_UUID"
+        ;;
+    *)
+        printf '%s: UUID="A1B2-C3D4" TYPE="tmpfs"\n' /dev/unexpected
+        ;;
+esac
 EOF
     cat > "$BIN/mount" <<'EOF'
 #!/bin/sh
@@ -477,6 +497,9 @@ case "$1" in
     "$TEST_SOURCE_MOUNT"/.FieldBackup.conf.*)
         [ "${TEST_CONFIG_MKTEMP_FAIL:-0}" = 1 ] && exit 1
         ;;
+    */.card-identities/.*.json.*)
+        [ "${TEST_IDENTITY_MKTEMP_FAIL:-0}" = 1 ] && exit 1
+        ;;
 esac
 exec /bin/mktemp "$@"
 EOF
@@ -491,6 +514,11 @@ if [ "$mv_target" = "$TEST_SOURCE_MOUNT/FieldBackup.conf" ]; then
     fi
     printf 'config-publish target=[%s]\n' "$mv_target" >> "$TEST_EFFECTS"
 fi
+case "$mv_target" in
+    */.card-identities/*.json)
+        [ "${TEST_IDENTITY_MV_FAIL:-0}" = 1 ] && exit 1
+        ;;
+esac
 exec /bin/mv "$@"
 EOF
     cat > "$BIN/mountpoint" <<'EOF'
@@ -652,8 +680,12 @@ run_manager() {
         TEST_SOURCE_MOUNT="$SOURCE_MOUNT" \
         TEST_SOURCE_UMOUNT_FAIL_ON="${TEST_SOURCE_UMOUNT_FAIL_ON:-0}" \
         TEST_SOURCE_UMOUNT_COUNT="$TEST_ROOT/source-umount-count" \
+        TEST_SOURCE_FS_UUID="${TEST_SOURCE_FS_UUID:-ABCD-1234}" \
+        TEST_SOURCE_BLOCK_FAIL="${TEST_SOURCE_BLOCK_FAIL:-0}" \
         TEST_CONFIG_MKTEMP_FAIL="${TEST_CONFIG_MKTEMP_FAIL:-0}" \
         TEST_CONFIG_MV_FAIL="${TEST_CONFIG_MV_FAIL:-0}" \
+        TEST_IDENTITY_MKTEMP_FAIL="${TEST_IDENTITY_MKTEMP_FAIL:-0}" \
+        TEST_IDENTITY_MV_FAIL="${TEST_IDENTITY_MV_FAIL:-0}" \
         TEST_CONFIG_SYNC_FAIL_ON="${TEST_CONFIG_SYNC_FAIL_ON:-0}" \
         TEST_CONFIG_SYNC_COUNT="$TEST_ROOT/config-sync-count" \
         DEBUG="${DEBUG:-0}" PATH="$BIN:$PATH" \
@@ -821,7 +853,8 @@ case_m03_healthy_path_uses_only_fd_anchored_target() {
         'M03 successful completed status retains the final cleanup success log'
     assert_absent /escaped-by-card-config 'M03 card configuration did not create an escaped root'
     assert_not_contains /escaped-by-card-config "$EFFECTS" 'M03 ignored card BACKUP_ROOT and TARGET overrides'
-    assert_equal "$(find "$TARGET_MOUNT/backups" -type d | wc -l)" 3 'M03 created root UUID and logs only on tmpfs'
+    assert_equal "$(find "$TARGET_MOUNT/backups" -type d | wc -l)" 4 \
+        'M03 created root UUID logs and identity directories only on tmpfs'
     assert_equal "$(find "$TEST_ROOT" -path "$TARGET_MOUNT" -prune -o -name "$CARD_UUID" -print | wc -l)" 0 \
         'M03 UUID directory did not leak outside target tmpfs'
     rm -f "$TEST_ROOT/target-mm" # keeps the real value read above explicit for fixture audit.
@@ -1131,6 +1164,99 @@ case_m23_published_config_sync_failure_blocks_transfer() {
         test -f "$SOURCE_MOUNT/FieldBackup.conf"
     assert_not_contains rsync "$EFFECTS" 'M23 sync failure does not start rsync'
     /bin/sleep 1
+}
+
+case_m24_source_identity_conflict_stops_before_alias_or_transfer() {
+    begin_case M24 'same source repeats normally and a conflicting source cannot update alias or transfer'
+    reset_case || { fail 'M24 fixture setup failed'; return; }
+    printf 'SD_UUID="%s"\nBACKUP_MODE="PRIMARY"\n' "$CARD_UUID" > "$SOURCE_MOUNT/FieldBackup.conf"
+    assert_success 'M24 first source binding and backup succeeds' run_manager add sda1 /devices/mock
+    identity_record="$TARGET_MOUNT/backups/.card-identities/$CARD_UUID.json"
+    assert_success 'M24 first backup published source identity record' test -f "$identity_record"
+    assert_success 'M24 same source backup succeeds again' run_manager add sda1 /devices/mock
+    alias_before=$(sha256sum /opt/outdoor-backup/conf/aliases.json | awk '{print $1}')
+    record_before=$(sha256sum "$identity_record" | awk '{print $1}')
+    rsync_before=$(grep -c '^rsync' "$EFFECTS")
+    TEST_SOURCE_FS_UUID=CONFLICT-99
+    export TEST_SOURCE_FS_UUID
+    assert_failure 'M24 conflicting source fails manager' run_manager add sda1 /devices/mock
+    unset TEST_SOURCE_FS_UUID
+    assert_equal "$(grep -c '^rsync' "$EFFECTS")" "$rsync_before" \
+        'M24 conflict starts no additional rsync'
+    assert_equal "$(sha256sum /opt/outdoor-backup/conf/aliases.json | awk '{print $1}')" "$alias_before" \
+        'M24 conflict preserves alias bytes'
+    assert_equal "$(sha256sum "$identity_record" | awk '{print $1}')" "$record_before" \
+        'M24 conflict preserves identity record bytes'
+}
+
+case_m25_unknown_source_stops_before_rw_configuration_window() {
+    begin_case M25 'unknown source UUID fails before a blank card receives a writable configuration window'
+    reset_case || { fail 'M25 fixture setup failed'; return; }
+    TEST_SOURCE_BLOCK_FAIL=1
+    export TEST_SOURCE_BLOCK_FAIL
+    assert_failure 'M25 failed source UUID read rejects manager' run_manager add sda1 /devices/mock
+    unset TEST_SOURCE_BLOCK_FAIL
+    assert_contains "mount mode=ro target=[$SOURCE_MOUNT]" "$EFFECTS" \
+        'M25 source was initially mounted read-only'
+    assert_not_contains 'mount mode=rw' "$EFFECTS" \
+        'M25 source UUID failure never opens a writable mount'
+    assert_absent "$SOURCE_MOUNT/FieldBackup.conf" \
+        'M25 source UUID failure never writes blank-card configuration'
+    assert_not_contains rsync "$EFFECTS" 'M25 source UUID failure never starts rsync'
+}
+
+case_m26_newline_identity_record_rejects_before_alias_or_transfer() {
+    begin_case M26 'an identity record with a JSON newline cannot authorize a backup'
+    reset_case || { fail 'M26 fixture setup failed'; return; }
+    printf 'SD_UUID="%s"\nBACKUP_MODE="PRIMARY"\n' "$CARD_UUID" > "$SOURCE_MOUNT/FieldBackup.conf"
+    identity_record="$TARGET_MOUNT/backups/.card-identities/$CARD_UUID.json"
+    mkdir -p "${identity_record%/*}" "$TARGET_MOUNT/backups/$CARD_UUID"
+    printf '%s\n' \
+        '{"version":1,"sd_uuid":"550e8400-e29b-41d4-a716-446655440000","fs_uuid":"abcd-1234\n"}' \
+        > "$identity_record"
+    printf '%s\n' original-backup-data > "$TARGET_MOUNT/backups/$CARD_UUID/data"
+    alias_before=$(file_hash_or_absent /opt/outdoor-backup/conf/aliases.json)
+    record_before=$(sha256sum "$identity_record" | awk '{print $1}')
+    data_before=$(sha256sum "$TARGET_MOUNT/backups/$CARD_UUID/data" | awk '{print $1}')
+    rsync_before=$(grep -c '^rsync' "$EFFECTS")
+    ASSERTIONS=$((ASSERTIONS + 1))
+    if run_manager add sda1 /devices/mock > "$TEST_ROOT/m26.stdout" 2> "$TEST_ROOT/m26.stderr"; then
+        fail 'M26 newline identity record unexpectedly succeeds'
+    fi
+    assert_contains 'card identity error: card identity record is invalid or conflicts with source' "$TEST_ROOT/m26.stderr" \
+        'M26 reports the identity-layer conflict reason'
+    assert_equal "$(grep -c '^rsync' "$EFFECTS")" "$rsync_before" \
+        'M26 malformed record starts no rsync'
+    assert_equal "$(file_hash_or_absent /opt/outdoor-backup/conf/aliases.json)" "$alias_before" \
+        'M26 malformed record preserves alias bytes or absence'
+    assert_equal "$(sha256sum "$identity_record" | awk '{print $1}')" "$record_before" \
+        'M26 malformed record preserves identity record bytes'
+    assert_equal "$(sha256sum "$TARGET_MOUNT/backups/$CARD_UUID/data" | awk '{print $1}')" "$data_before" \
+        'M26 malformed record preserves backup data bytes'
+}
+
+case_m27_identity_publish_failure_follows_initial_card_configuration() {
+    begin_case M27 'identity publication failure follows successful first-card configuration without alias or transfer'
+    reset_case || { fail 'M27 fixture setup failed'; return; }
+    alias_before=$(file_hash_or_absent /opt/outdoor-backup/conf/aliases.json)
+    TEST_IDENTITY_MV_FAIL=1
+    export TEST_IDENTITY_MV_FAIL
+    assert_failure 'M27 identity publication failure fails manager' run_manager add sda1 /devices/mock
+    unset TEST_IDENTITY_MV_FAIL
+    assert_contains 'cannot publish card identity record' "$NOTICES" \
+        'M27 reports the identity publication reason specifically'
+    assert_success 'M27 first-card configuration was published before identity failure' \
+        test -f "$SOURCE_MOUNT/FieldBackup.conf"
+    assert_success 'M27 published first-card configuration has a UUID assignment' \
+        grep -E -q '^SD_UUID="[0-9a-f-]+"$' "$SOURCE_MOUNT/FieldBackup.conf"
+    assert_success 'M27 published first-card configuration remains PRIMARY' \
+        grep -F -q 'BACKUP_MODE="PRIMARY"' "$SOURCE_MOUNT/FieldBackup.conf"
+    assert_equal "$(file_hash_or_absent /opt/outdoor-backup/conf/aliases.json)" "$alias_before" \
+        'M27 identity failure preserves alias bytes or absence'
+    assert_not_contains rsync "$EFFECTS" 'M27 identity publication failure never reaches rsync'
+    # The new-card UUID is dynamic, so inspect the whole root for data entries.
+    assert_equal "$(find "$TARGET_MOUNT/backups" -mindepth 1 -maxdepth 1 ! -name .card-identities -print)" '' \
+        'M27 identity publication failure creates no backup-root data entries'
 }
 
 case_m05_detach_or_readonly_during_rsync_fails_without_naked_writes() {
@@ -1476,6 +1602,10 @@ main() {
     case_m21_config_publish_failure_cleans_up_and_blocks_transfer
     case_m22_nonregular_or_linked_config_rejects_without_transfer
     case_m23_published_config_sync_failure_blocks_transfer
+    case_m24_source_identity_conflict_stops_before_alias_or_transfer
+    case_m25_unknown_source_stops_before_rw_configuration_window
+    case_m26_newline_identity_record_rejects_before_alias_or_transfer
+    case_m27_identity_publish_failure_follows_initial_card_configuration
     case_m05_detach_or_readonly_during_rsync_fails_without_naked_writes
     case_m05b_summary_failure_and_post_summary_detach_fail
     case_m07_transfer_failures_preserve_exit_and_classify_evidence
@@ -1487,9 +1617,9 @@ main() {
     case_m06_remove_ignores_unmounted_target
     assert_success 'M06 completion timer releases before test exit' settle_led_fixture
     assert_no_async_led_stderr
-    assert_equal "$CASES" 33 'all required cases executed'
-    if [ "$ASSERTIONS" -ne 269 ]; then
-        fail "all required assertions executed (expected=269, actual=$ASSERTIONS)"
+    assert_equal "$CASES" 37 'all required cases executed'
+    if [ "$ASSERTIONS" -ne 295 ]; then
+        fail "all required assertions executed (expected=295, actual=$ASSERTIONS)"
     fi
     if [ "$FAILED" -ne 0 ]; then
         replay_async_stderr

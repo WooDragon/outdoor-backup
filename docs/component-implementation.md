@@ -110,11 +110,21 @@ exit 0
 
 首次配置是软件实现的受控流程：管理器只在不存在正式 `FieldBackup.conf` 时打开来源卡的读写窗口。它在同目录创建唯一临时文件，检查完整写入后以 rename 发布正式文件，并检查 `sync`。该流程拒绝符号链接和其他非普通正式对象。失败时 cleanup 尝试卸载来源卡，但不保证恢复只读。恢复只读后的重读只验证流程控制，不证明实际介质写入、断电持久性或正确卡身份。现有 Docker 测试以 mount、umount 和文件操作桩证明该控制流；真卡、断电、克隆身份和多分区证据仍待验证。
 
+### Source identity binding
+
+After the manager mounts the source card read-only, it reads `/dev/<DEVNAME>` through `target_device_read_block_uuid`. The reader rejects a missing, malformed, or wrong-node `block info` record. `card-identity.sh` accepts only a nonempty ASCII alphanumeric-and-hyphen UUID value. It lowercases ASCII letters with `LC_ALL=C`. It does not use `blkid` or duplicate the block parser.
+
+The manager validates `FieldBackup.conf` before it binds the loaded `SD_UUID`. It creates or reads `.card-identities/<SD_UUID>.json` below `TARGET_BACKUP_ROOT`, which is itself an FD 9 path. `target_prepare_directory` creates the relative identity directory. The v1 JSON object has exactly `version: 1`, `sd_uuid`, and normalized `fs_uuid`. `jq` validates the JSON object, key set, types, version, and card UUID. Shell validation checks the source UUID character set and lowercase normalization because the pinned OpenWrt `jq` lacks regex support.
+
+A missing record uses a same-directory `mktemp` file, `jq` serialization, rename, `sync`, and final anchor validation. The manager checks anchor health before directory or record work, before publication, and after publication. It rejects an existing link, directory, malformed record, wrong card UUID, unsafe source UUID, or different source UUID. It does not overwrite a rejected record. It does not update aliases or start transfer after a binding rejection. The global manager lock serializes normal publication. This shell code does not claim protection against hostile concurrent root mutations or power-loss atomic durability. `SIGKILL` can leave the temporary name behind; the manager never treats or scans it as a record.
+
+A legacy backup directory without a record receives a first-observation binding. This compatibility behavior preserves its directory, data, and aliases. It cannot prove the historical source of that data. A filesystem UUID identifies a filesystem, not a physical SD card. Full clones with the same source filesystem UUID remain indistinguishable.
+
 LuCI 表单提供 `target_mount`、`target_uuid` 和 `backup_root` 说明。表单在 `enabled=1` 时要求 UUID。表单在 `enabled=0` 时允许空 UUID。字段的合法值和路径检查不代表表单会自动挂载或格式化介质。
 
 > **前置阅读**：目标存储的可执行配置、重试方法和用户可见限制，修改部署或运维行为前必须先读取：[README.md 的 Configuration 章节](../README.md#configuration)。
 
-运行时细节以 [`backup-manager.sh`](../files/opt/outdoor-backup/scripts/backup-manager.sh)、[`card-config.sh`](../files/opt/outdoor-backup/scripts/card-config.sh)、[`target.sh`](../files/opt/outdoor-backup/scripts/target.sh) 和 [`target-device.sh`](../files/opt/outdoor-backup/scripts/target-device.sh) 为单一事实源；本文档不复制生产算法。
+运行时细节以 [`backup-manager.sh`](../files/opt/outdoor-backup/scripts/backup-manager.sh)、[`card-config.sh`](../files/opt/outdoor-backup/scripts/card-config.sh)、[`card-identity.sh`](../files/opt/outdoor-backup/scripts/card-identity.sh)、[`target.sh`](../files/opt/outdoor-backup/scripts/target.sh) 和 [`target-device.sh`](../files/opt/outdoor-backup/scripts/target-device.sh) 为单一事实源；本文档不复制生产算法。
 
 ## 3. 传输、空间与状态模块
 

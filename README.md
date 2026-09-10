@@ -164,7 +164,7 @@ The static directory check rejects a symlink at the configured mount path or in 
 
 If the initial target guard fails, the manager writes the reason to stderr and error-level syslog. It may signal the optional red LED, but it does not enter the source mount, `rsync`, alias, lock, or application-log lifecycle. The manager closes the target FD before the LED helper starts its delayed child process. A missing LED does not turn this failure into success. `enabled=0` exits an `add` event before any LED side effect.
 
-Automatic backup supports the PRIMARY direction only: SD card to the configured storage target. The data-only card reader still accepts `REPLICA` in an existing `FieldBackup.conf` for compatibility. The manager rejects that card with an explicit error before `rsync`. It does not change the card configuration or UUID, update an alias, create the target UUID directory, or create a per-backup log. The manager does not convert `REPLICA` to `PRIMARY`. Remaining #15 work concerns stable card identity, read-only cards, and cloned cards; #15 remains open.
+Automatic backup supports the PRIMARY direction only: SD card to the configured storage target. The data-only card reader still accepts `REPLICA` in an existing `FieldBackup.conf` for compatibility. The manager rejects that card with an explicit error before `rsync`. It does not change the card configuration or UUID, update an alias, create the target UUID directory, or create a per-backup log. The manager does not convert `REPLICA` to `PRIMARY`. #15 now binds each configured card UUID to an observed source filesystem UUID. It does not make the filesystem UUID a physical-card identity. A full clone with the same source filesystem UUID remains indistinguishable; source replacement and multi-partition handling remain #16 work.
 
 The manager calls `backup-transfer.sh` after its source and target guards succeed. That module invokes the production `rsync` command directly and captures its real exit status. It uses `--partial` so an interrupted transfer can retain partial target data. It does not use `--ignore-existing`, `--append`, `--append-verify`, or `--delete`. Normal rsync quick-check behavior updates a file when its size or modification time differs. It does not guarantee detection of a content change that preserves both values. An `ENOSPC` classification requires the transfer diagnostics to contain `No space left on device` or `ENOSPC`; other rsync exits, including exit 11 or 12 without that diagnostic, remain rsync failures.
 
@@ -204,6 +204,8 @@ Edit `/opt/outdoor-backup/conf/backup.conf` only when a legacy value should appl
 
 The source card is mounted read-only. This limits user-space writes during the steady state. It is not forensic write protection: an ext4 dirty journal can still replay when the filesystem mounts. `rsync` always reads from the read-only mount.
 
+Immediately after the initial read-only mount, and before any read-write initialization window, the manager reads the source filesystem UUID through the exact `block info /dev/<DEVNAME>` reader. It normalizes ASCII letters to lowercase and rejects an empty or unsafe value. A failed UUID read stops initialization before the card is mounted read-write.
+
 The one exception is bounded and explicit. When no formal `FieldBackup.conf` exists, the manager unmounts the source and mounts it read-write. It writes the complete data to a uniquely named temporary file in that directory. It checks the write and publishes the file with a same-filesystem rename. It checks `sync` after publication. A rename is not proof against power loss. The manager then unmounts and mounts the source read-only before it does anything else.
 
 A failed read-write mount or a failed configuration write means that the manager cannot initialize the card. The manager reports a card-configuration error and does not run `rsync`. If the read-only mount cannot be restored, it also stops before `rsync`. Cleanup attempts to unmount the source; it does not promise that every failed run restores a read-only mount. After the read-only mount succeeds, the manager rereads the formal file as a flow check. That reread does not prove physical-media durability or card identity. A `SIGKILL` can leave a temporary file behind. The manager never treats that name as `FieldBackup.conf` and does not scan or delete other temporary files.
@@ -211,6 +213,14 @@ A failed read-write mount or a failed configuration write means that the manager
 The implementation uses full unmount and mount transitions rather than `remount`, because the filesystem types it tries do not all implement `remount` uniformly. This is an implementation choice, not the only filesystem transition method.
 
 The manager reads an existing formal file as data. It never `source`s or `eval`s the file. It rejects a symbolic link or another non-regular object at that name.
+
+Before an alias update or `rsync`, it checks the anchored target record `.card-identities/<SD_UUID>.json`. The v1 record contains only `version`, `sd_uuid`, and normalized `fs_uuid`. The record path is below the active `/proc/<manager-pid>/fd/9` backup root.
+
+When the record is missing, the manager creates it through a same-directory temporary file, `jq`, rename, `sync`, and final anchor validation. An existing record must be a non-link regular file with the exact v1 schema and the current values. A malformed object, a link, a directory, or a different source filesystem UUID rejects the backup. The manager does not replace the record, update the alias, run `rsync`, or report a successful status after that rejection.
+
+Existing backup directories without a record use first observation to establish this binding. This preserves their directory names, aliases, and data. This trust-on-first-use rule cannot prove the historical origin of existing data. A filesystem UUID identifies a filesystem rather than a physical SD card. A block-level clone with the same filesystem UUID remains indistinguishable.
+
+Batch data cleanup retains `.card-identities`, independently of the alias-retention option. Removing backup data does not reset a card binding. A rejected record may be malformed or may belong to another source filesystem; inspect the record and verify the source before any manual repair. Do not delete an identity record merely to bypass a rejection: the next insertion would establish a new first-observation binding to the existing UUID directory.
 
 ```bash
 # Automatically generated on first insertion
