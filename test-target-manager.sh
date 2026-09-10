@@ -80,6 +80,7 @@ derive_fixture_paths() {
     RSYNC_ARGC="$TEST_ROOT/rsync-argc"
     RSYNC_SOURCE="$TEST_ROOT/rsync-source"
     RSYNC_TARGET="$TEST_ROOT/rsync-target"
+    SOURCE_MOUNT_STATE="$TEST_ROOT/source-mount-state"
 }
 derive_fixture_paths
 TARGET_UUID="A1B2-C3D4"
@@ -348,7 +349,7 @@ map_target_to_physical_disk() {
 
 prepare_runtime() {
     rm -rf "$RUNTIME" "$SOURCE_MOUNT" "$BIN" "$EFFECTS" "$NOTICES" \
-        /opt/outdoor-backup/conf
+        "$SOURCE_MOUNT_STATE" /opt/outdoor-backup/conf
     mkdir -p "$SCRIPTS" "$RUNTIME/conf" "$RUNTIME/var/lock" \
         "$RUNTIME/log" "$BIN" "$SOURCE_MOUNT" /opt/outdoor-backup/conf
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/backup-manager.sh" "$SCRIPTS/backup-manager.sh"
@@ -375,6 +376,18 @@ EOF
     cat > "$BIN/logger" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >> "$TEST_NOTICES"
+if [ "${TEST_RECORD_CLEANUP_PHASES:-0}" = 1 ]; then
+    printf 'logger args=[%s] lock=[%s]\n' "$*" \
+        "$(readlink "$TEST_LOCK_LINK" 2>/dev/null || :)" >> "$TEST_EFFECTS"
+fi
+EOF
+    cat > "$BIN/date" <<'EOF'
+#!/bin/sh
+if [ "$#" -eq 1 ] && [ "$1" = '+%s' ] && [ -n "${TEST_CLOCK_EPOCH_FILE:-}" ]; then
+    cat "$TEST_CLOCK_EPOCH_FILE"
+    exit $?
+fi
+exec /bin/date "$@"
 EOF
     cat > "$BIN/block" <<'EOF'
 #!/bin/sh
@@ -440,6 +453,9 @@ fi
 if [ "$mount_mode" = rw ] && [ "${TEST_MOUNT_RW_FAILS:-0}" = 1 ]; then
     exit 1
 fi
+if [ "$mount_mode" = ro ] && [ "${TEST_MOUNT_INITIAL_FAILS:-0}" = 1 ]; then
+    exit 1
+fi
 if [ "$mount_mode" = ro ] && [ -n "${TEST_MOUNT_RO_COUNT:-}" ]; then
     # mount_sdcard() retries multiple fs types on failure, so a naive "count
     # every stub call" counter double-counts a deliberately failing logical
@@ -464,6 +480,9 @@ if [ "$mount_mode" = ro ] && [ -n "${TEST_MOUNT_RO_COUNT:-}" ]; then
         exit 1
     fi
 fi
+if [ "$mount_target" = "$TEST_SOURCE_MOUNT" ]; then
+    printf 'manager=%s mode=%s\n' "$$" "$mount_mode" > "$TEST_SOURCE_MOUNT_STATE"
+fi
 exit 0
 EOF
     cat > "$BIN/umount" <<'EOF'
@@ -483,14 +502,35 @@ if [ "$umount_target" = "$TEST_SOURCE_MOUNT" ]; then
     [ -r "$TEST_SOURCE_UMOUNT_COUNT" ] && umount_count=$(cat "$TEST_SOURCE_UMOUNT_COUNT")
     umount_count=$((umount_count + 1))
     printf '%s\n' "$umount_count" > "$TEST_SOURCE_UMOUNT_COUNT"
-    printf 'source-umount count=%s\n' "$umount_count" >> "$TEST_EFFECTS"
+    printf 'source-umount count=%s lock=[%s]\n' "$umount_count" \
+        "$(readlink "$TEST_LOCK_LINK" 2>/dev/null || :)" >> "$TEST_EFFECTS"
     if [ "$umount_count" = "${TEST_SOURCE_UMOUNT_FAIL_ON:-0}" ]; then
         exit 1
     fi
+    rm -f "$TEST_SOURCE_MOUNT_STATE"
 fi
 exit 0
 EOF
 
+    cat > "$BIN/rm" <<'EOF'
+#!/bin/sh
+rm_target=''
+for value in "$@"; do
+    case $value in
+        -*) ;;
+        *) rm_target=$value ;;
+    esac
+done
+if [ "$rm_target" = "$TEST_LOCK_LINK" ]; then
+    if [ "$#" -ne 2 ] || [ "$1" != -f ] || [ "$2" != "$TEST_LOCK_LINK" ]; then
+        printf 'rm fixture rejected lock argv=[%s]\n' "$*" >&2
+        exit 64
+    fi
+    printf 'lock-unlink lock=[%s]\n' \
+        "$(readlink "$TEST_LOCK_LINK" 2>/dev/null || :)" >> "$TEST_EFFECTS"
+fi
+exec /bin/rm "$@"
+EOF
     cat > "$BIN/mktemp" <<'EOF'
 #!/bin/sh
 case "$1" in
@@ -523,6 +563,9 @@ exec /bin/mv "$@"
 EOF
     cat > "$BIN/mountpoint" <<'EOF'
 #!/bin/sh
+if [ "${2:-}" = "$TEST_SOURCE_MOUNT" ] && [ -f "$TEST_SOURCE_MOUNT_STATE" ]; then
+    exit 0
+fi
 exit 1
 EOF
     cat > "$BIN/rsync" <<'EOF'
@@ -550,6 +593,9 @@ if [ "${TEST_RSYNC_INJECT:-}" = detach ]; then
     /bin/umount -l "$TEST_TARGET_MOUNT"
 elif [ "${TEST_RSYNC_INJECT:-}" = ro ]; then
     /bin/mount -o remount,ro "$TEST_TARGET_MOUNT"
+fi
+if [ "${TEST_RSYNC_EXIT:-0}" = 0 ] && [ -n "${TEST_CLOCK_AFTER_RSYNC:-}" ]; then
+    printf '%s\n' "$TEST_CLOCK_AFTER_RSYNC" > "$TEST_CLOCK_EPOCH_FILE"
 fi
 exit "${TEST_RSYNC_EXIT:-0}"
 EOF
@@ -583,6 +629,9 @@ if [ "$#" -eq 0 ] && [ "${output_target##*/}" != FieldBackup.conf ]; then
             exit 0
             ;;
     esac
+    if [ -n "${TEST_SUMMARY_CAPTURE:-}" ]; then
+        exec tee "$TEST_SUMMARY_CAPTURE"
+    fi
 fi
 exec /bin/cat "$@"
 EOF
@@ -624,13 +673,22 @@ sync_count=0
 [ -r "$TEST_CONFIG_SYNC_COUNT" ] && sync_count=$(cat "$TEST_CONFIG_SYNC_COUNT")
 sync_count=$((sync_count + 1))
 printf '%s\n' "$sync_count" > "$TEST_CONFIG_SYNC_COUNT"
-printf 'sync count=%s\n' "$sync_count" >> "$TEST_EFFECTS"
+status_mv_count=0
+[ -r "$TEST_STATUS_MV_COUNT" ] && status_mv_count=$(cat "$TEST_STATUS_MV_COUNT")
+printf 'sync count=%s lock=[%s] status-mv-count=%s\n' "$sync_count" \
+    "$(readlink "$TEST_LOCK_LINK" 2>/dev/null || :)" "$status_mv_count" >> "$TEST_EFFECTS"
 if [ "$sync_count" = "${TEST_CONFIG_SYNC_FAIL_ON:-0}" ]; then
     exit 1
+fi
+if [ -n "${TEST_CLOCK_AFTER_SYNC:-}" ]; then
+    printf '%s\n' "$TEST_CLOCK_AFTER_SYNC" > "$TEST_CLOCK_EPOCH_FILE"
 fi
 EOF
     cat > "$BIN/sleep" <<'EOF'
 #!/bin/sh
+if [ "${TEST_SLEEP_PASSTHROUGH:-0}" = 1 ]; then
+    exec /bin/sleep "$@"
+fi
 # The fixture accepts only production-valid, integer delays. It then blocks on a
 # case-owned release file: reset_case can join this exact child before deleting
 # BIN or fake LED paths, while M02d/M11 can prove the timer stays alive.
@@ -667,6 +725,8 @@ run_manager() {
         TEST_TIMER_RELEASE="$TEST_ROOT/timer-release" \
         TEST_TIMER_PID="$TEST_ROOT/timer-pid" \
         TEST_TIMER_DURATION="${TEST_TIMER_DURATION:-60}" \
+        TEST_SLEEP_PASSTHROUGH="${TEST_SLEEP_PASSTHROUGH:-0}" \
+        TEST_RECORD_CLEANUP_PHASES="${TEST_RECORD_CLEANUP_PHASES:-0}" \
         TEST_DF_MB="${TEST_DF_MB:-2}" TEST_RSYNC_EXIT="${TEST_RSYNC_EXIT:-0}" \
         TEST_RSYNC_DIAGNOSTIC="${TEST_RSYNC_DIAGNOSTIC:-}" TEST_RSYNC_STATS="${TEST_RSYNC_STATS:-}" \
         STATUS_FILE="$RUNTIME/var/status.json" STATUS_MV="$BIN/status-mv" \
@@ -678,6 +738,9 @@ run_manager() {
         TEST_MOUNT_RO_FAIL_ON="${TEST_MOUNT_RO_FAIL_ON:-0}" \
         TEST_MOUNT_RO_COUNT="$TEST_ROOT/mount-ro-count" \
         TEST_SOURCE_MOUNT="$SOURCE_MOUNT" \
+        TEST_SOURCE_MOUNT_STATE="$SOURCE_MOUNT_STATE" \
+        TEST_LOCK_LINK="$RUNTIME/var/lock/backup.lock" \
+        TEST_MOUNT_INITIAL_FAILS="${TEST_MOUNT_INITIAL_FAILS:-0}" \
         TEST_SOURCE_UMOUNT_FAIL_ON="${TEST_SOURCE_UMOUNT_FAIL_ON:-0}" \
         TEST_SOURCE_UMOUNT_COUNT="$TEST_ROOT/source-umount-count" \
         TEST_SOURCE_FS_UUID="${TEST_SOURCE_FS_UUID:-ABCD-1234}" \
@@ -688,6 +751,10 @@ run_manager() {
         TEST_IDENTITY_MV_FAIL="${TEST_IDENTITY_MV_FAIL:-0}" \
         TEST_CONFIG_SYNC_FAIL_ON="${TEST_CONFIG_SYNC_FAIL_ON:-0}" \
         TEST_CONFIG_SYNC_COUNT="$TEST_ROOT/config-sync-count" \
+        TEST_CLOCK_EPOCH_FILE="${TEST_CLOCK_EPOCH_FILE:-}" \
+        TEST_CLOCK_AFTER_RSYNC="${TEST_CLOCK_AFTER_RSYNC:-}" \
+        TEST_CLOCK_AFTER_SYNC="${TEST_CLOCK_AFTER_SYNC:-}" \
+        TEST_SUMMARY_CAPTURE="${TEST_SUMMARY_CAPTURE:-}" \
         DEBUG="${DEBUG:-0}" PATH="$BIN:$PATH" \
         /bin/ash "${MANAGER_SCRIPT:-$SCRIPTS/backup-manager.sh}" "$@"
 }
@@ -983,6 +1050,234 @@ assert_first_write_restore_order() {
     fi
 }
 
+assert_source_mount_state_contains() {
+    expected=$1
+    message=$2
+    ASSERTIONS=$((ASSERTIONS + 1))
+    if [ ! -r "$SOURCE_MOUNT_STATE" ] || ! grep -F -q -- "$expected" "$SOURCE_MOUNT_STATE"; then
+        fail "$message"
+    fi
+}
+
+case_m28_live_lock_timeout_preserves_other_owner_resources() {
+    begin_case M28 'a competing manager timing out on a live lock does not touch the holder resources'
+    reset_case || { fail 'M28 fixture setup failed'; return; }
+    holder_release="$TEST_ROOT/holder-release"
+    holder_ready="$TEST_ROOT/holder-ready"
+    cat > "$BIN/backup-manager.sh" <<'EOF'
+#!/bin/sh
+exec 9< "$TEST_HOLDER_TARGET" || exit 1
+: > "$TEST_HOLDER_READY"
+while [ ! -e "$TEST_HOLDER_RELEASE" ]; do
+    /bin/sleep 1
+done
+EOF
+    chmod 755 "$BIN/backup-manager.sh"
+    TEST_HOLDER_TARGET="$TARGET_MOUNT" TEST_HOLDER_READY="$holder_ready" \
+        TEST_HOLDER_RELEASE="$holder_release" /bin/ash "$BIN/backup-manager.sh" &
+    holder_pid=$!
+    assert_success 'M28 holder opened target FD 9 before publishing its lock' wait_for_path "$holder_ready"
+    assert_equal "$(readlink "/proc/$holder_pid/fd/9")" "$TARGET_MOUNT" \
+        'M28 holder FD 9 points at the target before contender runs'
+    ln -s "/proc/$holder_pid" "$RUNTIME/var/lock/backup.lock" || {
+        fail 'M28 fixture could not publish the live holder lock'
+        kill "$holder_pid" 2>/dev/null || :
+        wait "$holder_pid" 2>/dev/null || :
+        return
+    }
+    printf 'manager=%s mode=ro\n' "$holder_pid" > "$SOURCE_MOUNT_STATE"
+    printf 'holder source content\n' > "$SOURCE_MOUNT/holder-sentinel"
+    printf '{"preserved":"status"}\n' > "$RUNTIME/var/status.json"
+    printf 'holder-green\n' > "$TEST_ROOT/green/trigger"
+    printf 'holder-red\n' > "$TEST_ROOT/red/trigger"
+    status_hash_before=$(sha256sum "$RUNTIME/var/status.json" | awk '{print $1}')
+    green_hash_before=$(sha256sum "$TEST_ROOT/green/trigger" | awk '{print $1}')
+    red_hash_before=$(sha256sum "$TEST_ROOT/red/trigger" | awk '{print $1}')
+    LOCK_TIMEOUT=1
+    LOCK_INTERVAL=1
+    TEST_SLEEP_PASSTHROUGH=1
+    export LOCK_TIMEOUT LOCK_INTERVAL TEST_SLEEP_PASSTHROUGH
+    assert_manager_exit 1 'M28 competing manager exits with lock-timeout status one' add sda1 /devices/mock
+    unset LOCK_TIMEOUT LOCK_INTERVAL TEST_SLEEP_PASSTHROUGH
+    assert_equal "$(readlink "$RUNTIME/var/lock/backup.lock")" "/proc/$holder_pid" \
+        'M28 contender leaves the live holder lock unchanged'
+    assert_equal "$(readlink "/proc/$holder_pid/fd/9")" "$TARGET_MOUNT" \
+        'M28 contender leaves the holder FD 9 target anchor open'
+    assert_source_mount_state_contains "manager=$holder_pid" \
+        'M28 contender leaves holder source mount state unchanged'
+    assert_success 'M28 contender leaves holder source content unchanged' \
+        test -f "$SOURCE_MOUNT/holder-sentinel"
+    assert_not_contains 'mount mode=' "$EFFECTS" 'M28 contender does not mount a source'
+    assert_not_contains 'umount target=' "$EFFECTS" 'M28 contender does not unmount a source'
+    assert_not_contains 'sync count=' "$EFFECTS" 'M28 contender does not synchronize shared resources'
+    assert_equal "$(sha256sum "$RUNTIME/var/status.json" | awk '{print $1}')" "$status_hash_before" \
+        'M28 contender leaves holder status bytes unchanged'
+    assert_equal "$(sha256sum "$TEST_ROOT/green/trigger" | awk '{print $1}')" "$green_hash_before" \
+        'M28 contender leaves holder green LED bytes unchanged'
+    assert_equal "$(sha256sum "$TEST_ROOT/red/trigger" | awk '{print $1}')" "$red_hash_before" \
+        'M28 contender leaves holder red LED bytes unchanged'
+    assert_not_contains 'Backup completed successfully' "$RUNTIME/log/backup.log" \
+        'M28 contender does not claim backup completion'
+    : > "$holder_release"
+    wait "$holder_pid" || fail 'M28 holder fixture did not exit cleanly'
+}
+
+case_m29_mount_ownership_refuses_failure_and_preoccupied_source() {
+    begin_case M29 'source cleanup requires a successful manager mount and rejects an occupied mountpoint'
+    reset_case || { fail 'M29 initial mount failure fixture setup failed'; return; }
+    TEST_MOUNT_INITIAL_FAILS=1
+    export TEST_MOUNT_INITIAL_FAILS
+    assert_failure 'M29 failed initial source mount fails the manager' run_manager add sda1 /devices/mock
+    unset TEST_MOUNT_INITIAL_FAILS
+    assert_not_contains 'umount target=' "$EFFECTS" \
+        'M29 cleanup does not unmount when this manager never mounted the source'
+    assert_absent "$SOURCE_MOUNT_STATE" 'M29 failed initial mount leaves no ownership state'
+
+    reset_case || { fail 'M29 occupied mount fixture setup failed'; return; }
+    printf 'manager=external mode=ro\n' > "$SOURCE_MOUNT_STATE"
+    printf 'external source content\n' > "$SOURCE_MOUNT/external-sentinel"
+    assert_failure 'M29 occupied source mountpoint rejects manager' run_manager add sda1 /devices/mock
+    assert_source_mount_state_contains 'manager=external' \
+        'M29 occupied source retains external ownership state'
+    assert_success 'M29 occupied source retains existing content' test -f "$SOURCE_MOUNT/external-sentinel"
+    assert_not_contains 'mount mode=' "$EFFECTS" 'M29 occupied source is not mounted again'
+    assert_not_contains 'umount target=' "$EFFECTS" 'M29 occupied source is not unmounted'
+}
+
+assert_cleanup_effect_has_self_lock() {
+    marker=$1
+    message=$2
+    ASSERTIONS=$((ASSERTIONS + 1))
+    if ! grep -F -- "$marker" "$EFFECTS" | grep -E -q 'lock=\[/proc/[0-9]+\]'; then
+        fail "$message (marker=[$marker])"
+    fi
+}
+
+assert_cleanup_effect_order() {
+    previous_line=0
+    message=$1
+    shift
+    for marker in "$@"; do
+        matched=$(grep -n -F -- "$marker" "$EFFECTS" || :)
+        current_line=${matched%%:*}
+        ASSERTIONS=$((ASSERTIONS + 1))
+        if [ -z "$current_line" ] || [ "$current_line" -le "$previous_line" ]; then
+            fail "$message (marker=[$marker])"
+            return
+        fi
+        previous_line=$current_line
+    done
+}
+
+prepare_m30_existing_card() {
+    printf 'SD_UUID="%s"\nBACKUP_MODE="PRIMARY"\n' "$CARD_UUID" > "$SOURCE_MOUNT/FieldBackup.conf"
+    printf 'DEBUG=1\n' >> "$RUNTIME/conf/backup.conf"
+    mkdir -p "$TARGET_MOUNT/backups/.card-identities"
+    printf '{"version":1,"sd_uuid":"%s","fs_uuid":"abcd-1234"}\n' "$CARD_UUID" \
+        > "$TARGET_MOUNT/backups/.card-identities/$CARD_UUID.json"
+}
+
+assert_m30_cleanup_phases() {
+    case_id=$1
+    assert_cleanup_effect_has_self_lock 'source-umount count=1' \
+        "$case_id source umount retains self lock"
+    assert_cleanup_effect_has_self_lock 'sync count=1' \
+        "$case_id cleanup sync retains self lock"
+    assert_matches 'sync count=1 lock=\[/proc/[0-9]+\] status-mv-count=1' "$EFFECTS" \
+        "$case_id cleanup sync precedes completed status publication"
+    assert_cleanup_effect_has_self_lock 'logger args=[-t outdoor-backup -p debug LEDs turned off]' \
+        "$case_id LED stop finishes while self lock exists"
+    assert_cleanup_effect_has_self_lock 'logger args=[-t outdoor-backup -p debug LED set to solid on]' \
+        "$case_id success LED terminal effect retains self lock"
+    assert_cleanup_effect_has_self_lock 'logger args=[-t outdoor-backup -p info Backup completed successfully]' \
+        "$case_id success log retains self lock"
+    assert_cleanup_effect_order "$case_id shared cleanup effects precede lock unlink" \
+        'source-umount count=1' 'sync count=1' 'LEDs turned off' 'LED set to solid on' \
+        'Backup completed successfully' 'Releasing lock' 'lock-unlink'
+    assert_absent "$RUNTIME/var/lock/backup.lock" "$case_id releases lock after cleanup phases"
+}
+
+case_m30_owner_cleanup_releases_lock_after_source_cleanup() {
+    begin_case M30 'owner cleanup finalizes status before releasing shared resources'
+
+    reset_case || { fail 'M30 successful cleanup fixture setup failed'; return; }
+    prepare_m30_existing_card
+    TEST_RECORD_CLEANUP_PHASES=1
+    export TEST_RECORD_CLEANUP_PHASES
+    assert_success 'M30 successful owner backup completes' run_manager add sda1 /devices/mock
+    unset TEST_RECORD_CLEANUP_PHASES
+    assert_m30_cleanup_phases M30-success
+
+    reset_case || { fail 'M30 frozen transfer timestamp fixture setup failed'; return; }
+    prepare_m30_existing_card
+    TEST_CLOCK_EPOCH_FILE="$TEST_ROOT/clock-epoch"
+    printf '%s\n' 1700000000 > "$TEST_CLOCK_EPOCH_FILE"
+    TEST_CLOCK_AFTER_RSYNC=1700000060 TEST_CLOCK_AFTER_SYNC=1700000090
+    TEST_SUMMARY_CAPTURE="$TEST_ROOT/summary-capture"
+    export TEST_CLOCK_EPOCH_FILE TEST_CLOCK_AFTER_RSYNC TEST_CLOCK_AFTER_SYNC TEST_SUMMARY_CAPTURE
+    assert_success 'M30 frozen transfer timestamp backup completes' run_manager add sda1 /devices/mock
+    unset TEST_CLOCK_EPOCH_FILE TEST_CLOCK_AFTER_RSYNC TEST_CLOCK_AFTER_SYNC TEST_SUMMARY_CAPTURE
+    assert_contains 'Rsync transfer finished in 60s (exit code: 0)' "$RUNTIME/log/backup.log" \
+        'M30 duration uses the transfer completion epoch'
+    assert_contains 'Duration: 60 seconds' "$TEST_ROOT/summary-capture" \
+        'M30 summary duration uses the transfer completion epoch'
+    assert_contains 'Transfer Finished: 2023-11-14 22:14:20' "$TEST_ROOT/summary-capture" \
+        'M30 summary time formats the transfer completion epoch'
+
+    reset_case || { fail 'M30 successful sync-failure fixture setup failed'; return; }
+    prepare_m30_existing_card
+    TEST_RECORD_CLEANUP_PHASES=1 TEST_CONFIG_SYNC_FAIL_ON=1
+    export TEST_RECORD_CLEANUP_PHASES TEST_CONFIG_SYNC_FAIL_ON
+    assert_manager_exit 1 'M30 cleanup sync turns a successful transfer into failure' add sda1 /devices/mock
+    unset TEST_RECORD_CLEANUP_PHASES TEST_CONFIG_SYNC_FAIL_ON
+    assert_cleanup_effect_has_self_lock 'sync count=1' \
+        'M30 successful sync failure happens while self lock exists'
+    assert_matches 'sync count=1 lock=\[/proc/[0-9]+\] status-mv-count=1' "$EFFECTS" \
+        'M30 cleanup sync failure precedes completed status publication'
+    assert_status_jq '.history[0].status == "error" and .history[0].error_message == "rsync"' \
+        'M30 cleanup sync failure replaces running state with failed status'
+    assert_status_jq '.history | all(.status != "completed")' \
+        'M30 cleanup sync failure never writes completed status'
+    assert_not_contains 'Backup completed successfully' "$RUNTIME/log/backup.log" \
+        'M30 cleanup sync failure has no success log'
+    assert_equal "$(cat "$TEST_ROOT/green/brightness" 2>/dev/null || :)" 0 \
+        'M30 cleanup sync failure has no success LED'
+    assert_equal "$(cat "$TEST_ROOT/red/trigger" 2>/dev/null || :)" timer \
+        'M30 cleanup sync failure signals the error LED'
+    assert_absent "$RUNTIME/var/lock/backup.lock" \
+        'M30 successful sync failure still releases self lock'
+
+    reset_case || { fail 'M30 rsync failure fixture setup failed'; return; }
+    prepare_m30_existing_card
+    TEST_RECORD_CLEANUP_PHASES=1 TEST_RSYNC_EXIT=23
+    export TEST_RECORD_CLEANUP_PHASES TEST_RSYNC_EXIT
+    assert_manager_exit 23 'M30 failed owner preserves rsync exit code' add sda1 /devices/mock
+    unset TEST_RECORD_CLEANUP_PHASES TEST_RSYNC_EXIT
+    assert_cleanup_effect_has_self_lock 'source-umount count=1' \
+        'M30 rsync failure source unmount retains self lock'
+    assert_cleanup_effect_has_self_lock 'sync count=1' \
+        'M30 rsync failure cleanup sync retains self lock'
+    assert_cleanup_effect_has_self_lock 'logger args=[-t outdoor-backup -p debug LED error: rsync failure (slow blink)]' \
+        'M30 rsync failure LED terminal effect retains self lock'
+    assert_cleanup_effect_has_self_lock 'logger args=[-t outdoor-backup -p err Backup failed with code 23]' \
+        'M30 rsync failure log retains self lock'
+    assert_cleanup_effect_order 'M30 rsync shared cleanup effects precede lock unlink' \
+        'source-umount count=1' 'sync count=1' 'LEDs turned off' \
+        'LED error: rsync failure (slow blink)' 'Backup failed with code 23' 'Releasing lock' 'lock-unlink'
+    assert_absent "$RUNTIME/var/lock/backup.lock" 'M30 rsync failure releases lock after cleanup phases'
+
+    reset_case || { fail 'M30 rsync sync-failure fixture setup failed'; return; }
+    prepare_m30_existing_card
+    TEST_RECORD_CLEANUP_PHASES=1 TEST_RSYNC_EXIT=23 TEST_CONFIG_SYNC_FAIL_ON=1
+    export TEST_RECORD_CLEANUP_PHASES TEST_RSYNC_EXIT TEST_CONFIG_SYNC_FAIL_ON
+    assert_manager_exit 23 'M30 failed cleanup sync preserves original rsync exit' add sda1 /devices/mock
+    unset TEST_RECORD_CLEANUP_PHASES TEST_RSYNC_EXIT TEST_CONFIG_SYNC_FAIL_ON
+    assert_cleanup_effect_has_self_lock 'sync count=1' \
+        'M30 rsync cleanup sync failure happens while self lock exists'
+    assert_absent "$RUNTIME/var/lock/backup.lock" \
+        'M30 rsync cleanup sync failure still releases self lock'
+}
+
 case_m13_steady_state_source_stays_read_only() {
     begin_case M13 'a card with an existing config is mounted read-only and never remounted read-write'
     reset_case || { fail 'M13 fixture setup failed'; return; }
@@ -990,7 +1285,8 @@ case_m13_steady_state_source_stays_read_only() {
     config_hash_before=$(sha256sum "$SOURCE_MOUNT/FieldBackup.conf" | awk '{print $1}')
     assert_success 'M13 steady-state backup with a pre-existing card config succeeds' \
         run_manager add sda1 /devices/mock
-    assert_equal "$(mount_effect_sequence)" ro 'M13 steady state performs exactly one read-only source mount'
+    assert_equal "$(mount_effect_sequence)" ro,umount \
+        'M13 owner cleanup unmounts its one read-only source mount'
     assert_not_contains 'mount mode=rw' "$EFFECTS" 'M13 steady state never opens a read-write source mount'
     assert_equal "$(sha256sum "$SOURCE_MOUNT/FieldBackup.conf" | awk '{print $1}')" "$config_hash_before" \
         'M13 steady state never rewrites the existing card configuration bytes'
@@ -1001,8 +1297,8 @@ case_m14_first_write_bounded_mount_sequence() {
     reset_case || { fail 'M14 fixture setup failed'; return; }
     assert_absent "$SOURCE_MOUNT/FieldBackup.conf" 'M14 fixture starts with a genuinely blank card'
     assert_success 'M14 first-write provisioning succeeds' run_manager add sda1 /devices/mock
-    assert_equal "$(mount_effect_sequence)" ro,umount,rw,umount,ro \
-        'M14 mount sequence is exactly ro-mount, umount, rw-mount, umount, ro-mount'
+    assert_equal "$(mount_effect_sequence)" ro,umount,rw,umount,ro,umount \
+        'M14 owner cleanup follows the bounded ro-rw-ro source mount sequence'
     assert_success 'M14 card configuration exists after provisioning' test -f "$SOURCE_MOUNT/FieldBackup.conf"
     last_mount_mode=$(grep '^mount mode=' "$EFFECTS" | tail -n 1 | sed -E 's/^mount mode=([a-z]+).*/\1/')
     assert_equal "$last_mount_mode" ro 'M14 the final source mount is read-only before rsync runs'
@@ -1026,6 +1322,10 @@ case_m15_write_protected_card_rejects_without_config() {
         'M15 write-protected card uses the card_config manual-toggle LED pattern (4 flashes), not the rsync timer pattern'
     assert_absent "$SOURCE_MOUNT/FieldBackup.conf" 'M15 write-protected card never gets a config file'
     assert_not_contains rsync "$EFFECTS" 'M15 write-protected card never reaches rsync'
+    assert_equal "$(cat "$TEST_ROOT/source-umount-count")" 1 \
+        'M15 cleanup does not retry an unmount after rw mount ownership was never acquired'
+    assert_absent "$SOURCE_MOUNT_STATE" \
+        'M15 failed rw mount leaves no source ownership state for cleanup'
     # The LED trigger above only proves the failure landed in the manual-toggle
     # class, which card_config shares with no_space and verify_failed. Pin the
     # actual reason so this case cannot go green on a different failure.
@@ -1050,6 +1350,10 @@ case_m16_readonly_restore_failure_blocks_transfer() {
     assert_first_write_restore_order M16
     assert_contains 'Failed to restore read-only source mount' "$NOTICES" \
         'M16 the failure is reported as the read-only restore reason specifically'
+    assert_equal "$(cat "$TEST_ROOT/source-umount-count")" 2 \
+        'M16 cleanup does not retry an unmount after failed read-only restore had no ownership'
+    assert_absent "$SOURCE_MOUNT_STATE" \
+        'M16 failed read-only restore leaves no stale source ownership state'
     /bin/sleep 1
 }
 
@@ -1064,7 +1368,8 @@ case_m17_initial_source_unmount_failure_blocks_rw_window() {
         'M17 reports the initial source-unmount reason specifically'
     assert_not_contains 'mount mode=rw' "$EFFECTS" 'M17 does not open a read-write source mount'
     assert_not_contains rsync "$EFFECTS" 'M17 does not start rsync'
-    assert_equal "$(cat "$TEST_ROOT/source-umount-count")" 1 'M17 injects only the first source unmount'
+    assert_equal "$(cat "$TEST_ROOT/source-umount-count")" 2 \
+        'M17 cleanup retries the failed owned source unmount'
     /bin/sleep 1
 }
 
@@ -1079,9 +1384,10 @@ case_m18_post_write_source_unmount_failure_blocks_restore_and_transfer() {
         'M18 reports the post-write source-unmount reason specifically'
     assert_contains 'mount mode=rw' "$EFFECTS" 'M18 opened its bounded read-write source mount'
     assert_not_contains rsync "$EFFECTS" 'M18 does not start rsync'
-    assert_equal "$(cat "$TEST_ROOT/source-umount-count")" 2 'M18 injects only the second source unmount'
-    assert_equal "$(mount_effect_sequence)" ro,umount,rw,umount \
-        'M18 does not attempt to restore read-only after the second unmount fails'
+    assert_equal "$(cat "$TEST_ROOT/source-umount-count")" 3 \
+        'M18 cleanup retries the failed owned post-write source unmount'
+    assert_equal "$(mount_effect_sequence)" ro,umount,rw,umount,umount \
+        'M18 cleanup retries ownership but does not restore read-only after failed post-write unmount'
     /bin/sleep 1
 }
 
@@ -1591,6 +1897,9 @@ main() {
     case_m03b_invalid_existing_card_fails_without_rewriting_identity
     case_m03c_existing_replica_card_classifies_card_config_not_rsync
     case_m04_symlink_components_reject_before_target_update
+    case_m28_live_lock_timeout_preserves_other_owner_resources
+    case_m29_mount_ownership_refuses_failure_and_preoccupied_source
+    case_m30_owner_cleanup_releases_lock_after_source_cleanup
     case_m13_steady_state_source_stays_read_only
     case_m14_first_write_bounded_mount_sequence
     case_m15_write_protected_card_rejects_without_config
@@ -1617,9 +1926,9 @@ main() {
     case_m06_remove_ignores_unmounted_target
     assert_success 'M06 completion timer releases before test exit' settle_led_fixture
     assert_no_async_led_stderr
-    assert_equal "$CASES" 37 'all required cases executed'
-    if [ "$ASSERTIONS" -ne 295 ]; then
-        fail "all required assertions executed (expected=295, actual=$ASSERTIONS)"
+    assert_equal "$CASES" 40 'all required cases executed'
+    if [ "$ASSERTIONS" -ne 365 ]; then
+        fail "all required assertions executed (expected=365, actual=$ASSERTIONS)"
     fi
     if [ "$FAILED" -ne 0 ]; then
         replay_async_stderr

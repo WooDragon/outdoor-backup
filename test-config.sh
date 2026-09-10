@@ -167,6 +167,13 @@ assert_effect_present() {
     fi
 }
 
+assert_effect_not_present() {
+    ASSERTIONS=$((ASSERTIONS + 1))
+    if grep -F -q -- "$1" "$EFFECTS_FILE"; then
+        fail "$2 (unexpected [$1])"
+    fi
+}
+
 assert_file_contains() {
     ASSERTIONS=$((ASSERTIONS + 1))
     if ! grep -F -q -- "$1" "$2"; then
@@ -424,10 +431,26 @@ case_c09_disabled_remove_still_runs_cleanup_path() {
 	option enabled '0'"
     prepare_manager_runtime
     write_effect_stubs
+    cat > "$TEST_ROOT/bin/mountpoint" <<'EOF'
+#!/bin/sh
+printf 'mountpoint:%s\n' "$*" >> "$TEST_EFFECTS"
+exit 0
+EOF
+    cat > "$TEST_ROOT/bin/umount" <<'EOF'
+#!/bin/sh
+printf 'umount:%s\n' "$*" >> "$TEST_EFFECTS"
+exit 0
+EOF
+    chmod 755 "$TEST_ROOT/bin/mountpoint" "$TEST_ROOT/bin/umount"
     if ! run_manager remove sda1 /devices/test >/dev/null 2>&1; then
         fail "C09 disabled remove should complete through isolated cleanup"
     fi
     assert_effect_present "pkill:" "C09 remove was blocked by enabled setting"
+    assert_effect_not_present "umount:" "C09 non-owner remove cleanup did not unmount source"
+    assert_path_absent "$TEST_ROOT/led-green/trigger" \
+        "C09 non-owner remove cleanup did not alter the green LED"
+    assert_path_absent "$TEST_ROOT/led-red/trigger" \
+        "C09 non-owner remove cleanup did not signal an error LED"
 }
 
 case_c10_invalid_paths_and_controls_fail() {
@@ -613,8 +636,8 @@ main() {
 
     assert_equal "$CASES" "20" "all required cases executed"
     ASSERTIONS=$((ASSERTIONS + 1))
-    if [ "$ASSERTIONS" -ne 93 ]; then
-        fail "all required assertions executed (expected=93, actual=$ASSERTIONS)"
+    if [ "$ASSERTIONS" -ne 96 ]; then
+        fail "all required assertions executed (expected=96, actual=$ASSERTIONS)"
     fi
     if [ "$FAILED" -ne 0 ]; then
         printf 'cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"

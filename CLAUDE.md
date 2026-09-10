@@ -183,7 +183,7 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 - **增量备份**：传输模块应直接调用 `rsync` 并保留真实退出码。它应使用 `--partial`，不应使用 `--ignore-existing`、`--append`、`--append-verify` 或 `--delete`。rsync 的 size/mtime quick check 不保证发现值相同的内容变化。
 - **状态单一来源**：`status.sh` 应使用 `jq` 原子替换唯一的 `status.json` 快照。它不得创建 `history.jsonl` 或手写 JSON。状态仅在守卫建立后写入，且只有 rsync、摘要写入、最终锚点健康和设备身份复验均成功时才可写 `completed`。
 - **空间守卫**：管理器应通过已锚定目标 FD 执行 `df`，而非扫描备份树计算空间。`MIN_FREE_SPACE` 的默认值为 1024 MB；合法非负整数 `0` 禁用余量，未知 `df` 值必须失败关闭。只有明确 ENOSPC 诊断可把 rsync 失败归类为满盘。
-- **错误恢复**：信号处理确保清理；`remove` 不依赖目标存储在场。清理应先释放 FD，再启动 LED 定时器。广泛 `pkill` 的限制由 #16 跟踪。
+- **错误恢复**：信号处理确保清理；`remove` 不依赖目标存储在场。清理必须先确认本进程仍持有 `backup.lock`，再修改来源挂载、状态、LED 或锁。来源挂载只在本进程成功 mount 后可由 cleanup 卸载。持锁 cleanup 应在来源清理、目标 FD 关闭和 LED 终态后释放锁。广泛 `pkill` 的限制由 #16 后续批次跟踪。
 
 ### 路径安全
 - **目录遍历防护**: `is_safe_path()` 检查 `../`

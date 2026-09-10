@@ -108,7 +108,7 @@ exit 0
 
 静态符号链接检查不是 `openat2`。恶意 root 并发替换目标目录不在此 shell 实现的保证范围内。未知或 deleted loop backing 无法证明身份时会失败关闭。本文档不声称真机全兼容。`FieldBackup.conf` 由 [`card-config.sh`](../files/opt/outdoor-backup/scripts/card-config.sh) 按数据读取，绝不 `source` 或 `eval`。该读取器只导出 `SD_UUID`、`BACKUP_MODE`、`CREATED_AT` 与旧 `SD_NAME`。其他合法赋值会被忽略。畸形数据或缺失、非法 UUID 会失败，且不会重写现有卡配置。读取器为兼容数据仍接受 `REPLICA`。自动管理器仅执行 `PRIMARY` 的 SD 卡到目标存储方向；它读取既有 `REPLICA` 卡后明确失败，不执行 `rsync`，不改变卡文件或 UUID，不更新 alias，也不创建目标 UUID 叶目录或备份日志。管理器不会将 `REPLICA` 自动改为 `PRIMARY`。新卡配置只生成 `PRIMARY`。`backup-transfer.sh` 直接调用正式 `rsync` 并保留真实退出码；#14 的旧管道退出码限制不再适用。最终包 CI、固件 CI 与真机验证仍未完成。
 
-首次配置是软件实现的受控流程：管理器只在不存在正式 `FieldBackup.conf` 时打开来源卡的读写窗口。它在同目录创建唯一临时文件，检查完整写入后以 rename 发布正式文件，并检查 `sync`。该流程拒绝符号链接和其他非普通正式对象。失败时 cleanup 尝试卸载来源卡，但不保证恢复只读。恢复只读后的重读只验证流程控制，不证明实际介质写入、断电持久性或正确卡身份。现有 Docker 测试以 mount、umount 和文件操作桩证明该控制流；真卡、断电、克隆身份和多分区证据仍待验证。
+首次配置是软件实现的受控流程：管理器只在不存在正式 `FieldBackup.conf` 时打开来源卡的读写窗口。它在同目录创建唯一临时文件，检查完整写入后以 rename 发布正式文件，并检查 `sync`。该流程拒绝符号链接和其他非普通正式对象。`SOURCE_MOUNTED` 仅在本进程 mount 成功后置位。每次成功显式 umount 都清除该状态。失败的 umount 保留该状态，让持锁 cleanup 重试一次。`mount_sdcard` 拒绝已经是挂载点的来源路径，避免叠加挂载。cleanup 只有在 `LOCK_HELD=1` 且锁链接仍指向本进程时才操作共享资源。它先完成来源清理和 `sync`：该 sync 失败会将此前成功的 transfer 转为 `rsync`/exit 1，但不会替换既有业务失败码；仅 sync 成功的 transfer 才可写 `completed`。finalization 决定后，失败状态在目标 FD 关闭前写入，随后 LED 终态、日志和锁释放。未持锁进程只关闭自身 target anchor，并保留原退出码。恢复只读后的重读只验证流程控制，不证明实际介质写入、断电持久性或正确卡身份。现有 Docker 测试以 mount、umount 和文件操作桩证明该控制流；真卡、断电、克隆身份和多分区证据仍待验证。
 
 ### Source identity binding
 
@@ -132,9 +132,9 @@ LuCI 表单提供 `target_mount`、`target_uuid` 和 `backup_root` 说明。表�
 
 `check_minimum_free_space` 在创建备份叶目录后，经 FD 9 的目标路径调用 `df`。它不对整张卡或备份树执行 `du` 扫描。`MIN_FREE_SPACE` 默认为 1024 MB；非负十进制整数合法，`0` 禁用余量。无法取得可信 `df` 值时，守卫失败关闭。
 
-`status.sh` 依赖 `jq`。它把 `current_backup`、经活 FD 获取的 `storage` 和 `history` 原子写入唯一的 `status.json` 快照。它不维护 `history.jsonl`。history 以 UUID 去重，最新终态在前，最多 20 条。运行期间 `current_backup` 仅表达 active/running，未知进度和速率字段均为 0。成功终态的文件数和字节数来自 `rsync --stats`；管理器仅在 rsync、汇总写入和最后的锚点健康及身份复验均成功后才写 `completed`。
+`status.sh` 依赖 `jq`。它把 `current_backup`、经活 FD 获取的 `storage` 和 `history` 原子写入唯一的 `status.json` 快照。它不维护 `history.jsonl`。history 以 UUID 去重，最新终态在前，最多 20 条。运行期间 `current_backup` 仅表达 active/running，未知进度和速率字段均为 0。成功终态的文件数和字节数来自 `rsync --stats`。管理器仅在 rsync、cleanup `sync`、汇总写入和最后的锚点健康及身份复验均成功后才写 `completed`。
 
-`cleanup` 先清理传输临时文件并关闭目标 FD，再启动成功或错误 LED 定时器。`ERROR_TYPE` 的现有调用映射为 `device_unknown`、`lock_timeout`、`no_space`、`card_config`（红灯 4 闪，SD 卡配置被策略拒绝，例如既有 `REPLICA` 卡）、`rsync` 和 `verify_failed`。本文档不把未覆盖的 LED 类型表述为端到端验证。
+持锁 `cleanup` 先清理传输临时文件和本进程拥有的来源挂载。它随后执行 `sync`。cleanup `sync` 失败时，管理器将此前成功的 transfer 转为 `rsync`/exit 1。cleanup `sync` 失败时，管理器保留既有业务失败码。cleanup `sync` 成功后，管理器才可写 `completed`。finalization 判定失败后，管理器在关闭目标 FD 前写入 failed 状态。管理器随后写 LED 终态和日志。管理器最后释放锁。`ERROR_TYPE` 的现有调用映射为 `device_unknown`、`lock_timeout`、`no_space`、`card_config`（红灯 4 闪，SD 卡配置被策略拒绝，例如既有 `REPLICA` 卡）、`rsync` 和 `verify_failed`。`remove` 仍调用现有的广泛 `pkill`；本批只确保其未持锁 cleanup 不会额外卸载来源或写 LED 成功，不能阻止该 `pkill` 杀死其他 manager。本文档不把未覆盖的 LED 类型表述为端到端验证。
 
 ## 4. 公共函数库
 

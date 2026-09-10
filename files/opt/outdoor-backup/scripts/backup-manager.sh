@@ -14,6 +14,7 @@ MOUNT_POINT="/mnt/sdcard"
 BACKUP_ROOT="/mnt/ssd/SDMirrors"
 LOCK_LINK="$BASE_DIR/var/lock/backup.lock"
 LOCK_HELD=0
+SOURCE_MOUNTED=0
 LOCK_IDENTITY="${LOCK_IDENTITY:-backup-manager.sh}"
 CONFIG_FILE="FieldBackup.conf"
 LOG_TAG="outdoor-backup"
@@ -27,6 +28,8 @@ BACKUP_STARTED_AT=0
 BACKUP_DISPLAY_NAME=""
 INITIAL_CARD_ALIAS=""
 SOURCE_FS_UUID=""
+BACKUP_TRANSFER_SUCCEEDED=0
+BACKUP_TRANSFER_FINISHED_AT=""
 
 # Arguments are checked before loading common.sh because an add event may be
 # intentionally disabled and must not create LED, lock, mount, or I/O effects.
@@ -145,33 +148,62 @@ signal_failure_led() {
 	return 0
 }
 
-# Cleanup first removes transient transfer state and releases all target/source
-# descriptors. LED timers are started only afterwards so they cannot inherit FD 9.
+# Return success only when this manager still owns the published lock. Args: none.
+# A local flag alone cannot authorize shared cleanup after a competing owner wins.
+lock_is_owned_by_self() {
+	[ "$LOCK_HELD" = 1 ] || return 1
+	[ "$(readlink "$LOCK_LINK" 2>/dev/null)" = "/proc/$$" ]
+}
+
+# Cleanup changes shared state only while this manager owns the lock. A process
+# that lost acquisition may close its target anchor, but it must not affect the
+# current holder's source mount, LEDs, status, lock, or terminal log outcome.
 cleanup() {
-	exit_code=$?
+	cleanup_exit_code=$?
+	set +e
+
+	if ! lock_is_owned_by_self; then
+		target_close
+		exit "$cleanup_exit_code"
+	fi
 
 	if [ "$ACTION" = add ]; then
 		backup_transfer_cleanup
 	fi
-	if [ "$exit_code" -ne 0 ]; then
+	if [ "$SOURCE_MOUNTED" = 1 ] && mountpoint -q "$MOUNT_POINT" 2>/dev/null; then
+		if umount "$MOUNT_POINT" 2>/dev/null; then
+			SOURCE_MOUNTED=0
+		fi
+	fi
+	if ! sync; then
+		log_error 'Failed to synchronize cleanup state'
+		if [ "$cleanup_exit_code" -eq 0 ]; then
+			cleanup_exit_code=1
+			ERROR_TYPE=rsync
+		fi
+	fi
+	if [ "$cleanup_exit_code" -eq 0 ] && [ "$BACKUP_TRANSFER_SUCCEEDED" -eq 1 ]; then
+		if complete_backup 0; then
+			:
+		else
+			cleanup_exit_code=$?
+		fi
+	fi
+	if [ "$cleanup_exit_code" -ne 0 ]; then
 		write_failed_status "${ERROR_TYPE:-rsync}" || :
 	fi
-	led_backup_stop
-	release_lock
-	if mountpoint -q "$MOUNT_POINT" 2>/dev/null; then
-		umount "$MOUNT_POINT" 2>/dev/null || true
-	fi
-	sync
 	target_close
+	led_backup_stop
 
-	if [ "$exit_code" -eq 0 ]; then
+	if [ "$cleanup_exit_code" -eq 0 ]; then
 		led_backup_done
 		log_info 'Backup completed successfully'
 	else
 		signal_failure_led
-		log_error "Backup failed with code $exit_code"
+		log_error "Backup failed with code $cleanup_exit_code"
 	fi
-	exit "$exit_code"
+	release_lock
+	exit "$cleanup_exit_code"
 }
 
 # Judge whether the lock link's target is still a live, genuine holder. The
@@ -231,8 +263,8 @@ release_lock() {
 		log_warn 'Lock was reclaimed by another process; leaving it alone'
 		return 0
 	fi
+	log_info 'Releasing lock' || :
 	rm -f "$LOCK_LINK" 2>/dev/null || true
-	log_info 'Lock released'
 }
 
 # Mount the source card. Args: $1 mode, exactly "ro" or "rw" (no default: a
@@ -249,9 +281,14 @@ mount_sdcard() {
 			return 1
 			;;
 	esac
+	if mountpoint -q "$MOUNT_POINT" 2>/dev/null; then
+		log_error "Source mount point is already in use: $MOUNT_POINT"
+		return 1
+	fi
 	mkdir -p "$MOUNT_POINT"
 	for fs in auto exfat ntfs3 ext4 ext3 ext2 vfat; do
 		if mount -t "$fs" -o "$1" "/dev/$DEVNAME" "$MOUNT_POINT" 2>/dev/null; then
+			SOURCE_MOUNTED=1
 			log_info "Mounted $DEVNAME as $fs"
 			return 0
 		fi
@@ -337,6 +374,7 @@ setup_sdcard_config() {
 			log_error 'Failed to release read-only source mount to create card configuration'
 			return 1
 		fi
+		SOURCE_MOUNTED=0
 		if ! mount_sdcard rw; then
 			log_error 'Source card cannot be mounted read-write; it may be write-protected'
 			return 1
@@ -346,6 +384,7 @@ setup_sdcard_config() {
 			log_error 'Failed to unmount source card after writing card configuration'
 			return 1
 		fi
+		SOURCE_MOUNTED=0
 		if ! mount_sdcard ro; then
 			log_error 'Failed to restore read-only source mount after creating card configuration'
 			return 1
@@ -408,7 +447,8 @@ check_minimum_free_space() {
 	return 0
 }
 
-# Append the transfer result. Args: $1 display name, $2 duration, $3 rsync exit.
+# Append the transfer result. Args: $1 display name, $2 duration, $3 rsync exit,
+# $4 transfer completion time formatted from the frozen transfer epoch.
 write_backup_summary() {
 	if ! cat >> "$BACKUP_LOG_FILE" <<EOF
 
@@ -417,7 +457,7 @@ SD Card: $1 ($SD_UUID)
 Mode: $BACKUP_MODE
 Duration: $2 seconds
 Rsync Exit Code: $3
-Transfer Finished: $(date '+%Y-%m-%d %H:%M:%S')
+Transfer Finished: $4
 EOF
 	then
 		log_error 'Failed to write backup summary'
@@ -439,10 +479,14 @@ verify_final_target() {
 # Args: $1 transfer exit code (zero). Returns nonzero if no completed state is safe.
 complete_backup() {
 	transfer_exit=$1
-	backup_finished_at=$(date +%s)
-	backup_duration=$((backup_finished_at - BACKUP_STARTED_AT))
+	backup_duration=$((BACKUP_TRANSFER_FINISHED_AT - BACKUP_STARTED_AT))
+	backup_finished_at=$(date -d "@$BACKUP_TRANSFER_FINISHED_AT" '+%Y-%m-%d %H:%M:%S') || {
+		ERROR_TYPE=rsync
+		log_error 'Failed to format transfer completion time'
+		return 1
+	}
 	log_info "Rsync transfer finished in ${backup_duration}s (exit code: $transfer_exit)"
-	write_backup_summary "$BACKUP_DISPLAY_NAME" "$backup_duration" "$transfer_exit" || {
+	write_backup_summary "$BACKUP_DISPLAY_NAME" "$backup_duration" "$transfer_exit" "$backup_finished_at" || {
 		ERROR_TYPE=rsync
 		return 1
 	}
@@ -486,14 +530,18 @@ perform_backup() {
 	STATUS_STARTED=1
 	log_info "Starting PRIMARY backup: SD → SSD ($BACKUP_DISPLAY_NAME)"
 	if backup_transfer "$MOUNT_POINT/" "$TARGET_BACKUP_ROOT/$SD_UUID/" "$BACKUP_LOG_FILE"; then
-		complete_backup 0
-		return $?
+		BACKUP_TRANSFER_FINISHED_AT=$(date +%s) || {
+			ERROR_TYPE=rsync
+			log_error 'Failed to record transfer completion time'
+			return 1
+		}
+		BACKUP_TRANSFER_SUCCEEDED=1
+		return 0
 	else
 		transfer_exit=$?
 	fi
 	ERROR_TYPE=$BACKUP_TRANSFER_ERROR
 	[ -n "$ERROR_TYPE" ] || ERROR_TYPE=rsync
-	write_failed_status "$ERROR_TYPE" || :
 	return "$transfer_exit"
 }
 
@@ -510,11 +558,11 @@ main() {
 	trap cleanup INT TERM
 	case "$ACTION" in
 		add)
-			led_backup_start
 			if ! acquire_lock; then
 				ERROR_TYPE=lock_timeout
 				exit 1
 			fi
+			led_backup_start
 			if ! mount_sdcard ro; then
 				ERROR_TYPE=device_unknown
 				exit 1
