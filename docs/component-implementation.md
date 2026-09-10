@@ -99,7 +99,7 @@ exit 0
 目标守卫在加载 `common.sh`、注册 cleanup trap、获取锁、挂载来源卡、读取别名和创建应用日志之前运行。管理器按以下顺序调用当前实现：
 
 1. [`target.sh`](../files/opt/outdoor-backup/scripts/target.sh) 以 FD 9 打开目标挂载。它要求配置路径不是符号链接。它要求目录存在。它要求内核 `/proc/<manager-pid>/mountinfo` 中的挂载记录精确匹配该路径。它还要求 VFS 与文件系统级选项均为 `rw`。
-2. [`target-device.sh`](../files/opt/outdoor-backup/scripts/target-device.sh) 校验官方 `block info` 返回的 UUID。它用 sysfs 证明目标、来源卡和系统 backing disk 的物理盘不同。它接受 direct `sd`、`mmc`、`nvme`。系统 loop 仅在 backing file 明确指向 `/dev/` 分区时可追溯。unknown 或 deleted backing、file-backed loop、`dm` 与 `md` 均失败关闭。它解析 `block info` 的完整键值 token。`LABEL` 值内的同形文本不算 UUID。畸形引号会被拒绝。
+2. [`target-device.sh`](../files/opt/outdoor-backup/scripts/target-device.sh) 校验官方 `block info` 返回的 UUID。`target_device_read_block_uuid` 复用严格 token 解析。它输出唯一 UUID 字段的原始值。现有比较 wrapper 使用该读取结果。两者不决定来源卡身份。它用 sysfs 证明目标、来源卡和系统 backing disk 的物理盘不同。它接受 direct `sd`、`mmc`、`nvme`。系统 loop 仅在 backing file 明确指向 `/dev/` 分区时可追溯。unknown 或 deleted backing、file-backed loop、`dm` 与 `md` 均失败关闭。它解析 `block info` 的完整键值 token。`LABEL` 值内的同形文本不算 UUID。畸形引号会被拒绝。
 3. `target_prepare_root` 要求 `BACKUP_ROOT` 是目标挂载的严格子目录。它通过 `/proc/<manager-pid>/fd/9` 创建目录。既有符号链接组件，包括 `.logs`，会被拒绝。守卫拒绝覆盖目标挂载点、`BACKUP_ROOT` 祖先或备份树内子挂载。不相交目录的挂载不会被误拒。
 
 初始守卫失败时，管理器向 stderr 和 error 级 syslog 报错。它可触发可选红灯。它不进入来源挂载、`rsync`、别名、锁或应用日志生命周期。LED helper 创建延时子进程前，管理器关闭目标 FD。缺少 LED 不改变失败的非零退出状态。`enabled=0` 的 `add` 事件在任何 LED 副作用前退出。
