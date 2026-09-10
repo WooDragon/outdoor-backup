@@ -71,6 +71,50 @@ assert_equal() {
     fi
 }
 
+# Args: message, command. Nonzero command status requires zero stdout bytes.
+assert_failure_empty_output() {
+    message=$1
+    shift
+    ASSERTIONS=$((ASSERTIONS + 1))
+    "$@" > "$TEST_ROOT/getter.actual"
+    target_device_test_status=$?
+    if [ "$target_device_test_status" -eq 0 ]; then
+        fail "$message (unexpected success)"
+    elif [ -s "$TEST_ROOT/getter.actual" ]; then
+        fail "$message (unexpected output)"
+    fi
+}
+
+# Args: message, command. Successful command must produce zero stdout bytes.
+assert_success_empty_output() {
+    message=$1
+    shift
+    ASSERTIONS=$((ASSERTIONS + 1))
+    "$@" > "$TEST_ROOT/getter.actual"
+    target_device_test_status=$?
+    if [ "$target_device_test_status" -ne 0 ]; then
+        fail "$message (unexpected failure status=$target_device_test_status)"
+    elif [ -s "$TEST_ROOT/getter.actual" ]; then
+        fail "$message (unexpected output)"
+    fi
+}
+
+# Args: message, expected UUID, command. Success stdout must match UUID plus one LF.
+assert_success_uuid_output() {
+    message=$1
+    expected_uuid=$2
+    shift 2
+    ASSERTIONS=$((ASSERTIONS + 1))
+    printf '%s\n' "$expected_uuid" > "$TEST_ROOT/getter.expected"
+    "$@" > "$TEST_ROOT/getter.actual"
+    target_device_test_status=$?
+    if [ "$target_device_test_status" -ne 0 ]; then
+        fail "$message (unexpected failure status=$target_device_test_status)"
+    elif ! cmp -s "$TEST_ROOT/getter.expected" "$TEST_ROOT/getter.actual"; then
+        fail "$message (unexpected output)"
+    fi
+}
+
 reset_fixture() {
     rm -rf "$TEST_ROOT"
     mkdir -p "$SYSFS/dev/block" "$SYSFS/class/block" "$SYSFS/devices/mock/block" \
@@ -79,10 +123,13 @@ reset_fixture() {
     : > "$NOTICES"
     BLOCK_OUTPUT_FILE="$TEST_ROOT/block-output"
     : > "$BLOCK_OUTPUT_FILE"
+    BLOCK_EXPECTED_NODE=/dev/nvme0n1p12
     TARGET_SYSFS_ROOT="$SYSFS"
     TARGET_MOUNTINFO_FILE="$MOUNTINFO"
     TEST_NOTICES="$NOTICES"
     block() {
+        [ "$#" -eq 2 ] && [ "$1" = info ] && \
+            [ "$2" = "$BLOCK_EXPECTED_NODE" ] || return 64
         sed -n 'p' "$BLOCK_OUTPUT_FILE"
         return "${BLOCK_STATUS:-0}"
     }
@@ -193,6 +240,7 @@ case_d03_system_backing_disk_never_targets_itself() {
     begin_case D03 'target on any physical system backing disk rejects'
     reset_fixture
     set_default_topology
+    BLOCK_EXPECTED_NODE=/dev/mmcblk0p2
     set_block_output '/dev/mmcblk0p2: UUID="ABCD-1234" TYPE="ext4"'
     assert_failure 'D03 rejects target on physical /rom parent disk' \
         validate 179:2 ABCD-1234 sda1
@@ -201,6 +249,7 @@ case_d03_system_backing_disk_never_targets_itself() {
     set_default_topology
     : > "$MOUNTINFO"
     add_mount / 179:2 ext4
+    BLOCK_EXPECTED_NODE=/dev/mmcblk0p2
     set_block_output '/dev/mmcblk0p2: UUID="ABCD-1234" TYPE="ext4"'
     assert_failure 'D03 rejects target on physical root parent disk' \
         validate 179:2 ABCD-1234 sda1
@@ -210,6 +259,7 @@ case_d03_system_backing_disk_never_targets_itself() {
     : > "$MOUNTINFO"
     add_mount / 0:1 overlay
     add_mount /overlay 179:2 ext4
+    BLOCK_EXPECTED_NODE=/dev/mmcblk0p2
     set_block_output '/dev/mmcblk0p2: UUID="ABCD-1234" TYPE="ext4"'
     assert_failure 'D03 rejects target on physical overlay parent disk' \
         validate 179:2 ABCD-1234 sda1
@@ -234,6 +284,7 @@ case_d04_loop_backed_r5s_root_protects_parent() {
     add_mount /overlay 0:1 overlay
     assert_success 'D04 resolves loop backing to mmc and permits NVMe' \
         validate 259:12 ABCD-1234 sda1
+    BLOCK_EXPECTED_NODE=/dev/mmcblk0p2
     set_block_output '/dev/mmcblk0p2: UUID="ABCD-1234" TYPE="ext4"'
     assert_failure 'D04 rejects resolved loop backing parent disk' \
         validate 179:2 ABCD-1234 sda1
@@ -346,6 +397,7 @@ case_d09_parent_resolution_handles_multidigit_partitions() {
     set_default_topology
     add_disk sdaa 65:0
     add_partition sdaa sdaa12 65:12
+    BLOCK_EXPECTED_NODE=/dev/sdaa12
     set_block_output '/dev/sdaa12: UUID="ABCD-1234" TYPE="ext4"'
     assert_success 'D09 accepts a multi-letter sd partition on another disk' \
         validate 65:12 ABCD-1234 sda1
@@ -361,6 +413,67 @@ case_d10_source_name_is_a_safe_basename() {
         validate 259:12 ABCD-1234 '../sda1'
     assert_failure 'D10 rejects source control character' \
         validate 259:12 ABCD-1234 "sda1$(printf '\t')"
+}
+
+case_d11_block_uuid_reader_preserves_parser_contract() {
+    begin_case D11 'block UUID reader preserves strict record parsing and wrapper semantics'
+    reset_fixture
+    set_default_topology
+    BLOCK_EXPECTED_NODE=/dev/sda1
+    set_block_output '/dev/sda1: UUID="ABCD-1234" LABEL="camera" TYPE="vfat"'
+    assert_success_uuid_output \
+        'D11 reads the source record UUID through block info <node>' \
+        ABCD-1234 target_device_read_block_uuid /dev/sda1
+
+    BLOCK_EXPECTED_NODE=/dev/nvme0n1p12
+    set_block_output '/dev/nvme0n1p12: UUID="AB12-34CD" TYPE="vfat"'
+    assert_success_uuid_output 'D11 preserves FAT short UUID text' AB12-34CD \
+        target_device_read_block_uuid /dev/nvme0n1p12
+    set_block_output '/dev/nvme0n1p12: UUID="550e8400-e29b-41d4-a716-446655440000" TYPE="exfat"'
+    assert_success_uuid_output 'D11 preserves RFC-shaped UUID text' \
+        550e8400-e29b-41d4-a716-446655440000 \
+        target_device_read_block_uuid /dev/nvme0n1p12
+
+    set_block_output '/dev/nvme0n1p12: LABEL="camera UUID=ABCD-1234" TYPE="vfat"'
+    assert_failure_empty_output 'D11 rejects UUID-shaped LABEL text' \
+        target_device_read_block_uuid /dev/nvme0n1p12
+    set_block_output '/dev/other: UUID="ABCD-1234" TYPE="vfat"'
+    assert_failure_empty_output 'D11 rejects a record for another device' \
+        target_device_read_block_uuid /dev/nvme0n1p12
+    set_block_output '/dev/nvme0n1p12: UUID="ABCD-1234" TYPE="vfat"
+/dev/nvme0n1p12: UUID="ABCD-1234" TYPE="vfat"'
+    assert_failure_empty_output 'D11 rejects multiple output records' \
+        target_device_read_block_uuid /dev/nvme0n1p12
+    set_block_output '/dev/nvme0n1p12: UUID="ABCD-1234" UUID="DUP" TYPE="vfat"'
+    assert_failure_empty_output 'D11 rejects duplicate UUID keys' \
+        target_device_read_block_uuid /dev/nvme0n1p12
+    set_block_output '/dev/nvme0n1p12: LABEL="target" TYPE="vfat"'
+    assert_failure_empty_output 'D11 rejects a record without a UUID key' \
+        target_device_read_block_uuid /dev/nvme0n1p12
+    set_block_output '/dev/nvme0n1p12: UUID="ABCD-1234" LABEL="unterminated'
+    assert_failure_empty_output 'D11 rejects malformed quoted tokens' \
+        target_device_read_block_uuid /dev/nvme0n1p12
+    set_block_output '/dev/nvme0n1p12: UUID="ABCD-1234" TYPE="vfat"'
+    BLOCK_STATUS=1
+    assert_failure_empty_output 'D11 rejects a failing block command without output' \
+        target_device_read_block_uuid /dev/nvme0n1p12
+
+    unset BLOCK_STATUS
+    set_block_output '/dev/nvme0n1p12: UUID="" TYPE="vfat"'
+    assert_success 'D11 preserves the parser success result for an empty UUID field' \
+        target_device_read_block_uuid /dev/nvme0n1p12
+    assert_success_uuid_output 'D11 returns the empty UUID field unchanged' '' \
+        target_device_read_block_uuid /dev/nvme0n1p12
+    set_block_output '/dev/nvme0n1p12: UUID="ABCD-1234" TYPE="vfat"'
+    assert_success_empty_output 'D11 wrapper matches the getter value' \
+        target_device_uuid_matches_block /dev/nvme0n1p12 ABCD-1234
+    assert_failure_empty_output 'D11 wrapper rejects a different expected UUID' \
+        target_device_uuid_matches_block /dev/nvme0n1p12 DIFFERENT
+    BLOCK_STATUS=1
+    assert_failure_empty_output 'D11 wrapper propagates getter failure' \
+        target_device_uuid_matches_block /dev/nvme0n1p12 ABCD-1234
+    assert_failure_empty_output 'D11 wrapper rejects an empty expected UUID after getter failure' \
+        target_device_uuid_matches_block /dev/nvme0n1p12 ''
 }
 
 main() {
@@ -382,9 +495,10 @@ main() {
     case_d08_block_absence_and_target_virtual_devices_reject
     case_d09_parent_resolution_handles_multidigit_partitions
     case_d10_source_name_is_a_safe_basename
+    case_d11_block_uuid_reader_preserves_parser_contract
 
-    assert_equal "$CASES" 10 'all required cases executed'
-    assert_equal "$ASSERTIONS" 38 'all required assertions executed'
+    assert_equal "$CASES" 11 'all required cases executed'
+    assert_equal "$ASSERTIONS" 54 'all required assertions executed'
     if [ "$FAILED" -ne 0 ]; then
         printf 'cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"
         exit 1

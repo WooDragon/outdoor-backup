@@ -160,11 +160,10 @@ target_device_physical_disk_for_major_minor() {
     printf '/dev/%s\n' "$target_device_name"
 }
 
-# Extract the only UUID from one exact `block info <device>` output record.
-# Arguments: expected device node, expected UUID. Output: nothing, or failure.
-target_device_uuid_matches_block() {
+# Read the only UUID from one exact `block info <device>` output record.
+# Argument: expected device node. Output: raw UUID field value with newline, or nonzero with no output.
+target_device_read_block_uuid() {
     target_device_node=$1
-    target_device_expected_uuid=$2
     command -v block >/dev/null 2>&1 || return 1
     target_device_block_output=$(block info "$target_device_node" 2>/dev/null) || return 1
     target_device_parsed_uuid=$(printf '%s\n' "$target_device_block_output" | \
@@ -211,6 +210,15 @@ target_device_uuid_matches_block() {
                     exit 1
                 print uuid
             }') || return 1
+    printf '%s\n' "$target_device_parsed_uuid"
+}
+
+# Compare one exact block record UUID with the configured UUID.
+# Arguments: expected device node, expected UUID. Output: nothing, or failure.
+target_device_uuid_matches_block() {
+    target_device_node=$1
+    target_device_expected_uuid=$2
+    target_device_parsed_uuid=$(target_device_read_block_uuid "$target_device_node") || return 1
     [ "$target_device_parsed_uuid" = "$target_device_expected_uuid" ]
 }
 
