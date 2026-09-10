@@ -257,14 +257,69 @@ mount_sdcard() {
 	return 1
 }
 
+# Build and publish a new card configuration without exposing a partial file.
+# Args: $1 formal configuration path. Returns nonzero after removing only the
+# temporary file this call created; a successful rename is not power-loss proof.
+provision_new_card_config() {
+	config_path=$1
+	config_dir=${config_path%/*}
+	temp_config=
+	if [ -e "$config_path" ] || [ -L "$config_path" ]; then
+		log_error 'Card configuration appeared during provisioning; refusing to replace it'
+		return 1
+	fi
+	temp_config=$(mktemp "$config_dir/.FieldBackup.conf.XXXXXX") || {
+		log_error 'Failed to create temporary card configuration'
+		return 1
+	}
+	if [ ! -f "$temp_config" ] || [ -L "$temp_config" ]; then
+		rm -f "$temp_config" || :
+		log_error 'Temporary card configuration is not a regular file'
+		return 1
+	fi
+	SD_UUID=$(generate_uuid)
+	BACKUP_MODE=PRIMARY
+	if ! cat > "$temp_config" <<EOF
+# OpenWrt SD Card Backup Configuration
+# Generated: $(date '+%Y-%m-%d %H:%M:%S')
+
+# Unique identifier for this SD card
+SD_UUID="$SD_UUID"
+
+# Backup mode: PRIMARY only (automatic backup is SD→SSD)
+BACKUP_MODE="$BACKUP_MODE"
+
+# Creation timestamp
+CREATED_AT="$(date '+%Y-%m-%d %H:%M:%S')"
+EOF
+	then
+		rm -f "$temp_config" || :
+		log_error 'Failed to write new card configuration'
+		return 1
+	fi
+	if ! mv "$temp_config" "$config_path"; then
+		rm -f "$temp_config" || :
+		log_error 'Failed to publish new card configuration'
+		return 1
+	fi
+	if ! sync; then
+		log_error 'Failed to synchronize published card configuration'
+		return 1
+	fi
+	return 0
+}
+
 # Setup card metadata without executing removable-media content. Args: none.
-# Steady state (config already present) never remounts or writes; only a
-# missing config opens a bounded read-write window, and that window always
-# ends back at a read-only source mount before rsync ever runs.
+# Steady state only reads a regular non-link configuration. A missing file opens
+# one rw window; success remounts ro and rereads before rsync can start.
 setup_sdcard_config() {
 	config_path="$MOUNT_POINT/$CONFIG_FILE"
 	. "$SCRIPT_DIR/card-config.sh"
-	if [ -f "$config_path" ]; then
+	if [ -e "$config_path" ] || [ -L "$config_path" ]; then
+		if [ ! -f "$config_path" ] || [ -L "$config_path" ]; then
+			log_error 'Card configuration is not a regular file; refusing backup'
+			return 1
+		fi
 		if ! card_config_load "$config_path"; then
 			log_error 'Invalid card configuration; refusing backup'
 			return 1
@@ -283,26 +338,7 @@ setup_sdcard_config() {
 			log_error 'Source card cannot be mounted read-write; it may be write-protected'
 			return 1
 		fi
-		SD_UUID=$(generate_uuid)
-		BACKUP_MODE=PRIMARY
-		if ! cat > "$config_path" <<EOF
-# OpenWrt SD Card Backup Configuration
-# Generated: $(date '+%Y-%m-%d %H:%M:%S')
-
-# Unique identifier for this SD card
-SD_UUID="$SD_UUID"
-
-# Backup mode: PRIMARY only (automatic backup is SD→SSD)
-BACKUP_MODE="$BACKUP_MODE"
-
-# Creation timestamp
-CREATED_AT="$(date '+%Y-%m-%d %H:%M:%S')"
-EOF
-		then
-			log_error 'Failed to write new card configuration'
-			return 1
-		fi
-		sync
+		provision_new_card_config "$config_path" || return 1
 		if ! umount "$MOUNT_POINT" 2>/dev/null; then
 			log_error 'Failed to unmount source card after writing card configuration'
 			return 1
@@ -311,10 +347,8 @@ EOF
 			log_error 'Failed to restore read-only source mount after creating card configuration'
 			return 1
 		fi
-		# Validate only after the source is back to read-only: this both proves
-		# the write actually reached the card (not an overlay/tmpfs view that a
-		# still-writable mount could mask) and guarantees rsync never runs
-		# against a writable source, whatever card_config_load decides below.
+		# The reread validates the published data after the source is read-only.
+		# It checks this flow, not physical-media durability or card identity.
 		if ! card_config_load "$config_path"; then
 			log_error 'Generated card configuration failed validation'
 			return 1
