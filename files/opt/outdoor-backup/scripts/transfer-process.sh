@@ -13,6 +13,17 @@ TRANSFER_PROCESS_PGID=""
 TRANSFER_PROCESS_SESSION=""
 TRANSFER_PROCESS_TERM_SENT=0
 TRANSFER_PROCESS_TERM_ATTEMPTED=0
+TRANSFER_PROCESS_WAIT_NOTICE_SENT=0
+TRANSFER_PROCESS_LAUNCH_READY=0
+TRANSFER_PROCESS_LAUNCH_STATUS=1
+
+# Write a library-owned warning to stderr and syslog. Parameters: $1 message.
+# Returns: always zero; unavailable syslog must not alter transfer lifecycle.
+transfer_process_notice() {
+	printf '%s\n' "$1" >&2
+	logger -t outdoor-backup -p daemon.warning "$1" 2>/dev/null || :
+	return 0
+}
 
 # Read selected fields from /proc/<pid>/stat. The comm field may contain spaces
 # and closing parentheses, therefore discard through its final ") " delimiter.
@@ -89,14 +100,23 @@ transfer_process_request_term() {
 	[ "$TRANSFER_PROCESS_TERM_ATTEMPTED" -eq 0 ] || return 0
 	TRANSFER_PROCESS_TERM_ATTEMPTED=1
 	if ! transfer_process_leader_matches; then
-		printf '%s\n' 'outdoor-backup: transfer leader cannot safely authorize group cancellation; retaining resources until writers exit' >&2
+		transfer_process_notice 'outdoor-backup: transfer leader cannot safely authorize group cancellation; retaining resources until writers exit'
 		return 1
 	fi
 	kill -TERM "-$TRANSFER_PROCESS_PGID" 2>/dev/null || {
-		printf '%s\n' 'outdoor-backup: failed to signal verified transfer process group; retaining resources until writers exit' >&2
+		transfer_process_notice 'outdoor-backup: failed to signal verified transfer process group; retaining resources until writers exit'
 		return 1
 	}
 	TRANSFER_PROCESS_TERM_SENT=1
+	return 0
+}
+
+# Record once that a cancellation cannot release resources until writers exit.
+# Parameters: none. Returns: always zero.
+transfer_process_note_waiting() {
+	[ "$TRANSFER_PROCESS_WAIT_NOTICE_SENT" -eq 0 ] || return 0
+	transfer_process_notice 'outdoor-backup: waiting for transfer writers to exit after cancellation'
+	TRANSFER_PROCESS_WAIT_NOTICE_SENT=1
 	return 0
 }
 
@@ -110,6 +130,7 @@ transfer_process_wait_group() {
 	while :; do
 		if [ "${BACKUP_CANCEL_CODE:-0}" -ne 0 ]; then
 			transfer_process_request_term || :
+			transfer_process_note_waiting
 		fi
 		transfer_process_group_live
 		group_state=$?
@@ -124,7 +145,7 @@ transfer_process_wait_group() {
 			2)
 				empty_scans=0
 				if [ "$warned" -eq 0 ]; then
-					printf '%s\n' 'outdoor-backup: cannot safely inspect active transfer process group; retaining resources' >&2
+					transfer_process_notice 'outdoor-backup: cannot safely inspect active transfer process group; retaining resources'
 					warned=1
 				fi
 				;;
@@ -142,6 +163,9 @@ transfer_process_clear() {
 	TRANSFER_PROCESS_SESSION=""
 	TRANSFER_PROCESS_TERM_SENT=0
 	TRANSFER_PROCESS_TERM_ATTEMPTED=0
+	TRANSFER_PROCESS_WAIT_NOTICE_SENT=0
+	TRANSFER_PROCESS_LAUNCH_READY=0
+	TRANSFER_PROCESS_LAUNCH_STATUS=1
 	return 0
 }
 
@@ -159,72 +183,59 @@ transfer_process_finish() {
 	return "$final_status"
 }
 
-# Start one command in a private session and return its natural status, except
-# that a sticky manager cancellation returns its original INT/TERM status.
-# Parameters: command and arguments. Returns command status or BACKUP_CANCEL_CODE.
-transfer_process_run() {
+# Launch one command in a private session and record its verified identity.
+# Parameters: command and arguments. Returns zero; globals retain launch result.
+transfer_process_launch() {
 	local wait_status=0
-
-	transfer_process_clear
-	command -v setsid >/dev/null 2>&1 || {
-		printf '%s\n' 'outdoor-backup: setsid is required to run rsync safely' >&2
-		return 127
-	}
 
 	LC_ALL=C setsid "$@" &
 	TRANSFER_PROCESS_PID=$!
-	# setsid makes its own PID both process-group and session leader. Record that
-	# expected identity before any /proc read so an early-dead leader cannot let a
-	# surviving same-group child escape the resource-drain boundary.
 	TRANSFER_PROCESS_PGID=$TRANSFER_PROCESS_PID
 	TRANSFER_PROCESS_SESSION=$TRANSFER_PROCESS_PID
-
 	while [ -z "$TRANSFER_PROCESS_STARTTIME" ]; do
 		transfer_process_read_stat "$TRANSFER_PROCESS_PID"
 		case "$?" in
 			0)
 				if [ "$TP_PGID" = "$TRANSFER_PROCESS_PGID" ] && \
-					[ "$TP_SESSION" = "$TRANSFER_PROCESS_SESSION" ] && \
-					[ "$TP_STATE" != Z ]; then
+					[ "$TP_SESSION" = "$TRANSFER_PROCESS_SESSION" ] && [ "$TP_STATE" != Z ]; then
 					TRANSFER_PROCESS_STARTTIME=$TP_STARTTIME
-					break
+					TRANSFER_PROCESS_LAUNCH_READY=1
+					return 0
 				fi
-				# The shell child can be sampled before execed setsid calls setsid(2).
-				# This abnormal transition is yielded, never capped by loop count.
 				/bin/sleep 1
 				;;
 			1)
 				if wait "$TRANSFER_PROCESS_PID"; then wait_status=0; else wait_status=$?; fi
 				transfer_process_finish "$wait_status"
-				return "$?"
+				TRANSFER_PROCESS_LAUNCH_STATUS=$?
+				return 0
 				;;
 			2)
-				printf '%s\n' 'outdoor-backup: cannot parse launched transfer process identity; retaining resources until the expected session drains' >&2
+				transfer_process_notice 'outdoor-backup: cannot parse launched transfer process identity; retaining resources until the expected session drains'
 				wait "$TRANSFER_PROCESS_PID" 2>/dev/null || :
 				transfer_process_finish 1
-				return "$?"
+				TRANSFER_PROCESS_LAUNCH_STATUS=$?
+				return 0
 				;;
 		esac
 	done
+}
 
-	# BusyBox ash can resume a blocking wait after running a signal trap. Poll the
-	# verified leader instead, so sticky cancellation can actually reach its group;
-	# full session scans remain deferred until cancellation or leader disappearance.
+# Poll the verified leader, then preserve its natural exit status for finishing.
+# Parameters: none. Returns the observed leader status or one if unverifiable.
+transfer_process_wait_leader() {
+	local wait_status=0
+
 	while transfer_process_leader_matches; do
 		if [ "${BACKUP_CANCEL_CODE:-0}" -ne 0 ]; then
 			transfer_process_request_term || :
+			transfer_process_note_waiting
 		fi
 		/bin/sleep 1
 	done
-
-	# A vanished leader is safe to wait/reap. An unreadable-but-present leader is
-	# not: finish drains the expected session first and returns failure only after
-	# no possible writer remains.
 	transfer_process_read_stat "$TRANSFER_PROCESS_PID"
 	case "$?" in
-		1)
-			if wait "$TRANSFER_PROCESS_PID"; then wait_status=0; else wait_status=$?; fi
-			;;
+		1) if wait "$TRANSFER_PROCESS_PID"; then wait_status=0; else wait_status=$?; fi ;;
 		0)
 			if [ "$TP_STATE" = Z ]; then
 				if wait "$TRANSFER_PROCESS_PID"; then wait_status=0; else wait_status=$?; fi
@@ -234,6 +245,20 @@ transfer_process_run() {
 			;;
 		*) wait_status=1 ;;
 	esac
-	transfer_process_finish "$wait_status"
+	return "$wait_status"
+}
+
+# Start one command in a private session and return its natural or sticky status.
+# Parameters: command and arguments. Returns command status or BACKUP_CANCEL_CODE.
+transfer_process_run() {
+	transfer_process_clear
+	command -v setsid >/dev/null 2>&1 || {
+		printf '%s\n' 'outdoor-backup: setsid is required to run rsync safely' >&2
+		return 127
+	}
+	transfer_process_launch "$@"
+	[ "$TRANSFER_PROCESS_LAUNCH_READY" -eq 1 ] || return "${TRANSFER_PROCESS_LAUNCH_STATUS:-1}"
+	transfer_process_wait_leader
+	transfer_process_finish "$?"
 	return "$?"
 }

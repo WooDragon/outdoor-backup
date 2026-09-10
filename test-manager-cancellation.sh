@@ -55,6 +55,14 @@ mc_wait_path() {
 	done
 	[ -e "$path" ]
 }
+mc_wait_contains() {
+	needle=$1 file=$2 attempts=0
+	while ! grep -F -q -- "$needle" "$file" 2>/dev/null && [ "$attempts" -lt 10 ]; do
+		/bin/sleep 1
+		attempts=$((attempts + 1))
+	done
+	grep -F -q -- "$needle" "$file"
+}
 mc_wait_exit() {
 	pid=$1 attempts=0
 	while kill -0 "$pid" 2>/dev/null && [ "$attempts" -lt 15 ]; do
@@ -120,6 +128,15 @@ case_active_term_stops_writers_before_cleanup() {
 	mc_success 'C01 actual rsync leader becomes observable' mc_wait_path "$TEST_ROOT/cancel-ready"
 	mc_success 'C01 actual rsync child becomes observable' mc_wait_path "$TEST_ROOT/cancel-child-ready"
 	kill -TERM "$manager_pid"
+	kill -TERM "$manager_pid"
+	mc_success 'C01 accepted cancellation writes direct syslog before lifecycle cleanup' \
+		mc_wait_contains 'Cancellation requested' "$NOTICES"
+	mc_success 'C01 transfer writer wait writes direct syslog before lifecycle cleanup' \
+		mc_wait_contains 'waiting for transfer writers' "$NOTICES"
+	mc_equal "$(grep -F -c 'Cancellation requested' "$NOTICES")" 1 \
+		'C01 repeated TERM records one cancellation acceptance'
+	mc_equal "$(grep -F -c 'waiting for transfer writers' "$NOTICES")" 1 \
+		'C01 repeated TERM records one retained-writer wait'
 	mc_success 'C01 manager exits only after cancellation lifecycle completes' mc_wait_exit "$manager_pid"
 	wait "$manager_pid" 2>/dev/null || manager_rc=$?
 	manager_rc=${manager_rc:-0}
@@ -422,6 +439,28 @@ case_card_config_sync_term_stops_before_binding() {
 	unset MANAGER_SCRIPT TEST_CONFIG_SYNC_SIGNAL_ON TEST_CONFIG_SYNC_SIGNAL_PID_FILE TEST_CONFIG_SYNC_SIGNAL_TRACE
 }
 
+case_logger_failure_preserves_cancellation_lifecycle() {
+	mc_case C08 'failed direct syslog does not change cancellation status or writer drain'
+	reset_case || { mc_fail 'C08 fixture setup failed'; return; }
+	write_normal_signal_shell
+	write_active_rsync
+	TEST_LOGGER_FAIL=1
+	export TEST_LOGGER_FAIL
+	start_manager
+	manager_pid=$MANAGER_PID
+	mc_success 'C08 actual rsync leader becomes observable' mc_wait_path "$TEST_ROOT/cancel-ready"
+	kill -TERM "$manager_pid"
+	mc_success 'C08 manager completes its drain despite logger failure' mc_wait_exit "$manager_pid"
+	wait "$manager_pid" 2>/dev/null || manager_rc=$?
+	manager_rc=${manager_rc:-0}
+	unset TEST_LOGGER_FAIL
+	mc_equal "$manager_rc" 143 'C08 logger failure preserves sticky TERM status'
+	trace_before=$(wc -l < "$TEST_ROOT/cancel-trace")
+	/bin/sleep 2
+	trace_after=$(wc -l < "$TEST_ROOT/cancel-trace")
+	mc_equal "$trace_after" "$trace_before" 'C08 logger failure still drains all transfer writers'
+}
+
 case_preflight_df_term_stops_before_running_status() {
 	mc_case C07 'TERM from trustworthy preflight df stops before running status and rsync'
 	reset_case || { mc_fail 'C07 fixture setup failed'; return; }
@@ -469,9 +508,10 @@ main() {
 	case_source_identity_term_stops_before_card_write
 	case_card_config_sync_term_stops_before_binding
 	case_preflight_df_term_stops_before_running_status
+	case_logger_failure_preserves_cancellation_lifecycle
 	printf 'RESULT cases=%s assertions=%s failed=%s\n' "$MC_CASES" "$MC_ASSERTIONS" "$MC_FAILED"
-	[ "$MC_CASES" -eq 7 ] || mc_fail "expected 7 cases, ran $MC_CASES"
-	[ "$MC_ASSERTIONS" -eq 61 ] || mc_fail "expected 61 assertions, ran $MC_ASSERTIONS"
+	[ "$MC_CASES" -eq 8 ] || mc_fail "expected 8 cases, ran $MC_CASES"
+	[ "$MC_ASSERTIONS" -eq 69 ] || mc_fail "expected 69 assertions, ran $MC_ASSERTIONS"
 	[ "$MC_FAILED" -eq 0 ]
 }
 

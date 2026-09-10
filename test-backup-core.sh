@@ -201,6 +201,47 @@ EOF
 	chmod 755 "$BIN_DIR/rsync"
 }
 
+create_term_ignoring_rsync() {
+	cat > "$BIN_DIR/rsync" <<'EOF'
+#!/bin/ash
+: > "$TEST_CANCEL_READY"
+trap ':' TERM
+while [ ! -e "$TEST_CANCEL_RELEASE" ]; do
+	printf 'writer-still-active\n' >> "$TEST_CANCEL_TRACE"
+	/bin/sleep 1
+done
+exit 0
+EOF
+	chmod 755 "$BIN_DIR/rsync"
+}
+
+create_logger_double() {
+	cat > "$BIN_DIR/logger" <<'EOF'
+#!/bin/ash
+printf '%s\n' "$*" >> "$TEST_LOGGER_OUTPUT"
+if [ "${TEST_LOGGER_FAIL:-0}" = 1 ]; then
+	exit 1
+fi
+exit 0
+EOF
+	chmod 755 "$BIN_DIR/logger"
+}
+
+create_cancel_transfer_runner() {
+	cat > "$BIN_DIR/cancel-transfer-runner" <<'EOF'
+#!/bin/ash
+. "$TEST_PROCESS_SCRIPT"
+. "$TEST_TRANSFER_SCRIPT"
+BACKUP_CANCEL_CODE=0
+trap '[ "$BACKUP_CANCEL_CODE" -ne 0 ] || BACKUP_CANCEL_CODE=143' TERM
+backup_transfer "$@"
+rc=$?
+printf '%s\n' "$rc" > "$TEST_CANCEL_RESULT"
+exit "$rc"
+EOF
+	chmod 755 "$BIN_DIR/cancel-transfer-runner"
+}
+
 create_mktemp_double() {
 	cat > "$BIN_DIR/mktemp" << 'DOUBLE'
 #!/bin/sh
@@ -581,6 +622,46 @@ case_early_leader_exit_keeps_temp_until_child_drain() {
 	assert_no_runtime_temp_files
 }
 
+case_cancellation_notice_bypasses_transfer_output_redirect() {
+	begin_case T12 'accepted cancellation remains observable while an ignoring writer retains transfer output files'
+	setup_fixture
+	create_term_ignoring_rsync
+	create_logger_double
+	create_cancel_transfer_runner
+	TEST_CANCEL_READY="$TEST_ROOT/cancel-ready"
+	TEST_CANCEL_RELEASE="$TEST_ROOT/cancel-release"
+	TEST_CANCEL_TRACE="$TEST_ROOT/cancel-trace"
+	TEST_CANCEL_RESULT="$TEST_ROOT/cancel-result"
+	TEST_LOGGER_OUTPUT="$TEST_ROOT/cancel-syslog"
+	export TEST_CANCEL_READY TEST_CANCEL_RELEASE TEST_CANCEL_TRACE TEST_CANCEL_RESULT TEST_LOGGER_OUTPUT
+	old_path=$PATH
+	PATH="$BIN_DIR:$PATH"
+	BASE_DIR="$BASE_DIR" TEST_PROCESS_SCRIPT="$PROCESS_SCRIPT" TEST_TRANSFER_SCRIPT="$TRANSFER_SCRIPT" \
+		"$BIN_DIR/cancel-transfer-runner" "$SOURCE_DIR/" "$TARGET_ROOT/" "$LOG_DIR/cancel.log" \
+		> "$TEST_ROOT/cancel-outer.stdout" 2> "$TEST_ROOT/cancel-outer.stderr" &
+	transfer_pid=$!
+	assert_success 'T12 rsync writer becomes active before cancellation' wait_for_path "$TEST_CANCEL_READY"
+	kill -TERM "$transfer_pid"
+	/bin/sleep 2
+	ASSERTIONS=$((ASSERTIONS + 1))
+	kill -0 "$transfer_pid" 2>/dev/null || fail 'T12 runner remains alive while writer ignores TERM'
+	assert_contains 'waiting for transfer writers' "$TEST_LOGGER_OUTPUT" 'T12 retained-writer wait is observable outside redirected runner stderr'
+	assert_equal "$(cat "$TEST_ROOT/cancel-outer.stderr")" '' \
+		'T12 outer stderr remains empty because backup_transfer owns the runner redirect'
+	set -- "$BASE_DIR/var/.backup-transfer.stderr."*
+	ASSERTIONS=$((ASSERTIONS + 1))
+	[ "$1" != "$BASE_DIR/var/.backup-transfer.stderr.*" ] || fail 'T12 runner stderr temp remains while writer is active'
+	assert_contains 'waiting for transfer writers' "$1" \
+		'T12 runner diagnostic remains in the private stderr temp while syslog stays observable'
+	: > "$TEST_CANCEL_RELEASE"
+	wait "$transfer_pid" 2>/dev/null || cancel_rc=$?
+	cancel_rc=${cancel_rc:-0}
+	PATH=$old_path
+	assert_equal "$cancel_rc" 143 'T12 cancellation preserves TERM status after writer release'
+	assert_equal "$(cat "$TEST_CANCEL_RESULT")" 143 'T12 runner returns sticky TERM status after writer release'
+	assert_no_runtime_temp_files
+}
+
 main() {
 	[ -f "$TRANSFER_SCRIPT" ] || {
 		printf 'FAIL: missing transfer helper: %s\n' "$TRANSFER_SCRIPT" >&2
@@ -598,9 +679,10 @@ main() {
 	case_runtime_output_failure_injections
 	case_real_enospc_and_cleanup
 	case_early_leader_exit_keeps_temp_until_child_drain
+	case_cancellation_notice_bypasses_transfer_output_redirect
 	printf 'RESULT: cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"
-	[ "$CASES" -eq 11 ] || fail "expected 11 cases, ran $CASES"
-	[ "$ASSERTIONS" -eq 121 ] || fail "expected 121 assertions, ran $ASSERTIONS"
+	[ "$CASES" -eq 12 ] || fail "expected 12 cases, ran $CASES"
+	[ "$ASSERTIONS" -eq 130 ] || fail "expected 130 assertions, ran $ASSERTIONS"
 	[ "$FAILED" -eq 0 ]
 }
 

@@ -109,7 +109,10 @@ fi
 # Record only the first signal so repeated requests are idempotent and the
 # original operator intent (INT=130, TERM=143) survives cleanup.
 record_cancel() {
-	[ "${BACKUP_CANCEL_CODE:-0}" -ne 0 ] || BACKUP_CANCEL_CODE=$1
+	[ "${BACKUP_CANCEL_CODE:-0}" -eq 0 ] || return 0
+	BACKUP_CANCEL_CODE=$1
+	logger -t outdoor-backup -p daemon.warning "Cancellation requested (exit code $1)" 2>/dev/null || :
+	return 0
 }
 
 # Stop at manager-owned safe boundaries before a new side effect begins.

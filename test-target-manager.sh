@@ -381,6 +381,10 @@ if [ "${TEST_RECORD_CLEANUP_PHASES:-0}" = 1 ]; then
     printf 'logger args=[%s] lock=[%s]\n' "$*" \
         "$(readlink "$TEST_LOCK_LINK" 2>/dev/null || :)" >> "$TEST_EFFECTS"
 fi
+if [ "${TEST_LOGGER_FAIL:-0}" = 1 ]; then
+    exit 1
+fi
+exit 0
 EOF
     cat > "$BIN/date" <<'EOF'
 #!/bin/sh
@@ -976,6 +980,8 @@ case_m03_healthy_path_uses_only_fd_anchored_target() {
         'M03 rsync final argv is the complete anchored UUID target path'
     assert_contains 'Backup completed successfully' "$RUNTIME/log/backup.log" \
         'M03 successful completed status retains the final cleanup success log'
+    assert_not_contains 'Cancellation requested' "$NOTICES" \
+        'M03 natural backup emits no cancellation syslog record'
     assert_absent /escaped-by-card-config 'M03 card configuration did not create an escaped root'
     assert_not_contains /escaped-by-card-config "$EFFECTS" 'M03 ignored card BACKUP_ROOT and TARGET overrides'
     assert_equal "$(find "$TARGET_MOUNT/backups" -type d | wc -l)" 4 \
@@ -1985,8 +1991,8 @@ main() {
     assert_success 'M06 completion timer releases before test exit' settle_led_fixture
     assert_no_async_led_stderr
     assert_equal "$CASES" 40 'all required cases executed'
-    if [ "$ASSERTIONS" -ne 365 ]; then
-        fail "all required assertions executed (expected=365, actual=$ASSERTIONS)"
+    if [ "$ASSERTIONS" -ne 366 ]; then
+        fail "all required assertions executed (expected=366, actual=$ASSERTIONS)"
     fi
     if [ "$FAILED" -ne 0 ]; then
         replay_async_stderr
