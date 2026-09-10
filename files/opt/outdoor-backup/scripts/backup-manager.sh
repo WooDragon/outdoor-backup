@@ -30,6 +30,7 @@ INITIAL_CARD_ALIAS=""
 SOURCE_FS_UUID=""
 BACKUP_TRANSFER_SUCCEEDED=0
 BACKUP_TRANSFER_FINISHED_AT=""
+BACKUP_TRANSFER_FINISHED_TEXT=""
 
 # Arguments are checked before loading common.sh because an add event may be
 # intentionally disabled and must not create LED, lock, mount, or I/O effects.
@@ -448,7 +449,7 @@ check_minimum_free_space() {
 }
 
 # Append the transfer result. Args: $1 display name, $2 duration, $3 rsync exit,
-# $4 transfer completion time formatted from the frozen transfer epoch.
+# $4 frozen transfer completion text.
 write_backup_summary() {
 	if ! cat >> "$BACKUP_LOG_FILE" <<EOF
 
@@ -480,13 +481,8 @@ verify_final_target() {
 complete_backup() {
 	transfer_exit=$1
 	backup_duration=$((BACKUP_TRANSFER_FINISHED_AT - BACKUP_STARTED_AT))
-	backup_finished_at=$(date -d "@$BACKUP_TRANSFER_FINISHED_AT" '+%Y-%m-%d %H:%M:%S') || {
-		ERROR_TYPE=rsync
-		log_error 'Failed to format transfer completion time'
-		return 1
-	}
 	log_info "Rsync transfer finished in ${backup_duration}s (exit code: $transfer_exit)"
-	write_backup_summary "$BACKUP_DISPLAY_NAME" "$backup_duration" "$transfer_exit" "$backup_finished_at" || {
+	write_backup_summary "$BACKUP_DISPLAY_NAME" "$backup_duration" "$transfer_exit" "$BACKUP_TRANSFER_FINISHED_TEXT" || {
 		ERROR_TYPE=rsync
 		return 1
 	}
@@ -531,6 +527,11 @@ perform_backup() {
 	log_info "Starting PRIMARY backup: SD → SSD ($BACKUP_DISPLAY_NAME)"
 	if backup_transfer "$MOUNT_POINT/" "$TARGET_BACKUP_ROOT/$SD_UUID/" "$BACKUP_LOG_FILE"; then
 		BACKUP_TRANSFER_FINISHED_AT=$(date +%s) || {
+			ERROR_TYPE=rsync
+			log_error 'Failed to record transfer completion time'
+			return 1
+		}
+		BACKUP_TRANSFER_FINISHED_TEXT=$(date '+%Y-%m-%d %H:%M:%S') || {
 			ERROR_TYPE=rsync
 			log_error 'Failed to record transfer completion time'
 			return 1

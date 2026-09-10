@@ -383,9 +383,16 @@ fi
 EOF
     cat > "$BIN/date" <<'EOF'
 #!/bin/sh
-if [ "$#" -eq 1 ] && [ "$1" = '+%s' ] && [ -n "${TEST_CLOCK_EPOCH_FILE:-}" ]; then
-    cat "$TEST_CLOCK_EPOCH_FILE"
-    exit $?
+if [ -n "${TEST_CLOCK_EPOCH_FILE:-}" ]; then
+    [ "${1:-}" = '-d' ] && exit 64
+    if [ "$#" -eq 1 ] && [ "$1" = '+%s' ]; then
+        cat "$TEST_CLOCK_EPOCH_FILE"
+        exit $?
+    fi
+    if [ "$#" -eq 1 ] && [ "$1" = '+%Y-%m-%d %H:%M:%S' ]; then
+        /bin/date -d "@$(/bin/cat "$TEST_CLOCK_EPOCH_FILE")" '+%Y-%m-%d %H:%M:%S'
+        exit $?
+    fi
 fi
 exec /bin/date "$@"
 EOF
@@ -1222,7 +1229,7 @@ case_m30_owner_cleanup_releases_lock_after_source_cleanup() {
     assert_contains 'Duration: 60 seconds' "$TEST_ROOT/summary-capture" \
         'M30 summary duration uses the transfer completion epoch'
     assert_contains 'Transfer Finished: 2023-11-14 22:14:20' "$TEST_ROOT/summary-capture" \
-        'M30 summary time formats the transfer completion epoch'
+        'M30 summary uses text captured before cleanup'
 
     reset_case || { fail 'M30 successful sync-failure fixture setup failed'; return; }
     prepare_m30_existing_card
