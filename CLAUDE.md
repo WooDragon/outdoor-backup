@@ -111,7 +111,7 @@ outdoor-backup/
 ### 三层配置架构
 1. **内置默认值与兼容配置**：运行时先使用内置默认值，再读取 root 管理的 `/opt/outdoor-backup/conf/backup.conf`。
 2. **UCI 覆盖层**：`/etc/config/outdoor-backup` 的命名 section `outdoor-backup.config` 仅以显式 option 覆盖下层值。运行时只能通过 `uci` CLI 读取它，不应将 UCI 文件作为 shell 脚本 `source` 或 `eval`。
-3. **SD 卡配置**（`{SD_ROOT}/FieldBackup.conf`）：卡配置来自可移除介质，必须由 `card-config.sh` 按数据读取，绝不 `source` 或 `eval`。读取器为兼容既有数据接受 `REPLICA`，但自动备份只执行 `PRIMARY` 的 SD 卡到目标存储方向；管理器应明确拒绝既有 `REPLICA` 卡，绝不反向写卡或改成 `PRIMARY`。新卡配置只生成 `PRIMARY`。#15 的稳定身份、只读卡和克隆卡问题仍未完成。
+3. **SD 卡配置**（`{SD_ROOT}/FieldBackup.conf`）：卡配置来自可移除介质，必须由 `card-config.sh` 按数据读取，绝不 `source` 或 `eval`。读取器为兼容既有数据接受 `REPLICA`，但自动备份只执行 `PRIMARY` 的 SD 卡到目标存储方向；管理器应明确拒绝既有 `REPLICA` 卡，绝不反向写卡或改成 `PRIMARY`。新卡配置只生成 `PRIMARY`。首次配置只可在正式文件缺失时打开受控读写窗口；正式文件必须由同目录临时文件完整写入后发布。来源卡限制、证据边界和用户可见恢复语义见 [README.md 的 Per-SD Card Configuration](README.md#per-sd-card-configuration) 与 [docs/component-implementation.md](docs/component-implementation.md)。
 
 目标存储的稳定约束：`TARGET_MOUNT` 默认 `/mnt/ssd`，`TARGET_UUID` 默认空；有效优先级始终为 defaults < legacy < UCI。`add` 事件只有在用户配置了非空目标 UUID 后才能进入备份。目标挂载必须已存在且精确匹配内核 mountinfo 中的配置路径，`BACKUP_ROOT` 必须是其严格子目录。管理器不猜测磁盘、不格式化磁盘、也不自行挂载目标介质。初始目标守卫失败只允许 stderr、error 级 syslog 和可选红灯；它不应进入来源挂载、`rsync`、别名、锁或应用日志生命周期。`enabled=0` 的 `add` 事件不应产生 LED 副作用。
 

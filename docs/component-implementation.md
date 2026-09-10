@@ -106,7 +106,9 @@ exit 0
 
 守卫成功后，目标目录和日志都经 FD 9 引用。管理器在目标准备、`rsync` 前、`rsync` 后及末尾的设备复验中检查锚点。目标卸载、替换或只读重挂载不应产生成功结果。日志摘要写入失败，以及摘要后的 detached 或只读复检失败，均返回非零。
 
-静态符号链接检查不是 `openat2`。恶意 root 并发替换目标目录不在此 shell 实现的保证范围内。未知或 deleted loop backing 无法证明身份时会失败关闭。本文档不声称真机全兼容。`FieldBackup.conf` 由 [`card-config.sh`](../files/opt/outdoor-backup/scripts/card-config.sh) 按数据读取，绝不 `source` 或 `eval`。该读取器只导出 `SD_UUID`、`BACKUP_MODE`、`CREATED_AT` 与旧 `SD_NAME`。其他合法赋值会被忽略。畸形数据或缺失、非法 UUID 会失败，且不会重写现有卡配置。读取器为兼容数据仍接受 `REPLICA`。自动管理器仅执行 `PRIMARY` 的 SD 卡到目标存储方向；它读取既有 `REPLICA` 卡后明确失败，不执行 `rsync`，不改变卡文件或 UUID，不更新 alias，也不创建目标 UUID 叶目录或备份日志。管理器不会将 `REPLICA` 自动改为 `PRIMARY`。新卡配置只生成 `PRIMARY`。#15 的稳定身份、只读卡和克隆卡工作仍未完成。`backup-transfer.sh` 直接调用正式 `rsync` 并保留真实退出码；#14 的旧管道退出码限制不再适用。最终包 CI、固件 CI 与真机验证仍未完成。
+静态符号链接检查不是 `openat2`。恶意 root 并发替换目标目录不在此 shell 实现的保证范围内。未知或 deleted loop backing 无法证明身份时会失败关闭。本文档不声称真机全兼容。`FieldBackup.conf` 由 [`card-config.sh`](../files/opt/outdoor-backup/scripts/card-config.sh) 按数据读取，绝不 `source` 或 `eval`。该读取器只导出 `SD_UUID`、`BACKUP_MODE`、`CREATED_AT` 与旧 `SD_NAME`。其他合法赋值会被忽略。畸形数据或缺失、非法 UUID 会失败，且不会重写现有卡配置。读取器为兼容数据仍接受 `REPLICA`。自动管理器仅执行 `PRIMARY` 的 SD 卡到目标存储方向；它读取既有 `REPLICA` 卡后明确失败，不执行 `rsync`，不改变卡文件或 UUID，不更新 alias，也不创建目标 UUID 叶目录或备份日志。管理器不会将 `REPLICA` 自动改为 `PRIMARY`。新卡配置只生成 `PRIMARY`。`backup-transfer.sh` 直接调用正式 `rsync` 并保留真实退出码；#14 的旧管道退出码限制不再适用。最终包 CI、固件 CI 与真机验证仍未完成。
+
+首次配置是软件实现的受控流程：管理器只在不存在正式 `FieldBackup.conf` 时打开来源卡的读写窗口。它在同目录创建唯一临时文件，检查完整写入后以 rename 发布正式文件，并检查 `sync`。该流程拒绝符号链接和其他非普通正式对象。失败时 cleanup 尝试卸载来源卡，但不保证恢复只读。恢复只读后的重读只验证流程控制，不证明实际介质写入、断电持久性或正确卡身份。现有 Docker 测试以 mount、umount 和文件操作桩证明该控制流；真卡、断电、克隆身份和多分区证据仍待验证。
 
 LuCI 表单提供 `target_mount`、`target_uuid` 和 `backup_root` 说明。表单在 `enabled=1` 时要求 UUID。表单在 `enabled=0` 时允许空 UUID。字段的合法值和路径检查不代表表单会自动挂载或格式化介质。
 

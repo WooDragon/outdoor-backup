@@ -232,11 +232,23 @@ release_lock() {
 	log_info 'Lock released'
 }
 
-# Mount the source card. Args: none. Returns nonzero when no supported FS mounts.
+# Mount the source card. Args: $1 mode, exactly "ro" or "rw" (no default: a
+# missing mode is a caller bug and must fail loud, not silently pick one).
+# Returns nonzero when no supported FS mounts. umount+mount (never remount) is
+# used everywhere this is paired with an unmount: the fs types this loop tries
+# do not all support remount uniformly, so a clean unmount/mount cycle is the
+# only deterministic way to flip access mode across every one of them.
 mount_sdcard() {
+	case "$1" in
+		ro|rw) ;;
+		*)
+			log_error "mount_sdcard requires an explicit ro or rw mode, got '$1'"
+			return 1
+			;;
+	esac
 	mkdir -p "$MOUNT_POINT"
 	for fs in auto exfat ntfs3 ext4 ext3 ext2 vfat; do
-		if mount -t "$fs" "/dev/$DEVNAME" "$MOUNT_POINT" 2>/dev/null; then
+		if mount -t "$fs" -o "$1" "/dev/$DEVNAME" "$MOUNT_POINT" 2>/dev/null; then
 			log_info "Mounted $DEVNAME as $fs"
 			return 0
 		fi
@@ -245,28 +257,29 @@ mount_sdcard() {
 	return 1
 }
 
-# Setup card metadata without executing removable-media content. Args: none.
-setup_sdcard_config() {
-	config_path="$MOUNT_POINT/$CONFIG_FILE"
-	. "$SCRIPT_DIR/card-config.sh"
-	if [ -f "$config_path" ]; then
-		if ! card_config_load "$config_path"; then
-			log_error 'Invalid card configuration; refusing backup'
-			return 1
-		fi
-		if [ "$BACKUP_MODE" != PRIMARY ]; then
-			log_error 'REPLICA mode is not supported by automatic backup; refusing reverse synchronization'
-			return 1
-		fi
-		log_info "Loaded config for SD: $SD_NAME ($SD_UUID)"
-	else
-		if ! touch "$config_path" 2>/dev/null; then
-			log_error 'SD card is read-only, cannot create config'
-			return 1
-		fi
-		SD_UUID=$(generate_uuid)
-		BACKUP_MODE=PRIMARY
-		cat > "$config_path" <<EOF
+# Build and publish a new card configuration without exposing a partial file.
+# Args: $1 formal configuration path. Returns nonzero after removing only the
+# temporary file this call created; a successful rename is not power-loss proof.
+provision_new_card_config() {
+	config_path=$1
+	config_dir=${config_path%/*}
+	temp_config=
+	if [ -e "$config_path" ] || [ -L "$config_path" ]; then
+		log_error 'Card configuration appeared during provisioning; refusing to replace it'
+		return 1
+	fi
+	temp_config=$(mktemp "$config_dir/.FieldBackup.conf.XXXXXX") || {
+		log_error 'Failed to create temporary card configuration'
+		return 1
+	}
+	if [ ! -f "$temp_config" ] || [ -L "$temp_config" ]; then
+		rm -f "$temp_config" || :
+		log_error 'Temporary card configuration is not a regular file'
+		return 1
+	fi
+	SD_UUID=$(generate_uuid)
+	BACKUP_MODE=PRIMARY
+	if ! cat > "$temp_config" <<EOF
 # OpenWrt SD Card Backup Configuration
 # Generated: $(date '+%Y-%m-%d %H:%M:%S')
 
@@ -279,6 +292,63 @@ BACKUP_MODE="$BACKUP_MODE"
 # Creation timestamp
 CREATED_AT="$(date '+%Y-%m-%d %H:%M:%S')"
 EOF
+	then
+		rm -f "$temp_config" || :
+		log_error 'Failed to write new card configuration'
+		return 1
+	fi
+	if ! mv "$temp_config" "$config_path"; then
+		rm -f "$temp_config" || :
+		log_error 'Failed to publish new card configuration'
+		return 1
+	fi
+	if ! sync; then
+		log_error 'Failed to synchronize published card configuration'
+		return 1
+	fi
+	return 0
+}
+
+# Setup card metadata without executing removable-media content. Args: none.
+# Steady state only reads a regular non-link configuration. A missing file opens
+# one rw window; success remounts ro and rereads before rsync can start.
+setup_sdcard_config() {
+	config_path="$MOUNT_POINT/$CONFIG_FILE"
+	. "$SCRIPT_DIR/card-config.sh"
+	if [ -e "$config_path" ] || [ -L "$config_path" ]; then
+		if [ ! -f "$config_path" ] || [ -L "$config_path" ]; then
+			log_error 'Card configuration is not a regular file; refusing backup'
+			return 1
+		fi
+		if ! card_config_load "$config_path"; then
+			log_error 'Invalid card configuration; refusing backup'
+			return 1
+		fi
+		if [ "$BACKUP_MODE" != PRIMARY ]; then
+			log_error 'REPLICA mode is not supported by automatic backup; refusing reverse synchronization'
+			return 1
+		fi
+		log_info "Loaded config for SD: $SD_NAME ($SD_UUID)"
+	else
+		if ! umount "$MOUNT_POINT" 2>/dev/null; then
+			log_error 'Failed to release read-only source mount to create card configuration'
+			return 1
+		fi
+		if ! mount_sdcard rw; then
+			log_error 'Source card cannot be mounted read-write; it may be write-protected'
+			return 1
+		fi
+		provision_new_card_config "$config_path" || return 1
+		if ! umount "$MOUNT_POINT" 2>/dev/null; then
+			log_error 'Failed to unmount source card after writing card configuration'
+			return 1
+		fi
+		if ! mount_sdcard ro; then
+			log_error 'Failed to restore read-only source mount after creating card configuration'
+			return 1
+		fi
+		# The reread validates the published data after the source is read-only.
+		# It checks this flow, not physical-media durability or card identity.
 		if ! card_config_load "$config_path"; then
 			log_error 'Generated card configuration failed validation'
 			return 1
@@ -425,7 +495,7 @@ main() {
 				ERROR_TYPE=lock_timeout
 				exit 1
 			fi
-			if ! mount_sdcard; then
+			if ! mount_sdcard ro; then
 				ERROR_TYPE=device_unknown
 				exit 1
 			fi

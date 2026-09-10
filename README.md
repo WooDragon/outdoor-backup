@@ -65,7 +65,7 @@ ssh root@router "opkg install /tmp/outdoor-backup_*.ipk"
 
 Configure and mount the target storage before inserting an SD card. The manager does not format, mount, or select a target disk automatically. Follow [Configure target storage](#configure-target-storage) first.
 
-1. **Insert an SD card**. After the target guard accepts the configured target, the system detects the card through hotplug, creates `FieldBackup.conf` when necessary, starts the backup, and shows LED status.
+1. **Insert an SD card**. After the target guard accepts the configured target, the system detects the card through hotplug and mounts it read-only. When no formal `FieldBackup.conf` exists, it uses a bounded read-write window to publish a complete configuration before it starts the backup. The LED then shows the backup status.
 
 2. **Monitor progress**:
    ```bash
@@ -202,7 +202,15 @@ Edit `/opt/outdoor-backup/conf/backup.conf` only when a legacy value should appl
 
 ### Per-SD Card Configuration
 
-When a writable card has no configuration, the manager creates `{SD_ROOT}/FieldBackup.conf` with a new UUID and `PRIMARY` mode. The manager reads an existing file as data. It never `source`s or `eval`s the file.
+The source card is mounted read-only. This limits user-space writes during the steady state. It is not forensic write protection: an ext4 dirty journal can still replay when the filesystem mounts. `rsync` always reads from the read-only mount.
+
+The one exception is bounded and explicit. When no formal `FieldBackup.conf` exists, the manager unmounts the source and mounts it read-write. It writes the complete data to a uniquely named temporary file in that directory. It checks the write and publishes the file with a same-filesystem rename. It checks `sync` after publication. A rename is not proof against power loss. The manager then unmounts and mounts the source read-only before it does anything else.
+
+A failed read-write mount or a failed configuration write means that the manager cannot initialize the card. The manager reports a card-configuration error and does not run `rsync`. If the read-only mount cannot be restored, it also stops before `rsync`. Cleanup attempts to unmount the source; it does not promise that every failed run restores a read-only mount. After the read-only mount succeeds, the manager rereads the formal file as a flow check. That reread does not prove physical-media durability or card identity. A `SIGKILL` can leave a temporary file behind. The manager never treats that name as `FieldBackup.conf` and does not scan or delete other temporary files.
+
+The implementation uses full unmount and mount transitions rather than `remount`, because the filesystem types it tries do not all implement `remount` uniformly. This is an implementation choice, not the only filesystem transition method.
+
+The manager reads an existing formal file as data. It never `source`s or `eval`s the file. It rejects a symbolic link or another non-regular object at that name.
 
 ```bash
 # Automatically generated on first insertion
