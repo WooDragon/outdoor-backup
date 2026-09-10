@@ -115,7 +115,7 @@ outdoor-backup/
 
 目标存储的稳定约束：`TARGET_MOUNT` 默认 `/mnt/ssd`，`TARGET_UUID` 默认空；有效优先级始终为 defaults < legacy < UCI。`add` 事件只有在用户配置了非空目标 UUID 后才能进入备份。目标挂载必须已存在且精确匹配内核 mountinfo 中的配置路径，`BACKUP_ROOT` 必须是其严格子目录。管理器不猜测磁盘、不格式化磁盘、也不自行挂载目标介质。初始目标守卫失败只允许 stderr、error 级 syslog 和可选红灯；它不应进入来源挂载、`rsync`、别名、锁或应用日志生命周期。`enabled=0` 的 `add` 事件不应产生 LED 副作用。
 
-目标存储的配置命令和运维流程以 [README.md 的 Configuration 章节](README.md#configuration) 为权威入口。守卫拓扑、FD 锚定、LuCI 字段边界和已知限制见 [docs/component-implementation.md](docs/component-implementation.md)。修改加载或守卫逻辑前，应读取 [config.sh](files/opt/outdoor-backup/scripts/config.sh)、[card-config.sh](files/opt/outdoor-backup/scripts/card-config.sh)、[target.sh](files/opt/outdoor-backup/scripts/target.sh)、[target-device.sh](files/opt/outdoor-backup/scripts/target-device.sh)、[backup-manager.sh](files/opt/outdoor-backup/scripts/backup-manager.sh) 及对应测试。
+目标存储的配置命令和运维流程以 [README.md 的 Configuration 章节](README.md#configuration) 为权威入口。守卫拓扑、FD 锚定、LuCI 字段边界和已知限制见 [docs/component-implementation.md](docs/component-implementation.md)。来源身份记录固定在已锚定 `TARGET_BACKUP_ROOT/.card-identities/<SD_UUID>.json`，并只表示来源文件系统 UUID 的首次观察绑定，不表示物理卡身份。修改加载或守卫逻辑前，应读取 [config.sh](files/opt/outdoor-backup/scripts/config.sh)、[card-config.sh](files/opt/outdoor-backup/scripts/card-config.sh)、[target.sh](files/opt/outdoor-backup/scripts/target.sh)、[target-device.sh](files/opt/outdoor-backup/scripts/target-device.sh)、[card-identity.sh](files/opt/outdoor-backup/scripts/card-identity.sh)、[backup-manager.sh](files/opt/outdoor-backup/scripts/backup-manager.sh) 及对应测试。
 
 ### 别名管理机制
 

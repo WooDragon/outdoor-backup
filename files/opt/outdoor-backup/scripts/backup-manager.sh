@@ -25,6 +25,8 @@ STATUS_STARTED=0
 STATUS_TERMINAL_WRITTEN=0
 BACKUP_STARTED_AT=0
 BACKUP_DISPLAY_NAME=""
+INITIAL_CARD_ALIAS=""
+SOURCE_FS_UUID=""
 
 # Arguments are checked before loading common.sh because an add event may be
 # intentionally disabled and must not create LED, lock, mount, or I/O effects.
@@ -93,6 +95,7 @@ fi
 if [ "$ACTION" = add ]; then
 	. "$SCRIPT_DIR/status.sh"
 	. "$SCRIPT_DIR/backup-transfer.sh"
+	. "$SCRIPT_DIR/card-identity.sh"
 fi
 
 # Return success only for an integer that ash can compare safely. Args: $1 MB.
@@ -353,11 +356,28 @@ setup_sdcard_config() {
 			log_error 'Generated card configuration failed validation'
 			return 1
 		fi
-		initial_alias="SDCard_$(date +%Y%m%d_%H%M%S)"
-		update_alias_last_seen "$SD_UUID" "$initial_alias" || log_warn 'Failed to create initial alias'
-		log_info "Created new config for SD: $initial_alias ($SD_UUID)"
+		INITIAL_CARD_ALIAS="SDCard_$(date +%Y%m%d_%H%M%S)"
+		log_info "Created new config for SD: $INITIAL_CARD_ALIAS ($SD_UUID)"
 	fi
 	BACKUP_ROOT=$TARGET_BACKUP_ROOT
+	return 0
+}
+
+# Read source identity only after the card is mounted read-only. Args: none.
+# Returns: zero with SOURCE_FS_UUID set, otherwise nonzero before any rw window.
+read_source_identity() {
+	SOURCE_FS_UUID=$(card_identity_read_source_uuid "/dev/$DEVNAME") || return 1
+	return 0
+}
+
+# Bind the loaded card metadata before aliases or backup files change. Args: none.
+# Returns: zero after a matching or newly published record, otherwise nonzero.
+bind_card_identity() {
+	card_identity_bind "$SD_UUID" "$SOURCE_FS_UUID" || return 1
+	if [ -n "$INITIAL_CARD_ALIAS" ]; then
+		update_alias_last_seen "$SD_UUID" "$INITIAL_CARD_ALIAS" || \
+			log_warn 'Failed to create initial alias'
+	fi
 	return 0
 }
 
@@ -499,7 +519,15 @@ main() {
 				ERROR_TYPE=device_unknown
 				exit 1
 			fi
+			if ! read_source_identity; then
+				ERROR_TYPE=card_config
+				exit 1
+			fi
 			if ! setup_sdcard_config; then
+				ERROR_TYPE=card_config
+				exit 1
+			fi
+			if ! bind_card_identity; then
 				ERROR_TYPE=card_config
 				exit 1
 			fi
