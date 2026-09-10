@@ -356,6 +356,7 @@ prepare_runtime() {
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/config.sh" "$SCRIPTS/config.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/common.sh" "$SCRIPTS/common.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/status.sh" "$SCRIPTS/status.sh"
+    ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/transfer-process.sh" "$SCRIPTS/transfer-process.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/backup-transfer.sh" "$SCRIPTS/backup-transfer.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/card-config.sh" "$SCRIPTS/card-config.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/card-identity.sh" "$SCRIPTS/card-identity.sh"
@@ -405,6 +406,14 @@ case "${1:-}:$2" in
     info:/dev/sda1)
         [ "${TEST_SOURCE_BLOCK_FAIL:-0}" = 1 ] && exit 1
         printf '%s: UUID="%s" TYPE="vfat"\n' /dev/sda1 "$TEST_SOURCE_FS_UUID"
+        if [ -n "${TEST_SOURCE_BLOCK_SIGNAL_PID_FILE:-}" ]; then
+            block_signal_pid=$(cat "$TEST_SOURCE_BLOCK_SIGNAL_PID_FILE")
+            printf 'phase=source-block args=[%s] sender=%s target=%s\n' "$*" "$$" "$block_signal_pid" \
+                >> "$TEST_SOURCE_BLOCK_SIGNAL_TRACE"
+            kill -TERM "$block_signal_pid"
+            block_signal_rc=$?
+            printf 'phase=source-block signal-rc=%s\n' "$block_signal_rc" >> "$TEST_SOURCE_BLOCK_SIGNAL_TRACE"
+        fi
         ;;
     *)
         printf '%s: UUID="A1B2-C3D4" TYPE="tmpfs"\n' /dev/unexpected
@@ -648,6 +657,14 @@ printf 'df %s\n' "$*" >> "$TEST_EFFECTS"
 if [ "${1:-}" = -m ]; then
     printf '%s\n' 'Filesystem 1M-blocks Used Available Use% Mounted on'
     printf '%s\n' "/dev/fixture 100 0 ${TEST_DF_MB:-2} 0% /fixture"
+    if [ -n "${TEST_PREFLIGHT_DF_SIGNAL_PID_FILE:-}" ]; then
+        df_signal_pid=$(cat "$TEST_PREFLIGHT_DF_SIGNAL_PID_FILE")
+        printf 'phase=preflight-df args=[%s] sender=%s target=%s\n' "$*" "$$" "$df_signal_pid" \
+            >> "$TEST_PREFLIGHT_DF_SIGNAL_TRACE"
+        kill -TERM "$df_signal_pid"
+        df_signal_rc=$?
+        printf 'phase=preflight-df signal-rc=%s\n' "$df_signal_rc" >> "$TEST_PREFLIGHT_DF_SIGNAL_TRACE"
+    fi
 else
     printf '%s\n' 'Filesystem 1K-blocks Used Available Use% Mounted on'
     printf '%s\n' "/dev/fixture 102400 0 $(( ${TEST_DF_MB:-2} * 1024 )) 0% /fixture"
@@ -684,6 +701,19 @@ status_mv_count=0
 [ -r "$TEST_STATUS_MV_COUNT" ] && status_mv_count=$(cat "$TEST_STATUS_MV_COUNT")
 printf 'sync count=%s lock=[%s] status-mv-count=%s\n' "$sync_count" \
     "$(readlink "$TEST_LOCK_LINK" 2>/dev/null || :)" "$status_mv_count" >> "$TEST_EFFECTS"
+if [ "${TEST_SYNC_SIGNAL_ON:-0}" = "$sync_count" ]; then
+    sync_signal_pid=${TEST_SYNC_SIGNAL_PID:-}
+    [ -n "${TEST_SYNC_SIGNAL_PID_FILE:-}" ] && sync_signal_pid=$(cat "$TEST_SYNC_SIGNAL_PID_FILE")
+    [ -z "$sync_signal_pid" ] || kill -TERM "$sync_signal_pid"
+fi
+if [ "${TEST_CONFIG_SYNC_SIGNAL_ON:-0}" = "$sync_count" ]; then
+    sync_signal_pid=$(cat "$TEST_CONFIG_SYNC_SIGNAL_PID_FILE")
+    printf 'phase=config-sync count=%s sender=%s target=%s\n' "$sync_count" "$$" "$sync_signal_pid" \
+        >> "$TEST_CONFIG_SYNC_SIGNAL_TRACE"
+    kill -TERM "$sync_signal_pid"
+    sync_signal_rc=$?
+    printf 'phase=config-sync signal-rc=%s\n' "$sync_signal_rc" >> "$TEST_CONFIG_SYNC_SIGNAL_TRACE"
+fi
 if [ "$sync_count" = "${TEST_CONFIG_SYNC_FAIL_ON:-0}" ]; then
     exit 1
 fi
@@ -719,6 +749,15 @@ set_config_target_uuid() {
     sed -i "s/^TARGET_UUID=.*/TARGET_UUID=\"$1\"/" "$RUNTIME/conf/backup.conf"
 }
 
+# Background cancellation cases use exec so $! is the actual manager, not a
+# helper shell that would otherwise inherit ignored SIGINT from job control.
+run_manager_program() {
+    if [ "${TEST_RUN_MANAGER_EXEC:-0}" = 1 ]; then
+        exec "${TEST_MANAGER_SHELL:-/bin/ash}" "$@"
+    fi
+    "${TEST_MANAGER_SHELL:-/bin/ash}" "$@"
+}
+
 run_manager() {
     TEST_EFFECTS="$EFFECTS" TEST_NOTICES="$NOTICES" \
         TARGET_TEST_BLOCK_NODE="$TARGET_TEST_BLOCK_NODE" \
@@ -732,6 +771,7 @@ run_manager() {
         TEST_TIMER_RELEASE="$TEST_ROOT/timer-release" \
         TEST_TIMER_PID="$TEST_ROOT/timer-pid" \
         TEST_TIMER_DURATION="${TEST_TIMER_DURATION:-60}" \
+        TEST_MANAGER_PID_FILE="${TEST_MANAGER_PID_FILE:-}" \
         TEST_SLEEP_PASSTHROUGH="${TEST_SLEEP_PASSTHROUGH:-0}" \
         TEST_RECORD_CLEANUP_PHASES="${TEST_RECORD_CLEANUP_PHASES:-0}" \
         TEST_DF_MB="${TEST_DF_MB:-2}" TEST_RSYNC_EXIT="${TEST_RSYNC_EXIT:-0}" \
@@ -740,6 +780,9 @@ run_manager() {
         TEST_STATUS_MV_COUNT="$TEST_ROOT/status-mv-count" \
         TEST_STATUS_MV_FAIL="${TEST_STATUS_MV_FAIL:-0}" \
         TEST_STATUS_MV_FAIL_ON="${TEST_STATUS_MV_FAIL_ON:-0}" \
+        TEST_SYNC_SIGNAL_ON="${TEST_SYNC_SIGNAL_ON:-0}" \
+        TEST_SYNC_SIGNAL_PID="${TEST_SYNC_SIGNAL_PID:-}" \
+        TEST_SYNC_SIGNAL_PID_FILE="${TEST_SYNC_SIGNAL_PID_FILE:-}" \
         TEST_MOUNT_AUTO_CARD="${TEST_MOUNT_AUTO_CARD:-}" \
         TEST_MOUNT_RW_FAILS="${TEST_MOUNT_RW_FAILS:-0}" \
         TEST_MOUNT_RO_FAIL_ON="${TEST_MOUNT_RO_FAIL_ON:-0}" \
@@ -752,18 +795,26 @@ run_manager() {
         TEST_SOURCE_UMOUNT_COUNT="$TEST_ROOT/source-umount-count" \
         TEST_SOURCE_FS_UUID="${TEST_SOURCE_FS_UUID:-ABCD-1234}" \
         TEST_SOURCE_BLOCK_FAIL="${TEST_SOURCE_BLOCK_FAIL:-0}" \
+        TEST_SOURCE_BLOCK_SIGNAL_PID_FILE="${TEST_SOURCE_BLOCK_SIGNAL_PID_FILE:-}" \
+        TEST_SOURCE_BLOCK_SIGNAL_TRACE="${TEST_SOURCE_BLOCK_SIGNAL_TRACE:-}" \
         TEST_CONFIG_MKTEMP_FAIL="${TEST_CONFIG_MKTEMP_FAIL:-0}" \
         TEST_CONFIG_MV_FAIL="${TEST_CONFIG_MV_FAIL:-0}" \
         TEST_IDENTITY_MKTEMP_FAIL="${TEST_IDENTITY_MKTEMP_FAIL:-0}" \
         TEST_IDENTITY_MV_FAIL="${TEST_IDENTITY_MV_FAIL:-0}" \
         TEST_CONFIG_SYNC_FAIL_ON="${TEST_CONFIG_SYNC_FAIL_ON:-0}" \
         TEST_CONFIG_SYNC_COUNT="$TEST_ROOT/config-sync-count" \
+        TEST_CONFIG_SYNC_SIGNAL_ON="${TEST_CONFIG_SYNC_SIGNAL_ON:-0}" \
+        TEST_CONFIG_SYNC_SIGNAL_PID_FILE="${TEST_CONFIG_SYNC_SIGNAL_PID_FILE:-}" \
+        TEST_CONFIG_SYNC_SIGNAL_TRACE="${TEST_CONFIG_SYNC_SIGNAL_TRACE:-}" \
+        TEST_PREFLIGHT_DF_SIGNAL_PID_FILE="${TEST_PREFLIGHT_DF_SIGNAL_PID_FILE:-}" \
+        TEST_PREFLIGHT_DF_SIGNAL_TRACE="${TEST_PREFLIGHT_DF_SIGNAL_TRACE:-}" \
         TEST_CLOCK_EPOCH_FILE="${TEST_CLOCK_EPOCH_FILE:-}" \
         TEST_CLOCK_AFTER_RSYNC="${TEST_CLOCK_AFTER_RSYNC:-}" \
         TEST_CLOCK_AFTER_SYNC="${TEST_CLOCK_AFTER_SYNC:-}" \
         TEST_SUMMARY_CAPTURE="${TEST_SUMMARY_CAPTURE:-}" \
         DEBUG="${DEBUG:-0}" PATH="$BIN:$PATH" \
-        /bin/ash "${MANAGER_SCRIPT:-$SCRIPTS/backup-manager.sh}" "$@"
+        TEST_RUN_MANAGER_EXEC="${TEST_RUN_MANAGER_EXEC:-0}" \
+        run_manager_program "${MANAGER_SCRIPT:-$SCRIPTS/backup-manager.sh}" "$@"
 }
 
 settle_led_fixture() {
@@ -1944,5 +1995,9 @@ main() {
     fi
     printf 'cases=%s assertions=%s failed=0\n' "$CASES" "$ASSERTIONS"
 }
+
+if [ "${TEST_TARGET_MANAGER_LIBRARY_ONLY:-0}" = 1 ]; then
+    return 0 2>/dev/null || exit 0
+fi
 
 main "$@"

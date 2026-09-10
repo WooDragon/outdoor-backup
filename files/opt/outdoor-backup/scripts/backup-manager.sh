@@ -31,6 +31,9 @@ SOURCE_FS_UUID=""
 BACKUP_TRANSFER_SUCCEEDED=0
 BACKUP_TRANSFER_FINISHED_AT=""
 BACKUP_TRANSFER_FINISHED_TEXT=""
+# Signal handlers only record the first cancellation. They never exit, clean up,
+# or kill children: the active runner must first prove its writers have stopped.
+BACKUP_CANCEL_CODE=0
 
 # Arguments are checked before loading common.sh because an add event may be
 # intentionally disabled and must not create LED, lock, mount, or I/O effects.
@@ -98,9 +101,25 @@ fi
 . "$SCRIPT_DIR/common.sh"
 if [ "$ACTION" = add ]; then
 	. "$SCRIPT_DIR/status.sh"
+	. "$SCRIPT_DIR/transfer-process.sh"
 	. "$SCRIPT_DIR/backup-transfer.sh"
 	. "$SCRIPT_DIR/card-identity.sh"
 fi
+
+# Record only the first signal so repeated requests are idempotent and the
+# original operator intent (INT=130, TERM=143) survives cleanup.
+record_cancel() {
+	[ "${BACKUP_CANCEL_CODE:-0}" -ne 0 ] || BACKUP_CANCEL_CODE=$1
+}
+
+# Stop at manager-owned safe boundaries before a new side effect begins.
+# Parameters: none. Returns zero when work may continue, else INT/TERM code.
+check_cancel_request() {
+	cancel_code=${BACKUP_CANCEL_CODE:-0}
+	[ "$cancel_code" -eq 0 ] && return 0
+	ERROR_TYPE=cancelled
+	return "$cancel_code"
+}
 
 # Return success only for an integer that ash can compare safely. Args: $1 MB.
 # The limit avoids arithmetic overflow on 32-bit OpenWrt targets.
@@ -164,6 +183,12 @@ cleanup() {
 	set +e
 
 	if ! lock_is_owned_by_self; then
+		# Stop accepting new requests before the authoritative sticky sample.
+		trap '' INT TERM
+		if [ "${BACKUP_CANCEL_CODE:-0}" -ne 0 ]; then
+			cleanup_exit_code=$BACKUP_CANCEL_CODE
+			ERROR_TYPE=cancelled
+		fi
 		target_close
 		exit "$cleanup_exit_code"
 	fi
@@ -182,6 +207,14 @@ cleanup() {
 			cleanup_exit_code=1
 			ERROR_TYPE=rsync
 		fi
+	fi
+	# Establish the terminal boundary first, then take one authoritative sticky
+	# sample. Requests already recorded before this boundary win; later signals
+	# are deliberately ignored while status, LED, and unlock become non-reentrant.
+	trap '' INT TERM
+	if [ "${BACKUP_CANCEL_CODE:-0}" -ne 0 ]; then
+		cleanup_exit_code=$BACKUP_CANCEL_CODE
+		ERROR_TYPE=cancelled
 	fi
 	if [ "$cleanup_exit_code" -eq 0 ] && [ "$BACKUP_TRANSFER_SUCCEEDED" -eq 1 ]; then
 		if complete_backup 0; then
@@ -229,6 +262,9 @@ acquire_lock() {
 	elapsed=0
 	mkdir -p "$(dirname "$LOCK_LINK")"
 	while [ "$elapsed" -lt "$timeout" ]; do
+		if [ "${BACKUP_CANCEL_CODE:-0}" -ne 0 ]; then
+			return "$BACKUP_CANCEL_CODE"
+		fi
 		if ln -s "/proc/$$" "$LOCK_LINK" 2>/dev/null; then
 			LOCK_HELD=1
 			log_info 'Lock acquired'
@@ -508,6 +544,7 @@ perform_backup() {
 		return 1
 	fi
 	prepare_backup_target || { ERROR_TYPE=verify_failed; return 1; }
+	check_cancel_request || return "$?"
 	BACKUP_DISPLAY_NAME=$(get_display_name "$SD_UUID")
 	update_alias_last_seen "$SD_UUID" || log_warn 'Failed to update alias timestamp'
 	check_minimum_free_space || return 1
@@ -515,6 +552,7 @@ perform_backup() {
 		ERROR_TYPE=verify_failed
 		return 1
 	fi
+	check_cancel_request || return "$?"
 
 	BACKUP_STARTED_AT=$(date +%s)
 	BACKUP_LOG_FILE="$TARGET_BACKUP_ROOT/.logs/backup_${SD_UUID}_$(date +%Y%m%d_%H%M%S).log"
@@ -524,6 +562,7 @@ perform_backup() {
 		return 1
 	fi
 	STATUS_STARTED=1
+	check_cancel_request || return "$?"
 	log_info "Starting PRIMARY backup: SD → SSD ($BACKUP_DISPLAY_NAME)"
 	if backup_transfer "$MOUNT_POINT/" "$TARGET_BACKUP_ROOT/$SD_UUID/" "$BACKUP_LOG_FILE"; then
 		BACKUP_TRANSFER_FINISHED_AT=$(date +%s) || {
@@ -556,30 +595,41 @@ handle_remove() {
 # Run the requested lifecycle action. Args: event action arguments.
 main() {
 	trap cleanup EXIT
-	trap cleanup INT TERM
+	trap 'record_cancel 130' INT
+	trap 'record_cancel 143' TERM
 	case "$ACTION" in
 		add)
 			if ! acquire_lock; then
+				if [ "${BACKUP_CANCEL_CODE:-0}" -ne 0 ]; then
+					ERROR_TYPE=cancelled
+					exit "$BACKUP_CANCEL_CODE"
+				fi
 				ERROR_TYPE=lock_timeout
 				exit 1
 			fi
+			check_cancel_request || exit "$?"
 			led_backup_start
+			check_cancel_request || exit "$?"
 			if ! mount_sdcard ro; then
 				ERROR_TYPE=device_unknown
 				exit 1
 			fi
+			check_cancel_request || exit "$?"
 			if ! read_source_identity; then
 				ERROR_TYPE=card_config
 				exit 1
 			fi
+			check_cancel_request || exit "$?"
 			if ! setup_sdcard_config; then
 				ERROR_TYPE=card_config
 				exit 1
 			fi
+			check_cancel_request || exit "$?"
 			if ! bind_card_identity; then
 				ERROR_TYPE=card_config
 				exit 1
 			fi
+			check_cancel_request || exit "$?"
 			if perform_backup; then
 				exit 0
 			else

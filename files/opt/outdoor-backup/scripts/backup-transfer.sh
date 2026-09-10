@@ -56,6 +56,21 @@ backup_transfer() {
 	BACKUP_TRANSFER_ERROR=""
 	backup_transfer_cleanup
 
+	# Verify the session primitive before creating output files: an unavailable
+	# setsid must fail loud without leaving a temp artifact behind.
+	if ! command -v setsid >/dev/null 2>&1; then
+		BACKUP_TRANSFER_EXIT=127
+		BACKUP_TRANSFER_ERROR="rsync"
+		printf '%s\n' 'outdoor-backup: setsid is required to run rsync safely' >&2
+		return 127
+	fi
+	if ! command -v transfer_process_run >/dev/null 2>&1; then
+		BACKUP_TRANSFER_EXIT=1
+		BACKUP_TRANSFER_ERROR="rsync"
+		printf '%s\n' 'outdoor-backup: transfer process runner is unavailable' >&2
+		return 1
+	fi
+
 	if ! stdout_file=$(mktemp "$BASE_DIR/var/.backup-transfer.stdout.XXXXXX"); then
 		BACKUP_TRANSFER_EXIT=1
 		BACKUP_TRANSFER_ERROR="rsync"
@@ -73,7 +88,7 @@ backup_transfer() {
 	BACKUP_TRANSFER_TMP_STDERR=$stderr_file
 	BACKUP_TRANSFER_CREATED_STDERR=$stderr_file
 
-	if LC_ALL=C rsync \
+	if transfer_process_run rsync \
 		--archive \
 		--recursive \
 		--times \
@@ -96,7 +111,9 @@ backup_transfer() {
 	BACKUP_TRANSFER_EXIT=$rsync_exit
 	if [ "$rsync_exit" -ne 0 ]; then
 		BACKUP_TRANSFER_ERROR="rsync"
-		if grep -F -e "No space left on device" -e "ENOSPC" "$stdout_file" "$stderr_file" >/dev/null 2>&1; then
+		if [ "${BACKUP_CANCEL_CODE:-0}" -ne 0 ] && [ "$rsync_exit" -eq "$BACKUP_CANCEL_CODE" ]; then
+			BACKUP_TRANSFER_ERROR="cancelled"
+		elif grep -F -e "No space left on device" -e "ENOSPC" "$stdout_file" "$stderr_file" >/dev/null 2>&1; then
 			BACKUP_TRANSFER_ERROR="no_space"
 		fi
 		backup_transfer_cleanup

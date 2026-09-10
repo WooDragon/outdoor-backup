@@ -94,6 +94,8 @@ outdoor-backup/
 - **文件**: `backup-manager.sh`
 - **职责**: 执行完整备份流程，处理所有错误情况
 - **执行流程**: 符号链接锁 → 挂载 → 配置 → rsync → 状态更新 → 清理
+- **取消约束**：可取消区内收到的 `INT`/`TERM` 只取消本任务已验证的传输进程组，不得成功结项；最终终态发布边界后不再接收新取消。
+- **实现与测试导航**：修改传输进程或取消路径前，应先读取 [docs/component-implementation.md](docs/component-implementation.md) 的传输取消章节及其中列出的 helper 和测试入口。
 
 ### 3. 公共函数库
 - **文件**: `common.sh`
@@ -395,6 +397,7 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 
 **Shell 脚本（核心备份系统）**：
 - [backup-manager.sh](files/opt/outdoor-backup/scripts/backup-manager.sh) - 主备份逻辑
+- [transfer-process.sh](files/opt/outdoor-backup/scripts/transfer-process.sh) - rsync 私有进程组生命周期
 - [common.sh](files/opt/outdoor-backup/scripts/common.sh) - 公共函数库
 - [cleanup-all.sh](files/opt/outdoor-backup/scripts/cleanup-all.sh) - 批量清理脚本
 - [90-outdoor-backup](files/etc/hotplug.d/block/90-outdoor-backup) - 热插拔触发器
