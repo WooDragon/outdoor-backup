@@ -424,8 +424,8 @@ case_c08_disabled_add_has_no_side_effects() {
         "C08 disabled add created MOUNT_POINT"
 }
 
-case_c09_disabled_remove_still_runs_cleanup_path() {
-    begin_case C09 "disabled remove remains eligible for cleanup"
+case_c09_disabled_remove_bypasses_configuration() {
+    begin_case C09 "disabled remove bypasses configuration and has no lifecycle effects"
     prepare_config_state
     write_uci "config outdoor-backup 'config'
 	option enabled '0'"
@@ -443,10 +443,10 @@ exit 0
 EOF
     chmod 755 "$TEST_ROOT/bin/mountpoint" "$TEST_ROOT/bin/umount"
     if ! run_manager remove sda1 /devices/test >/dev/null 2>&1; then
-        fail "C09 disabled remove should complete through isolated cleanup"
+        fail "C09 legacy remove should remain a compatible no-op"
     fi
-    assert_effect_present "pkill:" "C09 remove was blocked by enabled setting"
-    assert_effect_not_present "umount:" "C09 non-owner remove cleanup did not unmount source"
+    assert_effect_not_present "pkill:" "C09 legacy remove must not scan or kill processes"
+    assert_effect_not_present "umount:" "C09 legacy remove did not unmount source"
     assert_path_absent "$TEST_ROOT/led-green/trigger" \
         "C09 non-owner remove cleanup did not alter the green LED"
     assert_path_absent "$TEST_ROOT/led-red/trigger" \
@@ -623,7 +623,7 @@ main() {
     case_c06_bad_uci_and_missing_cli_fail_loud
     case_c07_enabled_defaults_to_one
     case_c08_disabled_add_has_no_side_effects
-    case_c09_disabled_remove_still_runs_cleanup_path
+    case_c09_disabled_remove_bypasses_configuration
     case_c10_invalid_paths_and_controls_fail
     case_c11_same_and_nested_paths_fail
     case_c12_invalid_enabled_and_debug_fail

@@ -849,6 +849,55 @@ case_r18_mutation_probe_validate_set_f_restored() {
     fi
 }
 
+# Wait for the asynchronous hotplug manager spy to publish argv. Argument: file.
+# The bounded wait observes the actual exec side effect instead of guessing with sleep.
+wait_for_hotplug_argv() {
+    hotplug_argv_file=$1
+    hotplug_wait=0
+    while [ ! -f "$hotplug_argv_file" ] && [ "$hotplug_wait" -lt 5 ]; do
+        sleep 1
+        hotplug_wait=$((hotplug_wait + 1))
+    done
+    [ -f "$hotplug_argv_file" ]
+}
+
+case_r19_real_hotplug_dispatch_preserves_event_argv() {
+    begin_case R19 "real hotplug dispatch preserves add identity and bypasses reader lookup on remove"
+    prepare_reader_state
+    mkdir -p /opt/outdoor-backup/scripts
+    cat > /opt/outdoor-backup/scripts/backup-manager.sh <<'EOF'
+#!/bin/ash
+printf '%s\000' "$@" > "$TEST_HOTPLUG_ARGV"
+EOF
+    chmod 700 /opt/outdoor-backup/scripts/backup-manager.sh
+
+    mock_device "sdz" "" "" "Card Reader" "1000000"
+    add_argv="$TEST_ROOT/add.argv"
+    add_expected="$TEST_ROOT/add.expected"
+    TEST_HOTPLUG_ARGV="$add_argv" SUBSYSTEM=block ACTION=add DEVTYPE=partition \
+        DEVNAME=sdz1 DEVPATH=/devices/mock/card-reader/sdz1 SEQNUM=91 \
+        OUTDOOR_BACKUP_CONFIG="$LEGACY_FILE" OUTDOOR_BACKUP_CONFIG_SCRIPT="$CONFIG_SCRIPT" \
+        /bin/ash "$HOTPLUG_SRC"
+    wait_for_hotplug_argv "$add_argv" || :
+    printf 'add\000sdz1\000/devices/mock/card-reader/sdz1\00091\000' > "$add_expected"
+    assert_equal "$(wc -c < "$add_argv")" "43" "R19 add manager argv was dispatched after settle"
+    assert_equal "$(cmp -s "$add_argv" "$add_expected"; printf '%s' "$?")" "0" \
+        "R19 add manager receives exact four event fields"
+
+    remove_argv="$TEST_ROOT/remove.argv"
+    remove_expected="$TEST_ROOT/remove.expected"
+    TEST_HOTPLUG_ARGV="$remove_argv" SUBSYSTEM=block ACTION=remove DEVTYPE=disk \
+        DEVNAME=sdz DEVPATH=/devices/mock/sdz SEQNUM=92 \
+        OUTDOOR_BACKUP_CONFIG_SCRIPT="$TEST_ROOT/missing-config.sh" \
+        /bin/ash "$HOTPLUG_SRC"
+    wait_for_hotplug_argv "$remove_argv" || :
+    printf 'remove\000sdz\000/devices/mock/sdz\00092\000' > "$remove_expected"
+    assert_equal "$(wc -c < "$remove_argv")" "32" \
+        "R19 disk remove dispatches despite missing reader configuration"
+    assert_equal "$(cmp -s "$remove_argv" "$remove_expected"; printf '%s' "$?")" "0" \
+        "R19 remove manager receives exact four event fields"
+}
+
 main() {
     trap cleanup_test_data EXIT INT TERM
     mkdir -p "$TEST_ROOT"
@@ -871,11 +920,12 @@ main() {
     case_r16_uci_cli_missing_uses_legacy_not_uci_value
     case_r17_unreadable_legacy_file_fails_closed_without_killing_caller
     case_r18_mutation_probe_validate_set_f_restored
+    case_r19_real_hotplug_dispatch_preserves_event_argv
 
-    assert_equal "$CASES" "22" "all required cases executed"
+    assert_equal "$CASES" "23" "all required cases executed"
     ASSERTIONS=$((ASSERTIONS + 1))
-    if [ "$ASSERTIONS" -ne 64 ]; then
-        fail "all required assertions executed (expected=64, actual=$ASSERTIONS)"
+    if [ "$ASSERTIONS" -ne 68 ]; then
+        fail "all required assertions executed (expected=68, actual=$ASSERTIONS)"
     fi
     if [ "$FAILED" -ne 0 ]; then
         printf 'cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"

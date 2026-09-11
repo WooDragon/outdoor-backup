@@ -134,7 +134,21 @@ LuCI 表单提供 `target_mount`、`target_uuid` 和 `backup_root` 说明。表�
 
 `status.sh` 依赖 `jq`。它把 `current_backup`、经活 FD 获取的 `storage` 和 `history` 原子写入唯一的 `status.json` 快照。它不维护 `history.jsonl`。history 以 UUID 去重，最新终态在前，最多 20 条。运行期间 `current_backup` 仅表达 active/running，未知进度和速率字段均为 0。成功终态的文件数和字节数来自 `rsync --stats`。管理器仅在 rsync、cleanup `sync`、汇总写入和最后的锚点健康及身份复验均成功后才写 `completed`。
 
-持锁 `cleanup` 先清理传输临时文件和本进程拥有的来源挂载。它随后执行 `sync`。cleanup `sync` 失败时，管理器将此前成功的 transfer 转为 `rsync`/exit 1。cleanup `sync` 失败时，管理器保留既有业务失败码。cleanup `sync` 成功后，管理器才可写 `completed`。finalization 判定失败后，管理器在关闭目标 FD 前写入 failed 状态。管理器随后写 LED 终态和日志。管理器最后释放锁。`ERROR_TYPE` 的现有调用映射为 `device_unknown`、`lock_timeout`、`no_space`、`card_config`（红灯 4 闪，SD 卡配置被策略拒绝，例如既有 `REPLICA` 卡）、`rsync` 和 `verify_failed`。`remove` 仍调用现有的广泛 `pkill`；本批只确保其未持锁 cleanup 不会额外卸载来源或写 LED 成功，不能阻止该 `pkill` 杀死其他 manager。本文档不把未覆盖的 LED 类型表述为端到端验证。
+持锁 `cleanup` 先清理传输临时文件和本进程拥有的来源挂载。它随后执行 `sync`。cleanup `sync` 失败时，管理器将此前成功的 transfer 转为 `rsync`/exit 1。cleanup `sync` 失败时，管理器保留既有业务失败码。cleanup `sync` 成功后，管理器才可写 `completed`。finalization 判定失败后，管理器在关闭目标 FD 前写入 failed 状态。管理器随后写 LED 终态和日志。管理器最后释放锁。`ERROR_TYPE` 的现有调用映射为 `device_unknown`、`lock_timeout`、`no_space`、`card_config`（红灯 4 闪，SD 卡配置被策略拒绝，例如既有 `REPLICA` 卡）、`rsync` 和 `verify_failed`。本文档不把未覆盖的 LED 类型表述为端到端验证。
+
+### #16c：remove 事件的 owner 匹配
+
+hotplug 的 `add` 分支在 settle 后把原始 `SEQNUM` 作为第四个参数传给 manager。它仍执行读卡器识别。`remove` 分支不读取 sysfs、UCI 或读卡器白名单。它直接以引用保护的原始 `DEVNAME`、`DEVPATH` 和 `SEQNUM` 调用 `backup-manager.sh remove`。
+
+manager 只接受三参数或四参数的 `add` 和 `remove`。三参数 add 保持兼容，但不会建立可被自动 remove 取消的事件身份。三参数 remove 以 0 退出，并向 stderr 和 syslog 记录缺少身份。四参数 remove 先 source `target-device.sh` 的词法设备名校验和无状态 `owner-event.sh`；它不加载配置、目标、挂载、状态、传输、LED 或 cleanup 生命周期。
+
+`owner-event.sh` 不创建共享状态。它要求 `jq`，校验正规范 `DEVNAME`、以 `/devices/` 开头且末段等于设备名的 `DEVPATH`，以及无前导零的正 64 位十进制 `SEQNUM`。它从原子锁链接读取候选 `/proc/PID`，拒绝自身、PID 1、非正规范 PID、失效进程和 zombie。它读取 `/proc/PID/stat` 的 starttime，并使用 `jq -Rs` 按原始 NUL 分隔 argv 精确匹配 `/bin/sh|/bin/ash manager add owner-devname owner-devpath owner-seq`。事件只在 owner 序号严格小于 remove 序号，且路径为同一分区或 remove 路径加 owner 设备名这一直接父盘关系时匹配。
+
+发送前 helper 重读 starttime 和锁链接。两项都未变化时，它才向该单一 PID 发送一次 `TERM`。缺锁、陈旧锁、无效字段、argv 不匹配、路径不匹配、序号不递增或证据变化均不会改写共享资源。身份输入无效、缺 `jq` 或 `TERM` 失败返回非零；无 owner 或 owner 不匹配记录 notice 后以 0 返回。已有 owner 的 sticky cancel、传输 drain 和 cleanup 负责其后的收尾。
+
+该实现的保证是：拔出 B 不应取消正在备份 A 的匹配 owner。它不保证拔出 B 会自动使 B 的备份消失。它不取消 waiter。任何 waiter 在获得锁后都没有来源代际复验，所以不能保证旧排队任务不会处理已复用的设备节点；此限制同时适用于三参数和四参数 add。三参数 add 另有独立限制：它不具备自动 remove 身份匹配。`SEQNUM` 只是顺序证据，不是卡身份。hotplug 没有零丢包或时延保证。POSIX `/proc` 加 `kill` 仍有最终 TOCTOU，不能宣称等价 pidfd。service/package-stop 的宽 `pkill` 与 crash 后残留挂载恢复仍属 #16 后续工作。
+
+本轮只重跑 `test-manager-removal.sh`（7 cases、111 assertions）和 `test-card-reader.sh`（23 cases、68 assertions），两者全绿。R07 使用真实 enabled runtime，验证 `SEQNUM=0`、空第四参数和末段不等于设备名的 `DEVPATH` 都以非零退出，且不进入 target、lock、source 或 I/O；disabled 对照保持 0。R07 的临时 runtime 副本仅删除 manager gate，记录 `MUTANT_RED gate_bypassed=yes rc=1 target_open=yes`，证明该 negative 断言不是空洞；工作树中的生产 manager 未改变。其余 7 个 suite 沿用未变 B 基线，不宣称本轮在同一 SHA 对全部 9 个 suite 重跑。`test-owner-event.sh` 和 `test-manager-removal.sh` 需要真实 `/proc` argv；ARM 主机运行固定 `linux/aarch64_generic` 的官方 `openwrt/rootfs@sha256:f6dd33c1d9b7d6f1e0848f2fbb92b8d03fc9b425dc08c3574a44936b93133704`，x86 主机运行既有固定 `linux/amd64` 的 `openwrt/rootfs:x86_64-24.10.8@sha256:9972a4b4747cd136abd597475d7b88c51a49fd849d0d53f069a2f4bf446061b9`。其他 suite 的平台不变，生产 parser 不为 Rosetta 添加特例。这是本批本地测试证据，不是 CI、包构建、固件构建或真机验证。
 
 The pre-finalization sync gates transfer completion. The summary is appended to the backup log; `status.json` is replaced atomically. Neither update carries a power-loss durability guarantee.
 

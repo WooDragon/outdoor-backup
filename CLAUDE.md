@@ -95,7 +95,8 @@ outdoor-backup/
 - **职责**: 执行完整备份流程，处理所有错误情况
 - **执行流程**: 符号链接锁 → 挂载 → 配置 → rsync → 状态更新 → 清理
 - **取消约束**：可取消区内收到的 `INT`/`TERM` 只取消本任务已验证的传输进程组，不得成功结项；最终终态发布边界后不再接收新取消。
-- **实现与测试导航**：修改传输进程或取消路径前，应先读取 [docs/component-implementation.md](docs/component-implementation.md) 的传输取消章节及其中列出的 helper 和测试入口。
+- **remove 约束**：四参数 `remove DEVNAME DEVPATH SEQNUM` 只能请求取消经过锁、原始 argv、序号和路径关系核验的当前 owner。三参数 remove 保持成功 no-op。非 owner 不得写入共享资源。
+- **实现与测试导航**：修改传输进程、取消路径或 remove 所有者匹配前，应先读取 [docs/component-implementation.md](docs/component-implementation.md) 的相应章节及其中列出的 helper 和测试入口。
 
 ### 3. 公共函数库
 - **文件**: `common.sh`
@@ -152,7 +153,7 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
     ↓
 [hotplug 检测] → /etc/hotplug.d/block/90-outdoor-backup
     ↓
-[启动备份管理器] → backup-manager.sh add sda1 /devices/...
+[启动备份管理器] → backup-manager.sh add sda1 /devices/... SEQNUM
     ↓
 [验证并锚定目标存储] → 精确挂载、UUID、物理盘分离、FD 9
     ↓
@@ -185,7 +186,7 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 - **增量备份**：传输模块应直接调用 `rsync` 并保留真实退出码。它应使用 `--partial`，不应使用 `--ignore-existing`、`--append`、`--append-verify` 或 `--delete`。rsync 的 size/mtime quick check 不保证发现值相同的内容变化。
 - **状态单一来源**：`status.sh` 应使用 `jq` 原子替换唯一的 `status.json` 快照。它不得创建 `history.jsonl` 或手写 JSON。状态仅在守卫建立后写入，且只有 rsync、摘要写入、最终锚点健康和设备身份复验均成功时才可写 `completed`。
 - **空间守卫**：管理器应通过已锚定目标 FD 执行 `df`，而非扫描备份树计算空间。`MIN_FREE_SPACE` 的默认值为 1024 MB；合法非负整数 `0` 禁用余量，未知 `df` 值必须失败关闭。只有明确 ENOSPC 诊断可把 rsync 失败归类为满盘。
-- **错误恢复**：信号处理确保清理；`remove` 不依赖目标存储在场。清理必须先确认本进程仍持有 `backup.lock`，再修改来源挂载、状态、LED 或锁。来源挂载只在本进程成功 mount 后可由 cleanup 卸载。持锁 cleanup 应在来源清理、目标 FD 关闭和 LED 终态后释放锁。广泛 `pkill` 的限制由 #16 后续批次跟踪。
+- **错误恢复**：`remove` 不依赖目标存储、sysfs、UCI 或读卡器白名单。四参数 remove 只可向经过 owner 证据核验的管理器发送一次 `TERM`。清理必须先确认本进程仍持有 `backup.lock`，再修改来源挂载、状态、LED 或锁。来源挂载只在本进程成功 mount 后可由 cleanup 卸载。持锁 cleanup 应在来源清理、目标 FD 关闭和 LED 终态后释放锁。服务或卸包路径的广泛 `pkill` 与崩溃残留挂载仍由 #16 后续处理。
 
 ### 路径安全
 - **目录遍历防护**: `is_safe_path()` 检查 `../`
@@ -398,6 +399,7 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 **Shell 脚本（核心备份系统）**：
 - [backup-manager.sh](files/opt/outdoor-backup/scripts/backup-manager.sh) - 主备份逻辑
 - [transfer-process.sh](files/opt/outdoor-backup/scripts/transfer-process.sh) - rsync 私有进程组生命周期
+- [owner-event.sh](files/opt/outdoor-backup/scripts/owner-event.sh) - remove 事件的 owner 匹配与单次 TERM 请求
 - [common.sh](files/opt/outdoor-backup/scripts/common.sh) - 公共函数库
 - [cleanup-all.sh](files/opt/outdoor-backup/scripts/cleanup-all.sh) - 批量清理脚本
 - [90-outdoor-backup](files/etc/hotplug.d/block/90-outdoor-backup) - 热插拔触发器

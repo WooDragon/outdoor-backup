@@ -362,6 +362,7 @@ prepare_runtime() {
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/card-identity.sh" "$SCRIPTS/card-identity.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/target.sh" "$SCRIPTS/target.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/target-device.sh" "$SCRIPTS/target-device.sh"
+    ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/owner-event.sh" "$SCRIPTS/owner-event.sh"
     : > "$EFFECTS"
     : > "$NOTICES"
     cat > "$RUNTIME/conf/backup.conf" <<EOF
@@ -1939,11 +1940,11 @@ case_stderr_replay_self_check() {
 }
 
 case_m06_remove_ignores_unmounted_target() {
-    begin_case M06 'remove retains cleanup path without opening or requiring target mount'
+    begin_case M06 'legacy remove bypasses target mount and does not perform process control'
     reset_case || { fail 'M06 fixture setup failed'; return; }
     unmount_target
-    assert_success 'M06 remove succeeds without target mount' run_manager remove sda1 /devices/mock
-    assert_contains pkill "$EFFECTS" 'M06 retained remove cleanup process control'
+    assert_success 'M06 legacy remove succeeds without target mount' run_manager remove sda1 /devices/mock
+    assert_equal "$(wc -c < "$EFFECTS")" 0 'M06 legacy remove creates no shared lifecycle effect'
 }
 
 main() {

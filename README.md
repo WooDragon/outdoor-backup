@@ -9,6 +9,7 @@ Automatic SD card backup system for OpenWrt routers with internal storage (SSD/H
 - ✅ **Automatic Backup**: Hotplug-triggered backup on SD card insertion
 - ✅ **Incremental Sync**: rsync updates files when size or modification time differs, preserves partial transfers, and does not delete target files
 - ✅ **Controlled Cancellation**: Before terminal publication, `SIGINT` or `SIGTERM` requests cancellation at a safe phase boundary; partial rsync data is preserved and accepted cancellation cannot report success
+- ✅ **Owner-Aware Removal**: A four-argument block `remove` event can request cancellation only from the matching active backup owner; an unrelated card removal does not modify that owner's shared state
 - ✅ **LED Indicators**: Visual feedback for backup status
 - ✅ **Concurrent Protection**: PID-based locking prevents conflicts
 - ✅ **Multi-Filesystem**: Supports ext4, exFAT, NTFS, FAT32
@@ -172,7 +173,13 @@ Automatic backup supports the PRIMARY direction only: SD card to the configured 
 
 The manager calls `backup-transfer.sh` after its source and target guards succeed. That module launches `rsync` through `transfer_process_run` in a private session and captures its real exit status. It uses `--partial` so an interrupted transfer can retain partial target data. It does not use `--ignore-existing`, `--append`, `--append-verify`, or `--delete`. Normal rsync quick-check behavior updates a file when its size or modification time differs. It does not guarantee detection of a content change that preserves both values. An `ENOSPC` classification requires the transfer diagnostics to contain `No space left on device` or `ENOSPC`; other rsync exits, including exit 11 or 12 without that diagnostic, remain rsync failures.
 
-During an active transfer, `SIGINT` and `SIGTERM` request cancellation. The manager preserves the first signal as exit code 130 or 143, stops before later independent side-effect phases, and waits for its own rsync process group to stop before cleanup. If a running snapshot has already been created, an accepted cancellation records a history event with `status="error"` and `error_message="cancelled"`. Earlier cancellation returns nonzero without rewriting the existing snapshot. A source-card configuration publication or read-only restoration already underway may finish before the next checkpoint. The final terminal-publication boundary stops accepting new cancellation requests; signals after it are ignored. There is no LuCI cancellation control, rollback, immediate-release promise, or `SIGKILL` escalation. A process that ignores `TERM` can retain the mount and lock. The protocol requires root access on ordinary Linux with readable `/proc`; it does not make card removal, broad remove-path process matching, service stop, or crash-mount recovery safe.
+During an active transfer, `SIGINT` and `SIGTERM` request cancellation. The manager preserves the first signal as exit code 130 or 143. It stops before later independent side-effect phases. It waits for its own rsync process group to stop before cleanup. If a running snapshot exists, an accepted cancellation records `status="error"` and `error_message="cancelled"`. Earlier cancellation returns nonzero without rewriting the existing snapshot. A source-card configuration publication or read-only restoration already underway may finish before the next checkpoint. The final terminal-publication boundary stops accepting new cancellation requests. Signals after that boundary are ignored.
+
+A hotplug `remove` event now calls the manager with `remove DEVNAME DEVPATH SEQNUM`. The manager validates the fields only for that four-argument form. It then identifies a current lock owner by its lock link, `/proc` start time, and raw NUL-delimited manager argv. The event must name the same partition or its direct parent disk path and carry a later positive 64-bit decimal `SEQNUM`. The manager rereads the mutable lock and process evidence before it sends one `TERM`. A failed or mismatched check is a no-op, so removing card B does not cancel a matching owner for card A. The `SEQNUM` comparison is event ordering evidence, not a card identity.
+
+Legacy three-argument `remove DEVNAME DEVPATH` calls remain successful no-ops with a syslog notice because they lack event identity. Legacy three-argument `add` calls remain compatible, but they do not receive automatic remove cancellation. Operators should not invent a `SEQNUM` to request production cancellation.
+
+This release does not cancel lock waiters. A waiter has no source-generation recheck after it acquires the lock, so the implementation cannot guarantee that an old queued task will not process a reused device node. This limitation applies to both three-argument and four-argument add calls. Legacy three-argument add calls have a separate limitation: they do not receive automatic remove identity matching. The implementation makes no hotplug delivery, latency, or zero-loss guarantee. POSIX `/proc` inspection plus `kill` still has a final time-of-check/time-of-use gap and is not equivalent to pidfd. Service/package-stop broad `pkill` behavior and crash-mount recovery remain follow-up work under #16. There is no LuCI cancellation control, rollback, immediate-release promise, or `SIGKILL` escalation. A process that ignores `TERM` can retain the mount and lock.
 
 ### Runtime status and LuCI storage fields
 
@@ -200,7 +207,7 @@ uci delete outdoor-backup.config.backup_root
 uci commit outdoor-backup
 ```
 
-An empty UCI option is normalized by UCI as unset, so it also inherits the lower layer. Final empty or invalid storage paths in `backup_root`, `mount_point`, or `target_mount`, invalid target UUID characters, and values other than `0` or `1` for `enabled` or `debug` make the manager stop before resource operations and report the reason to stderr and syslog with the `outdoor-backup` tag. The `enabled=0` switch exits an `add` event before target checks, LED, lock, mount, or I/O work. A `remove` event still reaches cleanup. LED paths retain their existing optional semantics: an empty legacy LED value falls back to the default in `common.sh`, and LED sysfs paths do not use storage-path validation.
+An empty UCI option is normalized by UCI as unset, so it also inherits the lower layer. Final empty or invalid storage paths in `backup_root`, `mount_point`, or `target_mount`, invalid target UUID characters, and values other than `0` or `1` for `enabled` or `debug` make the manager stop before resource operations and report the reason to stderr and syslog with the `outdoor-backup` tag. The `enabled=0` switch exits an `add` event before target checks, LED, lock, mount, or I/O work. A `remove` event bypasses configuration and target setup before it enters the owner-aware cancellation sender. The remove sender neither registers nor executes its own cleanup. A matched owner performs resource cleanup through its existing sticky-cancellation and cleanup lifecycle. LED paths retain their existing optional semantics: an empty legacy LED value falls back to the default in `common.sh`, and LED sysfs paths do not use storage-path validation.
 
 ### Maintain legacy configuration
 
@@ -308,7 +315,7 @@ assigns them; a value outside the constraints above does not make
 `backup-manager.sh`'s own config load fail, because the manager never reads
 `CARD_READER_*` in the first place. Concretely: an invalid whitelist does
 not make the backup manager reject an `add` event, and it does not stop a
-`remove` event's cleanup (`pkill`, unmount, lock release) from running. The
+`remove` event's owner-aware cancellation from reaching the manager. The
 hotplug trigger records exactly which field and which token was invalid,
 then falls back to the built-in heuristic (equivalent to an empty whitelist
 with `card_reader_heuristic_fallback=yes`) and keeps working.
@@ -332,6 +339,7 @@ outdoor-backup/
 │   │   ├── scripts/
 │   │   │   ├── backup-manager.sh    # Core backup logic
 │   │   │   ├── transfer-process.sh  # rsync process-group lifecycle
+│   │   │   ├── owner-event.sh       # exact remove-event owner matching
 │   │   │   └── common.sh            # Shared functions
 │   │   ├── conf/
 │   │   │   └── backup.conf          # Global config
@@ -480,6 +488,8 @@ logread -f | grep outdoor-backup
 ```
 
 ### Shellcheck Validation
+
+`test-owner-event.sh` 和 `test-manager-removal.sh` 需要真实 `/proc` argv。它们在 ARM 主机选择官方 `openwrt/rootfs@sha256:f6dd33c1d9b7d6f1e0848f2fbb92b8d03fc9b425dc08c3574a44936b93133704` 的 `linux/aarch64_generic` 实体，在 x86 主机选择既有固定 `linux/amd64` 实体 `openwrt/rootfs:x86_64-24.10.8@sha256:9972a4b4747cd136abd597475d7b88c51a49fd849d0d53f069a2f4bf446061b9`。其他测试套件的平台不变；生产代码不为 Rosetta 增加分支。
 
 ```bash
 # Lint all scripts (POSIX mode for ash shell)
