@@ -862,7 +862,7 @@ wait_for_hotplug_argv() {
 }
 
 case_r19_real_hotplug_dispatch_preserves_event_argv() {
-    begin_case R19 "real hotplug dispatch preserves add identity and bypasses reader lookup on remove"
+    begin_case R19 "real hotplug dispatch preserves four event slots, including an empty SEQNUM"
     prepare_reader_state
     mkdir -p /opt/outdoor-backup/scripts
     cat > /opt/outdoor-backup/scripts/backup-manager.sh <<'EOF'
@@ -896,6 +896,32 @@ EOF
         "R19 disk remove dispatches despite missing reader configuration"
     assert_equal "$(cmp -s "$remove_argv" "$remove_expected"; printf '%s' "$?")" "0" \
         "R19 remove manager receives exact four event fields"
+
+    empty_add_argv="$TEST_ROOT/empty-add.argv"
+    empty_add_expected="$TEST_ROOT/empty-add.expected"
+    TEST_HOTPLUG_ARGV="$empty_add_argv" SUBSYSTEM=block ACTION=add DEVTYPE=partition \
+        DEVNAME=sdz1 DEVPATH=/devices/mock/card-reader/sdz1 \
+        OUTDOOR_BACKUP_CONFIG="$LEGACY_FILE" OUTDOOR_BACKUP_CONFIG_SCRIPT="$CONFIG_SCRIPT" \
+        /bin/ash "$HOTPLUG_SRC"
+    wait_for_hotplug_argv "$empty_add_argv" || :
+    printf 'add\000sdz1\000/devices/mock/card-reader/sdz1\000\000' > "$empty_add_expected"
+    assert_equal "$(wc -c < "$empty_add_argv")" "41" \
+        "R19 add with unset SEQNUM keeps an empty fourth event field"
+    assert_equal "$(cmp -s "$empty_add_argv" "$empty_add_expected"; printf '%s' "$?")" "0" \
+        "R19 add with unset SEQNUM does not fall back to three arguments"
+
+    empty_remove_argv="$TEST_ROOT/empty-remove.argv"
+    empty_remove_expected="$TEST_ROOT/empty-remove.expected"
+    TEST_HOTPLUG_ARGV="$empty_remove_argv" SUBSYSTEM=block ACTION=remove DEVTYPE=disk \
+        DEVNAME=sdz DEVPATH=/devices/mock/sdz \
+        OUTDOOR_BACKUP_CONFIG_SCRIPT="$TEST_ROOT/missing-config.sh" \
+        /bin/ash "$HOTPLUG_SRC"
+    wait_for_hotplug_argv "$empty_remove_argv" || :
+    printf 'remove\000sdz\000/devices/mock/sdz\000\000' > "$empty_remove_expected"
+    assert_equal "$(wc -c < "$empty_remove_argv")" "30" \
+        "R19 remove with unset SEQNUM keeps an empty fourth event field"
+    assert_equal "$(cmp -s "$empty_remove_argv" "$empty_remove_expected"; printf '%s' "$?")" "0" \
+        "R19 remove with unset SEQNUM does not fall back to three arguments"
 }
 
 main() {
@@ -924,8 +950,8 @@ main() {
 
     assert_equal "$CASES" "23" "all required cases executed"
     ASSERTIONS=$((ASSERTIONS + 1))
-    if [ "$ASSERTIONS" -ne 68 ]; then
-        fail "all required assertions executed (expected=68, actual=$ASSERTIONS)"
+    if [ "$ASSERTIONS" -ne 72 ]; then
+        fail "all required assertions executed (expected=72, actual=$ASSERTIONS)"
     fi
     if [ "$FAILED" -ne 0 ]; then
         printf 'cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"
