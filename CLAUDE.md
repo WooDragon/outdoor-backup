@@ -93,10 +93,11 @@ outdoor-backup/
 ### 2. 备份管理器
 - **文件**: `backup-manager.sh`
 - **职责**: 执行完整备份流程，处理所有错误情况
-- **执行流程**: 符号链接锁 → 挂载 → 配置 → rsync → 状态更新 → 清理
+- **执行流程**: 目标守卫 → 来源 snapshot 捕获 → 符号链接锁 → snapshot 复验 → 挂载 → 配置 → rsync → 状态更新 → 清理
+- **来源 snapshot 约束**：每个三参数或四参数 `add` 应在锁竞争前捕获来源 snapshot，并在获锁后和每次来源 mount 前复验同一 baseline。初始只读挂载后，管理器应将实际读取的来源文件系统 UUID 与该 baseline 的 `filesystem_uuid` 精确比较。每次 probe 返回后应检查 sticky cancel，避免 probe 期间的 `TERM` 触发后续 LED 或 mount 副作用。snapshot 变化、不可读取或消费 UUID 不一致时应以 `device_unknown` 失败；实现不得更新 baseline 以接受 replacement。snapshot 不能作为物理卡 ID 或原子 mount 保证。
 - **取消约束**：可取消区内收到的 `INT`/`TERM` 只取消本任务已验证的传输进程组，不得成功结项；最终终态发布边界后不再接收新取消。
-- **remove 约束**：四参数 `remove DEVNAME DEVPATH SEQNUM` 只能请求取消经过锁、原始 argv、序号和路径关系核验的当前 owner。三参数 remove 保持成功 no-op。非 owner 不得写入共享资源。
-- **实现与测试导航**：修改传输进程、取消路径或 remove 所有者匹配前，应先读取 [docs/component-implementation.md](docs/component-implementation.md) 的相应章节及其中列出的 helper 和测试入口。
+- **remove 约束**：四参数 `remove DEVNAME DEVPATH SEQNUM` 只能请求取消经过锁、原始 argv、序号和路径关系核验的当前 owner。三参数 remove 保持成功 no-op。非 owner 不得写入共享资源。`remove` 和 disabled `add` 不应加载 source snapshot 库或读取来源 snapshot。
+- **实现与测试导航**：修改来源 snapshot、传输进程、取消路径或 remove 所有者匹配前，应先读取 [docs/component-implementation.md](docs/component-implementation.md) 的相应章节及其中列出的 helper 和测试入口。
 
 ### 3. 公共函数库
 - **文件**: `common.sh`
@@ -118,7 +119,7 @@ outdoor-backup/
 
 目标存储的稳定约束：`TARGET_MOUNT` 默认 `/mnt/ssd`，`TARGET_UUID` 默认空；有效优先级始终为 defaults < legacy < UCI。`add` 事件只有在用户配置了非空目标 UUID 后才能进入备份。目标挂载必须已存在且精确匹配内核 mountinfo 中的配置路径，`BACKUP_ROOT` 必须是其严格子目录。管理器不猜测磁盘、不格式化磁盘、也不自行挂载目标介质。初始目标守卫失败只允许 stderr、error 级 syslog 和可选红灯；它不应进入来源挂载、`rsync`、别名、锁或应用日志生命周期。`enabled=0` 的 `add` 事件不应产生 LED 副作用。
 
-目标存储的配置命令和运维流程以 [README.md 的 Configuration 章节](README.md#configuration) 为权威入口。守卫拓扑、FD 锚定、LuCI 字段边界和已知限制见 [docs/component-implementation.md](docs/component-implementation.md)。来源身份记录固定在已锚定 `TARGET_BACKUP_ROOT/.card-identities/<SD_UUID>.json`，并只表示来源文件系统 UUID 的首次观察绑定，不表示物理卡身份。修改加载或守卫逻辑前，应读取 [config.sh](files/opt/outdoor-backup/scripts/config.sh)、[card-config.sh](files/opt/outdoor-backup/scripts/card-config.sh)、[target.sh](files/opt/outdoor-backup/scripts/target.sh)、[target-device.sh](files/opt/outdoor-backup/scripts/target-device.sh)、[card-identity.sh](files/opt/outdoor-backup/scripts/card-identity.sh)、[backup-manager.sh](files/opt/outdoor-backup/scripts/backup-manager.sh) 及对应测试。
+目标存储的配置命令和运维流程以 [README.md 的 Configuration 章节](README.md#configuration) 为权威入口。守卫拓扑、FD 锚定、LuCI 字段边界和已知限制见 [docs/component-implementation.md](docs/component-implementation.md)。来源身份记录固定在已锚定 `TARGET_BACKUP_ROOT/.card-identities/<SD_UUID>.json`，并只表示来源文件系统 UUID 的首次观察绑定，不表示物理卡身份。修改加载或守卫逻辑前，应读取 [config.sh](files/opt/outdoor-backup/scripts/config.sh)、[card-config.sh](files/opt/outdoor-backup/scripts/card-config.sh)、[target.sh](files/opt/outdoor-backup/scripts/target.sh)、[target-device.sh](files/opt/outdoor-backup/scripts/target-device.sh)、[card-identity.sh](files/opt/outdoor-backup/scripts/card-identity.sh)、[source-identity.sh](files/opt/outdoor-backup/scripts/source-identity.sh)、[backup-manager.sh](files/opt/outdoor-backup/scripts/backup-manager.sh) 及对应测试。
 
 ### 别名管理机制
 
@@ -398,6 +399,7 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 
 **Shell 脚本（核心备份系统）**：
 - [backup-manager.sh](files/opt/outdoor-backup/scripts/backup-manager.sh) - 主备份逻辑
+- [source-identity.sh](files/opt/outdoor-backup/scripts/source-identity.sh) - 来源拓扑、UUID 和 diskseq snapshot 库
 - [transfer-process.sh](files/opt/outdoor-backup/scripts/transfer-process.sh) - rsync 私有进程组生命周期
 - [owner-event.sh](files/opt/outdoor-backup/scripts/owner-event.sh) - remove 事件的 owner 匹配与单次 TERM 请求
 - [common.sh](files/opt/outdoor-backup/scripts/common.sh) - 公共函数库
