@@ -26,8 +26,8 @@ source_identity_valid_diskseq() {
     [ "${#source_identity_diskseq_candidate}" -lt 20 ] && return 0
     [ "${#source_identity_diskseq_candidate}" -eq 20 ] || return 1
     # shellcheck disable=SC2071 # String order follows an equal-length decimal bound.
-    [ "$source_identity_diskseq_candidate" \< 18446744073709551615 ] || \
-        [ "$source_identity_diskseq_candidate" = 18446744073709551615 ]
+    LC_ALL=C [ "$source_identity_diskseq_candidate" \< 18446744073709551615 ] || \
+        LC_ALL=C [ "$source_identity_diskseq_candidate" = 18446744073709551615 ]
 }
 
 # Read the gendisk diskseq, using null only when its attribute is absent.

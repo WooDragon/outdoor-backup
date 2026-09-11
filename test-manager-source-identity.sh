@@ -516,6 +516,59 @@ case_s11_premount_probe_term_stops_before_rw() {
     ms_failure 'S11 cancellation before RW never transfers' grep -F -q '^rsync' "$EFFECTS"
 }
 
+make_postmount_uuid_consumer_mutant() {
+    MUTANT_MANAGER="$SCRIPTS/backup-manager-postmount-uuid-mutant.sh"
+    cp "$SCRIPTS/backup-manager.sh" "$MUTANT_MANAGER" || return 1
+    sed -i '/if \[ "\$SOURCE_FS_UUID" != "\$source_identity_snapshot_uuid" \]; then/,/^\tfi$/d' "$MUTANT_MANAGER" || return 1
+    grep -F -q 'source filesystem UUID differs from source snapshot' "$MUTANT_MANAGER" && return 1
+    chmod 700 "$MUTANT_MANAGER"
+}
+
+case_s12_postmount_uuid_mismatch_and_read_failure_are_source_rejections() {
+    ms_case S12 'post-mount UUID consumption must match its snapshot and unreadable UUID is device_unknown'
+    reset_case || { ms_fail 'S12 mismatch fixture setup failed'; return; }
+    prepare_existing_card
+    printf '%s\n' ABCD-1234 > "$TEST_ROOT/source-uuid"
+    TEST_SOURCE_UUID_FILE="$TEST_ROOT/source-uuid" TEST_SOURCE_UUID_CHANGE_AFTER_RO=1 \
+        TEST_SOURCE_UUID_AFTER_RO=REPLACED-UUID
+    export TEST_SOURCE_UUID_FILE TEST_SOURCE_UUID_CHANGE_AFTER_RO TEST_SOURCE_UUID_AFTER_RO
+    ms_manager_nonzero add sda1 /devices/mock
+    unset TEST_SOURCE_UUID_FILE TEST_SOURCE_UUID_CHANGE_AFTER_RO TEST_SOURCE_UUID_AFTER_RO
+    ms_success 'S12 mismatch emits the static source-identity diagnostic' \
+        grep -F -q 'source filesystem UUID differs from source snapshot' "$NOTICES"
+    ms_equal "$(cat "$TEST_ROOT/red/trigger")" none \
+        'S12 mismatch uses the device_unknown LED classification'
+    ms_absent "$TARGET_MOUNT/backups/.card-identities" 'S12 mismatch creates no identity record'
+    ms_absent /opt/outdoor-backup/conf/aliases.json 'S12 mismatch creates no alias'
+    ms_failure 'S12 mismatch starts no rsync' grep -F -q '^rsync' "$EFFECTS"
+    ms_failure 'S12 mismatch reports no completion' grep -F -q 'Backup completed successfully' "$RUNTIME/log/backup.log"
+
+    reset_case || { ms_fail 'S12 mutant fixture setup failed'; return; }
+    prepare_existing_card
+    make_postmount_uuid_consumer_mutant || { ms_fail 'S12 consumer-only mutant generation failed'; return; }
+    printf '%s\n' ABCD-1234 > "$TEST_ROOT/source-uuid"
+    MANAGER_SCRIPT="$MUTANT_MANAGER" TEST_SOURCE_UUID_FILE="$TEST_ROOT/source-uuid" \
+        TEST_SOURCE_UUID_CHANGE_AFTER_RO=1 TEST_SOURCE_UUID_AFTER_RO=REPLACED-UUID
+    export MANAGER_SCRIPT TEST_SOURCE_UUID_FILE TEST_SOURCE_UUID_CHANGE_AFTER_RO TEST_SOURCE_UUID_AFTER_RO
+    ms_success 'S12 consumer-only mutant reaches the formerly unsafe binding path' \
+        run_manager add sda1 /devices/mock
+    unset MANAGER_SCRIPT TEST_SOURCE_UUID_FILE TEST_SOURCE_UUID_CHANGE_AFTER_RO TEST_SOURCE_UUID_AFTER_RO
+    ms_success 'S12 mutant records the replacement UUID in the binding path' \
+        /bin/sh -c 'jq -e ".fs_uuid == \"replaced-uuid\"" "$1" >/dev/null' sh \
+        "$TARGET_MOUNT/backups/.card-identities/$CARD_UUID.json"
+
+    reset_case || { ms_fail 'S12 read-failure fixture setup failed'; return; }
+    prepare_existing_card
+    TEST_SOURCE_POSTMOUNT_BLOCK_FAIL=1
+    export TEST_SOURCE_POSTMOUNT_BLOCK_FAIL
+    ms_manager_nonzero add sda1 /devices/mock
+    unset TEST_SOURCE_POSTMOUNT_BLOCK_FAIL
+    ms_success 'S12 post-mount read failure emits the static source-identity diagnostic' \
+        grep -F -q 'source filesystem UUID cannot be read after read-only mount' "$NOTICES"
+    ms_equal "$(cat "$TEST_ROOT/red/trigger")" none \
+        'S12 post-mount read failure uses the device_unknown LED classification'
+}
+
 assert_assertion_gate_is_live() {
     [ "${2:-}" = '--skip-assertion-mutant' ] && return 0
     mutant="$TEST_ROOT/assertion-count-mutant.sh"
@@ -536,8 +589,8 @@ assert_assertion_gate_is_live() {
     ms_success 'assertion-count mutant failed specifically at the MS_ASSERTIONS gate' \
         /bin/ash -c "grep -F -q \"\$1\" \"\$2\" && grep -F -q \"\$3\" \"\$4\"" \
         assertion-count-mutant \
-        'expected 234 base assertions, ran 233' "$TEST_ROOT/assertion-mutant.stderr" \
-        'RESULT cases=11 assertions=233 failed=1' "$TEST_ROOT/assertion-mutant.stdout"
+        'expected 244 base assertions, ran 243' "$TEST_ROOT/assertion-mutant.stderr" \
+        'RESULT cases=12 assertions=243 failed=1' "$TEST_ROOT/assertion-mutant.stdout"
 }
 
 main() {
@@ -553,8 +606,9 @@ main() {
     case_s09_prelock_probe_term_stops_before_lock
     case_s10_afterlock_probe_term_stops_before_led
     case_s11_premount_probe_term_stops_before_rw
-    [ "$MS_CASES" -eq 11 ] || ms_fail "expected 11 cases, ran $MS_CASES"
-    [ "$MS_ASSERTIONS" -eq 234 ] || ms_fail "expected 234 base assertions, ran $MS_ASSERTIONS"
+    case_s12_postmount_uuid_mismatch_and_read_failure_are_source_rejections
+    [ "$MS_CASES" -eq 12 ] || ms_fail "expected 12 cases, ran $MS_CASES"
+    [ "$MS_ASSERTIONS" -eq 244 ] || ms_fail "expected 244 base assertions, ran $MS_ASSERTIONS"
     assert_assertion_gate_is_live "$@"
     printf 'RESULT cases=%s assertions=%s failed=%s\n' "$MS_CASES" "$MS_ASSERTIONS" "$MS_FAILED"
     [ "$MS_FAILED" -eq 0 ]

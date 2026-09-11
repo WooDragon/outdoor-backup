@@ -486,9 +486,21 @@ setup_sdcard_config() {
 }
 
 # Read source identity only after the card is mounted read-only. Args: none.
-# Returns: zero with SOURCE_FS_UUID set, otherwise nonzero before any rw window.
+# Returns: zero only when the observed UUID equals the pre-lock snapshot UUID.
 read_source_identity() {
-	SOURCE_FS_UUID=$(card_identity_read_source_uuid "/dev/$DEVNAME") || return 1
+	SOURCE_FS_UUID=$(card_identity_read_source_uuid "/dev/$DEVNAME") || {
+		source_identity_notice 'source filesystem UUID cannot be read after read-only mount'
+		return 1
+	}
+	source_identity_snapshot_uuid=$(printf '%s\n' "$SOURCE_IDENTITY_SNAPSHOT" | \
+		jq -er 'if (.filesystem_uuid | type) == "string" then .filesystem_uuid else error("missing filesystem_uuid") end') || {
+		source_identity_notice 'source snapshot filesystem UUID is unavailable'
+		return 1
+	}
+	if [ "$SOURCE_FS_UUID" != "$source_identity_snapshot_uuid" ]; then
+		source_identity_notice 'source filesystem UUID differs from source snapshot'
+		return 1
+	fi
 	return 0
 }
 
@@ -666,7 +678,7 @@ main() {
 	fi
 	check_cancel_request || exit "$?"
 	if ! read_source_identity; then
-		ERROR_TYPE=card_config
+		ERROR_TYPE=device_unknown
 		exit 1
 	fi
 	check_cancel_request || exit "$?"

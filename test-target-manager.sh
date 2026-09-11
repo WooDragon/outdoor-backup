@@ -441,6 +441,10 @@ case "${1:-}:$2" in
         ;;
     info:/dev/sda1)
         [ "${TEST_SOURCE_BLOCK_FAIL:-0}" = 1 ] && exit 1
+        if [ "${TEST_SOURCE_POSTMOUNT_BLOCK_FAIL:-0}" = 1 ] && \
+            [ -r "$TEST_SOURCE_MOUNT_STATE" ] && grep -F -q 'mode=ro' "$TEST_SOURCE_MOUNT_STATE"; then
+            exit 1
+        fi
         source_uuid=${TEST_SOURCE_FS_UUID:-ABCD-1234}
         [ -z "${TEST_SOURCE_UUID_FILE:-}" ] || source_uuid=$(cat "$TEST_SOURCE_UUID_FILE")
         [ -z "${TEST_SOURCE_READ_MARKER:-}" ] || printf 'node=%s\n' /dev/sda1 >> "$TEST_SOURCE_READ_MARKER"
@@ -555,6 +559,10 @@ if [ "$mount_mode" = ro ] && [ -n "${TEST_MOUNT_RO_COUNT:-}" ]; then
 fi
 if [ "$mount_target" = "$TEST_SOURCE_MOUNT" ]; then
     printf 'manager=%s mode=%s\n' "$$" "$mount_mode" > "$TEST_SOURCE_MOUNT_STATE"
+    if [ "$mount_mode" = ro ] && [ "${TEST_SOURCE_UUID_CHANGE_AFTER_RO:-0}" = 1 ] && \
+        [ -n "${TEST_SOURCE_UUID_FILE:-}" ]; then
+        printf '%s\n' "${TEST_SOURCE_UUID_AFTER_RO:-CHANGED-AFTER-RO}" > "$TEST_SOURCE_UUID_FILE"
+    fi
 fi
 exit 0
 EOF
@@ -866,6 +874,8 @@ run_manager() {
         TEST_SOURCE_UMOUNT_COUNT="$TEST_ROOT/source-umount-count" \
         TEST_SOURCE_CHANGE_AFTER_UMOUNT="${TEST_SOURCE_CHANGE_AFTER_UMOUNT:-0}" \
         TEST_SOURCE_UUID_AFTER_UMOUNT="${TEST_SOURCE_UUID_AFTER_UMOUNT:-}" \
+        TEST_SOURCE_UUID_CHANGE_AFTER_RO="${TEST_SOURCE_UUID_CHANGE_AFTER_RO:-0}" \
+        TEST_SOURCE_UUID_AFTER_RO="${TEST_SOURCE_UUID_AFTER_RO:-}" \
         TEST_SOURCE_CHANGE_AFTER_SECOND_UMOUNT="${TEST_SOURCE_CHANGE_AFTER_SECOND_UMOUNT:-0}" \
         TEST_SOURCE_UUID_AFTER_SECOND_UMOUNT="${TEST_SOURCE_UUID_AFTER_SECOND_UMOUNT:-}" \
         TEST_SOURCE_FS_UUID="${TEST_SOURCE_FS_UUID:-ABCD-1234}" \
@@ -875,6 +885,7 @@ run_manager() {
         TEST_SOURCE_PROBE_SIGNAL_PID_FILE="${TEST_SOURCE_PROBE_SIGNAL_PID_FILE:-}" \
         TEST_SOURCE_PROBE_SIGNAL_TRACE="${TEST_SOURCE_PROBE_SIGNAL_TRACE:-}" \
         TEST_SOURCE_BLOCK_FAIL="${TEST_SOURCE_BLOCK_FAIL:-0}" \
+        TEST_SOURCE_POSTMOUNT_BLOCK_FAIL="${TEST_SOURCE_POSTMOUNT_BLOCK_FAIL:-0}" \
         TEST_SOURCE_BLOCK_SIGNAL_PID_FILE="${TEST_SOURCE_BLOCK_SIGNAL_PID_FILE:-}" \
         TEST_SOURCE_BLOCK_SIGNAL_TRACE="${TEST_SOURCE_BLOCK_SIGNAL_TRACE:-}" \
         TEST_LOCK_ATTEMPT_MARKER="${TEST_LOCK_ATTEMPT_MARKER:-}" \

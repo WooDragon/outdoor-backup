@@ -253,6 +253,13 @@ case_s04_diskseq_changes_preserve_u64_text() {
     assert_snapshot 'S04 max u64 survives as a JSON string' \
         "{\"devname\":\"sda1\",\"node\":\"$SYSFS/devices/mock/block/sda/sda1\",\"major_minor\":\"8:1\",\"filesystem_uuid\":\"abcd-1234\",\"diskseq\":\"18446744073709551615\"}" \
         snapshot sda1
+    source_identity_locale_before=${LC_ALL-}
+    LC_ALL=POSIX
+    export LC_ALL
+    assert_success 'S04 local C bound accepts the max value without changing caller locale' \
+        source_identity_valid_diskseq 18446744073709551615
+    LC_ALL=$source_identity_locale_before
+    export LC_ALL
 }
 
 case_s05_diskseq_downgrade_and_invalid_forms() {
@@ -390,7 +397,7 @@ main() {
     case_s07_mixed_sample_rejects_before_output
     case_s08_expected_is_data_and_exports_survive
     assert_equal "$CASES" 8 'all required cases executed'
-    assert_equal "$ASSERTIONS" 40 'all required assertions executed'
+    assert_equal "$ASSERTIONS" 41 'all required assertions executed'
     if [ "$FAILED" -ne 0 ]; then
         printf 'cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"
         exit 1
