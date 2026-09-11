@@ -47,13 +47,18 @@ mc_absent() {
 	path=$1 message=$2; MC_ASSERTIONS=$((MC_ASSERTIONS + 1))
 	[ ! -e "$path" ] && [ ! -L "$path" ] || mc_fail "$message (path=[$path])"
 }
+# The optional second argument is a startup-fixture poll limit: default 10,
+# checked once per second; it is not a production SLA.
 mc_wait_path() {
-	path=$1 attempts=0
-	while [ ! -e "$path" ] && [ "$attempts" -lt 10 ]; do
+	path=$1 attempts=0 wait_limit=${2:-10}
+	while [ ! -e "$path" ] && [ "$attempts" -lt "$wait_limit" ]; do
 		/bin/sleep 1
 		attempts=$((attempts + 1))
 	done
-	[ -e "$path" ]
+	[ -e "$path" ] && return 0
+	printf 'Timed out waiting for %s after %s checks (limit=%s)\n' \
+		"$path" "$attempts" "$wait_limit" >&2
+	return 1
 }
 mc_wait_contains() {
 	needle=$1 file=$2 attempts=0
@@ -125,7 +130,7 @@ case_active_term_stops_writers_before_cleanup() {
 	write_active_rsync
 	start_manager
 	manager_pid=$MANAGER_PID
-	mc_success 'C01 actual rsync leader becomes observable' mc_wait_path "$TEST_ROOT/cancel-ready"
+	mc_success 'C01 actual rsync leader becomes observable' mc_wait_path "$TEST_ROOT/cancel-ready" 60
 	mc_success 'C01 actual rsync child becomes observable' mc_wait_path "$TEST_ROOT/cancel-child-ready"
 	kill -TERM "$manager_pid"
 	kill -TERM "$manager_pid"
@@ -291,15 +296,18 @@ start_manager_with_pid_file() {
 	mc_wait_path "$pid_file"
 }
 
+# Copy a test-local manager, optionally from an already instrumented runtime,
+# then remove exactly one outer main-loop cancellation gate.
 make_phase_gate_mutation() {
 	phase_gate=$1
-	MUTATED_MANAGER="$SCRIPTS/${phase_gate}-manager.sh"
-	cp "$SCRIPTS/backup-manager.sh" "$MUTATED_MANAGER"
+	source_manager=${2:-"$SCRIPTS/backup-manager.sh"}
+	MUTATED_MANAGER=${3:-"$SCRIPTS/${phase_gate}-manager.sh"}
+	cp "$source_manager" "$MUTATED_MANAGER"
 	case "$phase_gate" in
 		source-identity)
 			sed -i '/if ! read_source_identity; then/,/if ! setup_sdcard_config; then/ { /check_cancel_request/d; }' "$MUTATED_MANAGER"
 			;;
-		card-config)
+		post-setup)
 			sed -i '/if ! setup_sdcard_config; then/,/if ! bind_card_identity; then/ { /check_cancel_request/d; }' "$MUTATED_MANAGER"
 			;;
 		preflight-df)
@@ -315,7 +323,7 @@ phase_gate_removed() {
 		source-identity)
 			sed -n '/if ! read_source_identity; then/,/if ! setup_sdcard_config; then/p' "$MUTATED_MANAGER" | grep -F -q check_cancel_request && return 1
 			;;
-		card-config)
+		post-setup)
 			sed -n '/if ! setup_sdcard_config; then/,/if ! bind_card_identity; then/p' "$MUTATED_MANAGER" | grep -F -q check_cancel_request && return 1
 			;;
 		preflight-df)
@@ -324,6 +332,44 @@ phase_gate_removed() {
 		*) return 1 ;;
 	esac
 	return 0
+}
+
+# The marker is only written when main actually reaches setup_sdcard_config.
+# Both C05 variants use this same runtime copy, so only the outer-gate deletion
+# determines whether the marker can be reached.
+make_c05_setup_marker_runtime() {
+	C05_MARKER_MANAGER="$SCRIPTS/c05-setup-marker-manager.sh"
+	cp "$SCRIPTS/backup-manager.sh" "$C05_MARKER_MANAGER"
+	sed -i '/^setup_sdcard_config() {$/a\
+	[ -z "${TEST_C05_SETUP_MARKER:-}" ] || printf '\''manager=%s\\n'\'' "$$" > "$TEST_C05_SETUP_MARKER"' "$C05_MARKER_MANAGER"
+	[ "$(grep -c '^setup_sdcard_config() {$' "$C05_MARKER_MANAGER")" -eq 1 ] && \
+		[ "$(grep -F -c 'TEST_C05_SETUP_MARKER' "$C05_MARKER_MANAGER")" -eq 1 ]
+}
+
+# Replace setup_sdcard_config only in a temporary runtime copy. The wrapper
+# preserves its original failure result, but after a real successful return it
+# records the manager PID, delivers TERM to that exact PID, and returns normally.
+make_post_setup_signal_runtime() {
+	POST_SETUP_MANAGER="$SCRIPTS/post-setup-signal-manager.sh"
+	cp "$SCRIPTS/backup-manager.sh" "$POST_SETUP_MANAGER"
+	sed -i 's/^setup_sdcard_config() {$/test_original_setup_sdcard_config() {/' "$POST_SETUP_MANAGER"
+	sed -i '/^# Read source identity only after the card is mounted read-only\. Args: none\.$/i\
+setup_sdcard_config() {\
+\tif ! test_original_setup_sdcard_config; then\
+\t\treturn 1\
+\tfi\
+\tprintf '\''manager=%s\\n'\'' "$$" > "$TEST_POST_SETUP_MARKER"\
+\tprintf '\''event=post-setup-wrapper manager=%s\\n'\'' "$$" >> "$TEST_POST_SETUP_TRACE"\
+\tkill -TERM "$$"\
+\tsignal_rc=$?\
+\tprintf '\''event=post-setup-term manager=%s signal-rc=%s\\n'\'' "$$" "$signal_rc" >> "$TEST_POST_SETUP_TRACE"\
+\treturn 0\
+}\
+' "$POST_SETUP_MANAGER"
+	[ "$(grep -c '^test_original_setup_sdcard_config() {$' "$POST_SETUP_MANAGER")" -eq 1 ] && \
+		[ "$(grep -c '^setup_sdcard_config() {$' "$POST_SETUP_MANAGER")" -eq 1 ] && \
+		[ "$(grep -F -c 'if ! setup_sdcard_config; then' "$POST_SETUP_MANAGER")" -eq 1 ] && \
+		[ "$(grep -F -c 'TEST_POST_SETUP_MARKER' "$POST_SETUP_MANAGER")" -eq 1 ]
 }
 
 case_terminal_completed_term_is_ignored() {
@@ -358,11 +404,16 @@ case_source_identity_term_stops_before_card_write() {
 	mc_case C05 'TERM from source identity lookup stops before card write or target binding'
 	reset_case || { mc_fail 'C05 fixture setup failed'; return; }
 	write_normal_signal_shell
+	marker="$TEST_ROOT/c05-setup-marker"
+	make_c05_setup_marker_runtime || { mc_fail 'C05 marker runtime generation failed'; return; }
+	mc_success 'C05 marker injection has one setup entrypoint and one marker write' \
+		/bin/sh -c '[ "$(grep -c "^setup_sdcard_config() {$" "$1")" -eq 1 ] && [ "$(grep -F -c TEST_C05_SETUP_MARKER "$1")" -eq 1 ]' sh "$C05_MARKER_MANAGER"
 	pid_file="$TEST_ROOT/c05-manager.pid"
 	trace="$TEST_ROOT/c05-trace"
 	: > "$trace"
-	TEST_SOURCE_BLOCK_SIGNAL_PID_FILE="$pid_file" TEST_SOURCE_BLOCK_SIGNAL_TRACE="$trace"
-	export TEST_SOURCE_BLOCK_SIGNAL_PID_FILE TEST_SOURCE_BLOCK_SIGNAL_TRACE
+	MANAGER_SCRIPT="$C05_MARKER_MANAGER" TEST_C05_SETUP_MARKER="$marker" \
+		TEST_SOURCE_BLOCK_SIGNAL_PID_FILE="$pid_file" TEST_SOURCE_BLOCK_SIGNAL_TRACE="$trace"
+	export MANAGER_SCRIPT TEST_C05_SETUP_MARKER TEST_SOURCE_BLOCK_SIGNAL_PID_FILE TEST_SOURCE_BLOCK_SIGNAL_TRACE
 	start_manager_with_pid_file "$pid_file" || { mc_fail 'C05 manager did not publish PID'; return; }
 	manager_pid=$MANAGER_PID
 	mc_success 'C05 manager exits after source identity cancellation' mc_wait_exit "$manager_pid"
@@ -371,6 +422,7 @@ case_source_identity_term_stops_before_card_write() {
 	mc_success 'C05 source block trigger fired on /dev/sda1' grep -F 'phase=source-block args=[info /dev/sda1]' "$trace"
 	mc_success 'C05 source block TERM reached recorded manager' grep -F 'signal-rc=0' "$trace"
 	mc_equal "$manager_rc" 143 'C05 source identity TERM preserves cancellation exit'
+	mc_absent "$marker" 'C05 normal outer gate prevents setup entry'
 	mc_absent "$SOURCE_MOUNT/FieldBackup.conf" 'C05 cancelled source lookup does not publish card configuration'
 	mc_success 'C05 never opens source card read-write' \
 		/bin/sh -c '! grep -F -q "mount mode=rw" "$1"' sh "$EFFECTS"
@@ -379,21 +431,35 @@ case_source_identity_term_stops_before_card_write() {
 	mc_success 'C05 never starts rsync' /bin/sh -c '! grep -F -q rsync "$1"' sh "$EFFECTS"
 	mc_success 'C05 owner cleanup may unmount its completed read-only mount' \
 		grep -F "umount target=[$SOURCE_MOUNT]" "$EFFECTS"
-	reset_case || { mc_fail 'C05 Red fixture setup failed'; return; }
+
+	reset_case || { mc_fail 'C05 mutant fixture setup failed'; return; }
 	write_normal_signal_shell
-	make_phase_gate_mutation source-identity || { mc_fail 'C05 Red mutation failed'; return; }
-	mc_success 'C05 Red mutation removes only the source identity gate' phase_gate_removed source-identity
-	red_pid_file="$TEST_ROOT/c05-red-manager.pid"
-	red_trace="$TEST_ROOT/c05-red-trace"
-	: > "$red_trace"
-	MANAGER_SCRIPT="$MUTATED_MANAGER" TEST_SOURCE_BLOCK_SIGNAL_PID_FILE="$red_pid_file" \
-		TEST_SOURCE_BLOCK_SIGNAL_TRACE="$red_trace"
-	export MANAGER_SCRIPT TEST_SOURCE_BLOCK_SIGNAL_PID_FILE TEST_SOURCE_BLOCK_SIGNAL_TRACE
-	start_manager_with_pid_file "$red_pid_file" || { mc_fail 'C05 Red manager did not publish PID'; return; }
-	wait "$MANAGER_PID" 2>/dev/null || :
-	mc_success 'C05 Red mutation reaches card configuration publication' \
-		test -f "$SOURCE_MOUNT/FieldBackup.conf"
-	unset MANAGER_SCRIPT TEST_SOURCE_BLOCK_SIGNAL_PID_FILE TEST_SOURCE_BLOCK_SIGNAL_TRACE
+	marker="$TEST_ROOT/c05-mutant-setup-marker"
+	make_c05_setup_marker_runtime || { mc_fail 'C05 mutant marker runtime generation failed'; return; }
+	make_phase_gate_mutation source-identity "$C05_MARKER_MANAGER" || { mc_fail 'C05 mutant gate removal failed'; return; }
+	mc_success 'C05 mutant removes only the source identity outer gate' phase_gate_removed source-identity
+	mutant_pid_file="$TEST_ROOT/c05-mutant-manager.pid"
+	mutant_trace="$TEST_ROOT/c05-mutant-trace"
+	: > "$mutant_trace"
+	MANAGER_SCRIPT="$MUTATED_MANAGER" TEST_C05_SETUP_MARKER="$marker" \
+		TEST_SOURCE_BLOCK_SIGNAL_PID_FILE="$mutant_pid_file" TEST_SOURCE_BLOCK_SIGNAL_TRACE="$mutant_trace"
+	export MANAGER_SCRIPT TEST_C05_SETUP_MARKER TEST_SOURCE_BLOCK_SIGNAL_PID_FILE TEST_SOURCE_BLOCK_SIGNAL_TRACE
+	start_manager_with_pid_file "$mutant_pid_file" || { mc_fail 'C05 mutant manager did not publish PID'; return; }
+	mutant_pid=$MANAGER_PID
+	mc_success 'C05 mutant exits after remaining pre-mount cancellation gate' mc_wait_exit "$mutant_pid"
+	mutant_rc=0
+	wait "$mutant_pid" 2>/dev/null || mutant_rc=$?
+	mc_success 'C05 mutant reaches injected setup entrypoint' test -f "$marker"
+	mc_equal "$(cat "$marker")" "manager=$mutant_pid" 'C05 mutant marker identifies the real manager process'
+	mc_equal "$mutant_rc" 143 'C05 remaining pre-mount gate preserves sticky TERM status'
+	mc_success 'C05 mutant remaining pre-mount gate prevents read-write mount' \
+		/bin/sh -c '! grep -F -q "mount mode=rw" "$1"' sh "$EFFECTS"
+	mc_absent "$SOURCE_MOUNT/FieldBackup.conf" 'C05 mutant remaining pre-mount gate prevents config publication'
+	mc_absent "$TARGET_MOUNT/backups/.card-identities" 'C05 mutant remaining pre-mount gate prevents identity publication'
+	mc_absent /opt/outdoor-backup/conf/aliases.json 'C05 mutant remaining pre-mount gate prevents alias publication'
+	mc_success 'C05 mutant remaining pre-mount gate prevents rsync' \
+		/bin/sh -c '! grep -F -q rsync "$1"' sh "$EFFECTS"
+	unset MANAGER_SCRIPT TEST_C05_SETUP_MARKER TEST_SOURCE_BLOCK_SIGNAL_PID_FILE TEST_SOURCE_BLOCK_SIGNAL_TRACE
 }
 
 case_card_config_sync_term_stops_before_binding() {
@@ -415,28 +481,68 @@ case_card_config_sync_term_stops_before_binding() {
 	mc_success 'C06 config sync TERM reached recorded manager' grep -F 'signal-rc=0' "$trace"
 	mc_equal "$manager_rc" 143 'C06 config sync TERM preserves cancellation exit'
 	mc_success 'C06 already-published config remains observable' test -f "$SOURCE_MOUNT/FieldBackup.conf"
-	mc_success 'C06 source returns to read-only before the cancellation boundary' \
-		grep -F "mount mode=ro target=[$SOURCE_MOUNT]" "$EFFECTS"
+	mc_equal "$(mount_effect_sequence)" ro,umount,rw,umount \
+		'C06 sync TERM leaves only initial ro plus pre-signal provisioning mounts'
+	mc_equal "$(grep -F -c "mount mode=ro target=[$SOURCE_MOUNT]" "$EFFECTS")" 1 \
+		'C06 sync TERM has no read-only restore after the initial mount'
+	mc_equal "$(grep -F -c "mount mode=rw target=[$SOURCE_MOUNT]" "$EFFECTS")" 1 \
+		'C06 sync TERM has no read-write mount after the publication window'
 	mc_absent "$TARGET_MOUNT/backups/.card-identities" 'C06 does not bind an identity after cancellation'
 	mc_absent /opt/outdoor-backup/conf/aliases.json 'C06 does not publish an alias after cancellation'
 	mc_success 'C06 backup root has no card data entries' \
 		/bin/sh -c '[ -d "$1" ] && ! find "$1" -mindepth 1 -print | grep -q .' sh "$TARGET_MOUNT/backups"
 	mc_success 'C06 never starts rsync' /bin/sh -c '! grep -F -q rsync "$1"' sh "$EFFECTS"
-	reset_case || { mc_fail 'C06 Red fixture setup failed'; return; }
+	unset TEST_CONFIG_SYNC_SIGNAL_ON TEST_CONFIG_SYNC_SIGNAL_PID_FILE TEST_CONFIG_SYNC_SIGNAL_TRACE
+
+	reset_case || { mc_fail 'C06 outer-gate normal fixture setup failed'; return; }
 	write_normal_signal_shell
-	make_phase_gate_mutation card-config || { mc_fail 'C06 Red mutation failed'; return; }
-	mc_success 'C06 Red mutation removes only the card config gate' phase_gate_removed card-config
-	red_pid_file="$TEST_ROOT/c06-red-manager.pid"
-	red_trace="$TEST_ROOT/c06-red-trace"
-	: > "$red_trace"
-	MANAGER_SCRIPT="$MUTATED_MANAGER" TEST_CONFIG_SYNC_SIGNAL_ON=1 \
-		TEST_CONFIG_SYNC_SIGNAL_PID_FILE="$red_pid_file" TEST_CONFIG_SYNC_SIGNAL_TRACE="$red_trace"
-	export MANAGER_SCRIPT TEST_CONFIG_SYNC_SIGNAL_ON TEST_CONFIG_SYNC_SIGNAL_PID_FILE TEST_CONFIG_SYNC_SIGNAL_TRACE
-	start_manager_with_pid_file "$red_pid_file" || { mc_fail 'C06 Red manager did not publish PID'; return; }
-	wait "$MANAGER_PID" 2>/dev/null || :
-	mc_success 'C06 Red mutation reaches identity publication' \
+	marker="$TEST_ROOT/c06-post-setup-marker"
+	post_trace="$TEST_ROOT/c06-post-setup-trace"
+	: > "$post_trace"
+	make_post_setup_signal_runtime || { mc_fail 'C06 post-setup wrapper generation failed'; return; }
+	mc_success 'C06 wrapper has one renamed original, wrapper, and main callsite' \
+		/bin/sh -c '[ "$(grep -c "^test_original_setup_sdcard_config() {$" "$1")" -eq 1 ] && [ "$(grep -c "^setup_sdcard_config() {$" "$1")" -eq 1 ] && [ "$(grep -F -c "if ! setup_sdcard_config; then" "$1")" -eq 1 ]' sh "$POST_SETUP_MANAGER"
+	pid_file="$TEST_ROOT/c06-outer-normal-manager.pid"
+	MANAGER_SCRIPT="$POST_SETUP_MANAGER" TEST_POST_SETUP_MARKER="$marker" TEST_POST_SETUP_TRACE="$post_trace"
+	export MANAGER_SCRIPT TEST_POST_SETUP_MARKER TEST_POST_SETUP_TRACE
+	start_manager_with_pid_file "$pid_file" || { mc_fail 'C06 outer normal manager did not publish PID'; return; }
+	manager_pid=$MANAGER_PID
+	mc_success 'C06 outer normal manager exits after wrapper TERM' mc_wait_exit "$manager_pid"
+	manager_rc=0
+	wait "$manager_pid" 2>/dev/null || manager_rc=$?
+	mc_success 'C06 wrapper marker records a successful setup return' test -f "$marker"
+	mc_equal "$(cat "$marker")" "manager=$manager_pid" 'C06 wrapper TERM targets the real manager process'
+	mc_success 'C06 wrapper records successful self TERM delivery' grep -F "event=post-setup-term manager=$manager_pid signal-rc=0" "$post_trace"
+	mc_equal "$manager_rc" 143 'C06 post-setup outer gate preserves cancellation exit'
+	mc_absent "$TARGET_MOUNT/backups/.card-identities" 'C06 post-setup outer gate prevents identity binding'
+	mc_absent /opt/outdoor-backup/conf/aliases.json 'C06 post-setup outer gate prevents alias publication'
+	mc_success 'C06 post-setup outer gate prevents rsync' /bin/sh -c '! grep -F -q rsync "$1"' sh "$EFFECTS"
+
+	reset_case || { mc_fail 'C06 outer-gate mutant fixture setup failed'; return; }
+	write_normal_signal_shell
+	marker="$TEST_ROOT/c06-post-setup-mutant-marker"
+	post_trace="$TEST_ROOT/c06-post-setup-mutant-trace"
+	: > "$post_trace"
+	make_post_setup_signal_runtime || { mc_fail 'C06 mutant wrapper generation failed'; return; }
+	make_phase_gate_mutation post-setup "$POST_SETUP_MANAGER" || { mc_fail 'C06 mutant gate removal failed'; return; }
+	mc_success 'C06 mutant removes only the post-setup outer gate' phase_gate_removed post-setup
+	pid_file="$TEST_ROOT/c06-outer-mutant-manager.pid"
+	MANAGER_SCRIPT="$MUTATED_MANAGER" TEST_POST_SETUP_MARKER="$marker" TEST_POST_SETUP_TRACE="$post_trace"
+	export MANAGER_SCRIPT TEST_POST_SETUP_MARKER TEST_POST_SETUP_TRACE
+	start_manager_with_pid_file "$pid_file" || { mc_fail 'C06 outer mutant manager did not publish PID'; return; }
+	mutant_pid=$MANAGER_PID
+	mc_success 'C06 outer mutant exits at the next real cancellation gate' mc_wait_exit "$mutant_pid"
+	mutant_rc=0
+	wait "$mutant_pid" 2>/dev/null || mutant_rc=$?
+	mc_success 'C06 mutant wrapper marker records successful setup return' test -f "$marker"
+	mc_equal "$(cat "$marker")" "manager=$mutant_pid" 'C06 mutant wrapper TERM targets the real manager process'
+	mc_success 'C06 mutant records successful self TERM delivery' grep -F "event=post-setup-term manager=$mutant_pid signal-rc=0" "$post_trace"
+	mc_equal "$mutant_rc" 143 'C06 next real cancellation gate preserves cancellation exit'
+	mc_success 'C06 mutant reaches identity publication after outer gate removal' \
 		/bin/sh -c 'find "$1" -path "*/.card-identities/*.json" -type f | grep -q .' sh "$TARGET_MOUNT/backups"
-	unset MANAGER_SCRIPT TEST_CONFIG_SYNC_SIGNAL_ON TEST_CONFIG_SYNC_SIGNAL_PID_FILE TEST_CONFIG_SYNC_SIGNAL_TRACE
+	mc_success 'C06 mutant next real cancellation gate prevents rsync' \
+		/bin/sh -c '! grep -F -q rsync "$1"' sh "$EFFECTS"
+	unset MANAGER_SCRIPT TEST_POST_SETUP_MARKER TEST_POST_SETUP_TRACE
 }
 
 case_logger_failure_preserves_cancellation_lifecycle() {
@@ -511,7 +617,7 @@ main() {
 	case_logger_failure_preserves_cancellation_lifecycle
 	printf 'RESULT cases=%s assertions=%s failed=%s\n' "$MC_CASES" "$MC_ASSERTIONS" "$MC_FAILED"
 	[ "$MC_CASES" -eq 8 ] || mc_fail "expected 8 cases, ran $MC_CASES"
-	[ "$MC_ASSERTIONS" -eq 69 ] || mc_fail "expected 69 assertions, ran $MC_ASSERTIONS"
+	[ "$MC_ASSERTIONS" -eq 96 ] || mc_fail "expected 96 assertions, ran $MC_ASSERTIONS"
 	[ "$MC_FAILED" -eq 0 ]
 }
 

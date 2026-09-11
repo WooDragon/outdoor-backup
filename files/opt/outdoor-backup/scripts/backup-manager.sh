@@ -28,6 +28,10 @@ BACKUP_STARTED_AT=0
 BACKUP_DISPLAY_NAME=""
 INITIAL_CARD_ALIAS=""
 SOURCE_FS_UUID=""
+# Opaque source topology/UUID/diskseq baseline captured before lock contention.
+# It is intentionally separate from SOURCE_FS_UUID, which remains the actual
+# post-read-only-mount identity used by existing card binding.
+SOURCE_IDENTITY_SNAPSHOT=""
 BACKUP_TRANSFER_SUCCEEDED=0
 BACKUP_TRANSFER_FINISHED_AT=""
 BACKUP_TRANSFER_FINISHED_TEXT=""
@@ -134,6 +138,7 @@ if [ "$ACTION" = add ]; then
 	. "$SCRIPT_DIR/transfer-process.sh"
 	. "$SCRIPT_DIR/backup-transfer.sh"
 	. "$SCRIPT_DIR/card-identity.sh"
+	. "$SCRIPT_DIR/source-identity.sh"
 fi
 
 # Record only the first signal so repeated requests are idempotent and the
@@ -355,6 +360,14 @@ mount_sdcard() {
 		log_error "Source mount point is already in use: $MOUNT_POINT"
 		return 1
 	fi
+	# Every mount attempt rechecks the pre-lock baseline. This narrows, but cannot
+	# eliminate, media substitution races; matching UUIDs alone are not proof.
+	if ! source_identity_matches "$DEVNAME" "$SOURCE_IDENTITY_SNAPSHOT"; then
+		ERROR_TYPE=device_unknown
+		log_error 'Source device changed or became unavailable; refusing mount'
+		return 1
+	fi
+	check_cancel_request || return "$?"
 	mkdir -p "$MOUNT_POINT"
 	for fs in auto exfat ntfs3 ext4 ext3 ext2 vfat; do
 		if mount -t "$fs" -o "$1" "/dev/$DEVNAME" "$MOUNT_POINT" 2>/dev/null; then
@@ -624,12 +637,24 @@ main() {
 	trap cleanup EXIT
 	trap 'record_cancel 130' INT
 	trap 'record_cancel 143' TERM
+	if ! SOURCE_IDENTITY_SNAPSHOT=$(source_identity_read "$DEVNAME"); then
+		ERROR_TYPE=device_unknown
+		log_error 'Source device is unavailable before lock acquisition'
+		exit 1
+	fi
+	check_cancel_request || exit "$?"
 	if ! acquire_lock; then
 		if [ "${BACKUP_CANCEL_CODE:-0}" -ne 0 ]; then
 			ERROR_TYPE=cancelled
 			exit "$BACKUP_CANCEL_CODE"
 		fi
 		ERROR_TYPE=lock_timeout
+		exit 1
+	fi
+	check_cancel_request || exit "$?"
+	if ! source_identity_matches "$DEVNAME" "$SOURCE_IDENTITY_SNAPSHOT"; then
+		ERROR_TYPE=device_unknown
+		log_error 'Source device changed or became unavailable after lock acquisition'
 		exit 1
 	fi
 	check_cancel_request || exit "$?"
@@ -646,7 +671,9 @@ main() {
 	fi
 	check_cancel_request || exit "$?"
 	if ! setup_sdcard_config; then
-		ERROR_TYPE=card_config
+		# A source snapshot mismatch from a remount gate is device evidence, not
+		# malformed card metadata. Preserve that classification for its LED path.
+		[ "$ERROR_TYPE" = device_unknown ] || ERROR_TYPE=card_config
 		exit 1
 	fi
 	check_cancel_request || exit "$?"

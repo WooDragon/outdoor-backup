@@ -93,10 +93,11 @@ outdoor-backup/
 ### 2. 备份管理器
 - **文件**: `backup-manager.sh`
 - **职责**: 执行完整备份流程，处理所有错误情况
-- **执行流程**: 符号链接锁 → 挂载 → 配置 → rsync → 状态更新 → 清理
+- **执行流程**: 目标守卫 → 来源 snapshot 捕获 → 符号链接锁 → snapshot 复验 → 挂载 → 配置 → rsync → 状态更新 → 清理
+- **来源 snapshot 约束**：每个三参数或四参数 `add` 应在锁竞争前捕获来源 snapshot，并在获锁后和每次来源 mount 前复验同一 baseline。每次 probe 返回后应检查 sticky cancel，避免 probe 期间的 `TERM` 触发后续 LED 或 mount 副作用。snapshot 变化或不可读取时应以 `device_unknown` 失败；实现不得更新 baseline 以接受 replacement。snapshot 不能作为物理卡 ID 或原子 mount 保证。
 - **取消约束**：可取消区内收到的 `INT`/`TERM` 只取消本任务已验证的传输进程组，不得成功结项；最终终态发布边界后不再接收新取消。
-- **remove 约束**：四参数 `remove DEVNAME DEVPATH SEQNUM` 只能请求取消经过锁、原始 argv、序号和路径关系核验的当前 owner。三参数 remove 保持成功 no-op。非 owner 不得写入共享资源。
-- **实现与测试导航**：修改传输进程、取消路径或 remove 所有者匹配前，应先读取 [docs/component-implementation.md](docs/component-implementation.md) 的相应章节及其中列出的 helper 和测试入口。
+- **remove 约束**：四参数 `remove DEVNAME DEVPATH SEQNUM` 只能请求取消经过锁、原始 argv、序号和路径关系核验的当前 owner。三参数 remove 保持成功 no-op。非 owner 不得写入共享资源。`remove` 和 disabled `add` 不应加载 source snapshot 库或读取来源 snapshot。
+- **实现与测试导航**：修改来源 snapshot、传输进程、取消路径或 remove 所有者匹配前，应先读取 [docs/component-implementation.md](docs/component-implementation.md) 的相应章节及其中列出的 helper 和测试入口。
 
 ### 3. 公共函数库
 - **文件**: `common.sh`

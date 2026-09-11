@@ -297,6 +297,9 @@ add_node() {
     node="$SYSFS/devices/mock/block/$name"
     mkdir -p "$node"
     printf '%s\n' "$major_minor" > "$node/dev"
+    # Source-identity tests treat this as a controlled gendisk generation;
+    # target-device itself does not consume it.
+    printf '%s\n' "${TEST_DISKSEQ:-1}" > "$node/diskseq"
     printf 'DEVNAME=%s\n' "$name" > "$node/uevent"
     ln -s "../../devices/mock/block/$name" "$SYSFS/dev/block/$major_minor"
     ln -s "../../devices/mock/block/$name" "$SYSFS/class/block/$name"
@@ -360,6 +363,7 @@ prepare_runtime() {
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/backup-transfer.sh" "$SCRIPTS/backup-transfer.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/card-config.sh" "$SCRIPTS/card-config.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/card-identity.sh" "$SCRIPTS/card-identity.sh"
+    ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/source-identity.sh" "$SCRIPTS/source-identity.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/target.sh" "$SCRIPTS/target.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/target-device.sh" "$SCRIPTS/target-device.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/owner-event.sh" "$SCRIPTS/owner-event.sh"
@@ -378,6 +382,15 @@ EOF
     cat > "$BIN/logger" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >> "$TEST_NOTICES"
+if [ -n "${TEST_LOGGER_TRACE:-}" ]; then
+    printf 'manager=%s args=[%s] lock=[%s]\n' "$PPID" "$*" \
+        "$(readlink "$TEST_LOCK_LINK" 2>/dev/null || :)" >> "$TEST_LOGGER_TRACE"
+fi
+if [ -n "${TEST_LOGGER_STAGE_MATCH:-}" ] && [ -n "${TEST_LOGGER_STAGE_FILE:-}" ]; then
+    case "$*" in
+        *"$TEST_LOGGER_STAGE_MATCH"*) : > "$TEST_LOGGER_STAGE_FILE" ;;
+    esac
+fi
 if [ "${TEST_RECORD_CLEANUP_PHASES:-0}" = 1 ]; then
     printf 'logger args=[%s] lock=[%s]\n' "$*" \
         "$(readlink "$TEST_LOCK_LINK" 2>/dev/null || :)" >> "$TEST_EFFECTS"
@@ -386,6 +399,24 @@ if [ "${TEST_LOGGER_FAIL:-0}" = 1 ]; then
     exit 1
 fi
 exit 0
+EOF
+    cat > "$BIN/ln" <<'EOF'
+#!/bin/sh
+if [ "$#" -eq 3 ] && [ "$1" = -s ] && [ "$3" = "$TEST_LOCK_LINK" ]; then
+    [ -z "${TEST_LOCK_ATTEMPT_MARKER:-}" ] || \
+        printf 'manager=%s lock=[%s]\n' "$PPID" "$3" > "$TEST_LOCK_ATTEMPT_MARKER"
+    if /bin/ln "$@"; then
+        [ -z "${TEST_LOCK_ACQUIRED_MARKER:-}" ] || \
+            printf 'manager=%s lock=[%s]\n' "$PPID" "$3" > "$TEST_LOCK_ACQUIRED_MARKER"
+        if [ -n "${TEST_LOCK_ACQUIRED_RELEASE:-}" ]; then
+            while [ ! -e "$TEST_LOCK_ACQUIRED_RELEASE" ]; do /bin/sleep 1; done
+        fi
+        exit 0
+    else
+        exit $?
+    fi
+fi
+exec /bin/ln "$@"
 EOF
     cat > "$BIN/date" <<'EOF'
 #!/bin/sh
@@ -410,8 +441,29 @@ case "${1:-}:$2" in
         ;;
     info:/dev/sda1)
         [ "${TEST_SOURCE_BLOCK_FAIL:-0}" = 1 ] && exit 1
-        printf '%s: UUID="%s" TYPE="vfat"\n' /dev/sda1 "$TEST_SOURCE_FS_UUID"
-        if [ -n "${TEST_SOURCE_BLOCK_SIGNAL_PID_FILE:-}" ]; then
+        source_uuid=${TEST_SOURCE_FS_UUID:-ABCD-1234}
+        [ -z "${TEST_SOURCE_UUID_FILE:-}" ] || source_uuid=$(cat "$TEST_SOURCE_UUID_FILE")
+        [ -z "${TEST_SOURCE_READ_MARKER:-}" ] || printf 'node=%s\n' /dev/sda1 >> "$TEST_SOURCE_READ_MARKER"
+        printf '%s: UUID="%s" TYPE="vfat"\n' /dev/sda1 "$source_uuid"
+        # Trigger C05 only at its original observable phase: after the manager
+        # has mounted this source read-only. New pre-lock identity reads must not
+        # make a count-based test signal before the old card-write boundary.
+        if [ -n "${TEST_SOURCE_PROBE_SIGNAL_PID_FILE:-}" ] && \
+            [ -n "${TEST_SOURCE_PROBE_STAGE_FILE:-}" ] && \
+            [ -e "$TEST_SOURCE_PROBE_STAGE_FILE" ]; then
+            block_signal_pid=$(cat "$TEST_SOURCE_PROBE_SIGNAL_PID_FILE")
+            printf 'phase=%s args=[%s] sender=%s target=%s\n' \
+                "$(cat "$TEST_SOURCE_PROBE_STAGE_FILE")" "$*" "$$" "$block_signal_pid" \
+                >> "$TEST_SOURCE_PROBE_SIGNAL_TRACE"
+            kill -TERM "$block_signal_pid"
+            block_signal_rc=$?
+            printf 'phase=%s signal-rc=%s\n' "$(cat "$TEST_SOURCE_PROBE_STAGE_FILE")" "$block_signal_rc" \
+                >> "$TEST_SOURCE_PROBE_SIGNAL_TRACE"
+            rm -f "$TEST_SOURCE_PROBE_STAGE_FILE"
+        fi
+        if [ -n "${TEST_SOURCE_BLOCK_SIGNAL_PID_FILE:-}" ] && \
+            [ -r "$TEST_SOURCE_MOUNT_STATE" ] && \
+            grep -F -q 'mode=ro' "$TEST_SOURCE_MOUNT_STATE"; then
             block_signal_pid=$(cat "$TEST_SOURCE_BLOCK_SIGNAL_PID_FILE")
             printf 'phase=source-block args=[%s] sender=%s target=%s\n' "$*" "$$" "$block_signal_pid" \
                 >> "$TEST_SOURCE_BLOCK_SIGNAL_TRACE"
@@ -529,6 +581,16 @@ if [ "$umount_target" = "$TEST_SOURCE_MOUNT" ]; then
         exit 1
     fi
     rm -f "$TEST_SOURCE_MOUNT_STATE"
+    # Test-only controlled replacement immediately after the initial RO mount
+    # closes. It models the observable re-open boundary without a production hook.
+    if [ "$umount_count" = 1 ] && [ "${TEST_SOURCE_CHANGE_AFTER_UMOUNT:-0}" = 1 ] && \
+        [ -n "${TEST_SOURCE_UUID_FILE:-}" ]; then
+        printf '%s\n' "${TEST_SOURCE_UUID_AFTER_UMOUNT:-CHANGED-AFTER-RO}" > "$TEST_SOURCE_UUID_FILE"
+    fi
+    if [ "$umount_count" = 2 ] && [ "${TEST_SOURCE_CHANGE_AFTER_SECOND_UMOUNT:-0}" = 1 ] && \
+        [ -n "${TEST_SOURCE_UUID_FILE:-}" ]; then
+        printf '%s\n' "${TEST_SOURCE_UUID_AFTER_SECOND_UMOUNT:-CHANGED-AFTER-RW}" > "$TEST_SOURCE_UUID_FILE"
+    fi
 fi
 exit 0
 EOF
@@ -777,6 +839,10 @@ run_manager() {
         TEST_TIMER_PID="$TEST_ROOT/timer-pid" \
         TEST_TIMER_DURATION="${TEST_TIMER_DURATION:-60}" \
         TEST_MANAGER_PID_FILE="${TEST_MANAGER_PID_FILE:-}" \
+        LOCK_IDENTITY="${LOCK_IDENTITY:-backup-manager.sh}" \
+        TEST_LOCK_WAIT_MARKER="${TEST_LOCK_WAIT_MARKER:-}" \
+        TEST_LOCK_WAIT_RELEASE="${TEST_LOCK_WAIT_RELEASE:-}" \
+        TEST_B_LOCK_IDENTITY_MARKER="${TEST_B_LOCK_IDENTITY_MARKER:-}" \
         TEST_SLEEP_PASSTHROUGH="${TEST_SLEEP_PASSTHROUGH:-0}" \
         TEST_RECORD_CLEANUP_PHASES="${TEST_RECORD_CLEANUP_PHASES:-0}" \
         TEST_DF_MB="${TEST_DF_MB:-2}" TEST_RSYNC_EXIT="${TEST_RSYNC_EXIT:-0}" \
@@ -798,10 +864,25 @@ run_manager() {
         TEST_MOUNT_INITIAL_FAILS="${TEST_MOUNT_INITIAL_FAILS:-0}" \
         TEST_SOURCE_UMOUNT_FAIL_ON="${TEST_SOURCE_UMOUNT_FAIL_ON:-0}" \
         TEST_SOURCE_UMOUNT_COUNT="$TEST_ROOT/source-umount-count" \
+        TEST_SOURCE_CHANGE_AFTER_UMOUNT="${TEST_SOURCE_CHANGE_AFTER_UMOUNT:-0}" \
+        TEST_SOURCE_UUID_AFTER_UMOUNT="${TEST_SOURCE_UUID_AFTER_UMOUNT:-}" \
+        TEST_SOURCE_CHANGE_AFTER_SECOND_UMOUNT="${TEST_SOURCE_CHANGE_AFTER_SECOND_UMOUNT:-0}" \
+        TEST_SOURCE_UUID_AFTER_SECOND_UMOUNT="${TEST_SOURCE_UUID_AFTER_SECOND_UMOUNT:-}" \
         TEST_SOURCE_FS_UUID="${TEST_SOURCE_FS_UUID:-ABCD-1234}" \
+        TEST_SOURCE_UUID_FILE="${TEST_SOURCE_UUID_FILE:-}" \
+        TEST_SOURCE_READ_MARKER="${TEST_SOURCE_READ_MARKER:-}" \
+        TEST_SOURCE_PROBE_STAGE_FILE="${TEST_SOURCE_PROBE_STAGE_FILE:-}" \
+        TEST_SOURCE_PROBE_SIGNAL_PID_FILE="${TEST_SOURCE_PROBE_SIGNAL_PID_FILE:-}" \
+        TEST_SOURCE_PROBE_SIGNAL_TRACE="${TEST_SOURCE_PROBE_SIGNAL_TRACE:-}" \
         TEST_SOURCE_BLOCK_FAIL="${TEST_SOURCE_BLOCK_FAIL:-0}" \
         TEST_SOURCE_BLOCK_SIGNAL_PID_FILE="${TEST_SOURCE_BLOCK_SIGNAL_PID_FILE:-}" \
         TEST_SOURCE_BLOCK_SIGNAL_TRACE="${TEST_SOURCE_BLOCK_SIGNAL_TRACE:-}" \
+        TEST_LOCK_ATTEMPT_MARKER="${TEST_LOCK_ATTEMPT_MARKER:-}" \
+        TEST_LOCK_ACQUIRED_MARKER="${TEST_LOCK_ACQUIRED_MARKER:-}" \
+        TEST_LOCK_ACQUIRED_RELEASE="${TEST_LOCK_ACQUIRED_RELEASE:-}" \
+        TEST_LOGGER_TRACE="${TEST_LOGGER_TRACE:-}" \
+        TEST_LOGGER_STAGE_MATCH="${TEST_LOGGER_STAGE_MATCH:-}" \
+        TEST_LOGGER_STAGE_FILE="${TEST_LOGGER_STAGE_FILE:-}" \
         TEST_CONFIG_MKTEMP_FAIL="${TEST_CONFIG_MKTEMP_FAIL:-0}" \
         TEST_CONFIG_MV_FAIL="${TEST_CONFIG_MV_FAIL:-0}" \
         TEST_IDENTITY_MKTEMP_FAIL="${TEST_IDENTITY_MKTEMP_FAIL:-0}" \
@@ -1561,14 +1642,14 @@ case_m24_source_identity_conflict_stops_before_alias_or_transfer() {
 }
 
 case_m25_unknown_source_stops_before_rw_configuration_window() {
-    begin_case M25 'unknown source UUID fails before a blank card receives a writable configuration window'
+    begin_case M25 'unknown source UUID fails in the new pre-lock capture before any source mount'
     reset_case || { fail 'M25 fixture setup failed'; return; }
     TEST_SOURCE_BLOCK_FAIL=1
     export TEST_SOURCE_BLOCK_FAIL
     assert_failure 'M25 failed source UUID read rejects manager' run_manager add sda1 /devices/mock
     unset TEST_SOURCE_BLOCK_FAIL
-    assert_contains "mount mode=ro target=[$SOURCE_MOUNT]" "$EFFECTS" \
-        'M25 source was initially mounted read-only'
+    assert_not_contains 'mount mode=' "$EFFECTS" \
+        'M25 pre-lock source UUID failure never attempts a source mount'
     assert_not_contains 'mount mode=rw' "$EFFECTS" \
         'M25 source UUID failure never opens a writable mount'
     assert_absent "$SOURCE_MOUNT/FieldBackup.conf" \
