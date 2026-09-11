@@ -30,24 +30,14 @@ log_message() {
 
 # Load card-reader whitelist settings (issue #2, folded into config.sh's
 # single config channel): default < legacy CONFIG_FILE < named
-# UCI section outdoor-backup.config. Deliberately called only from the two
-# hotplug action branches below (not at file top level) so an ignored block
-# event never pays the config_load cost.
+# UCI section outdoor-backup.config. Deliberately called only from the add
+# branch below (not at file top level): removal must survive vanished sysfs
+# and a broken reader configuration so it can reach the manager's identity gate.
 #
-# Failure policy: hotplug never aborts over a config problem, related or not.
-#   (a) config_load only ASSIGNS the three CARD_READER_* variables; it does
-#       not validate them. Validating hotplug-only fields inside the shared
-#       loader would make backup-manager.sh's own config_load call -- which
-#       gates its "remove" event before `trap cleanup`, `main()`, or any
-#       cleanup handling are installed -- fail over a field the manager
-#       never reads. So a config_load failure and an invalid whitelist are
-#       two independent conditions, checked and handled separately below.
-#   (b) Aborting here would also skip the "remove" cleanup path, which must
-#       run regardless of any config problem.
-#   (c) backup-manager.sh performs its own config_load and fails closed
-#       before any I/O -- that is the real fail-closed gate, and it only
-#       covers the fields the manager actually consumes (CARD_READER_* is
-#       not among them).
+# Failure policy: add detection never aborts over a config problem. config_load
+# only assigns CARD_READER_* values; this trigger separately validates those
+# add-only fields and falls back to its built-in heuristic. The manager remains
+# the fail-closed gate for its own add configuration before it performs I/O.
 load_reader_config() {
 	# Degraded defaults: used when config.sh is missing (a partially removed
 	# package, say) and as the fallback when the loaded whitelist turns out
@@ -236,21 +226,17 @@ case "$ACTION" in
 				# Wait for device to settle
 				sleep 2
 
-				# Execute backup
-				"$BACKUP_MANAGER" "add" "$DEVNAME" "$DEVPATH" &
+				# Execute backup with the original event identity after settling.
+				"$BACKUP_MANAGER" "add" "$DEVNAME" "$DEVPATH" "${SEQNUM:-}" &
 			) &
 		fi
 		;;
 
 	remove)
-		load_reader_config
-
-		if is_sdcard "$DEVPATH"; then
-			log_message "SD card removed: $DEVNAME"
-
-			# Notify backup manager to cleanup
-			"$BACKUP_MANAGER" "remove" "$DEVNAME" "$DEVPATH" &
-		fi
+		# A remove event is sent even when sysfs and reader configuration have
+		# disappeared. The manager is the single event validator and only it may
+		# authorize a signal to the current owner.
+		"$BACKUP_MANAGER" "remove" "$DEVNAME" "$DEVPATH" "${SEQNUM:-}" &
 		;;
 esac
 

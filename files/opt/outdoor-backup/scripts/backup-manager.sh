@@ -35,17 +35,42 @@ BACKUP_TRANSFER_FINISHED_TEXT=""
 # or kill children: the active runner must first prove its writers have stopped.
 BACKUP_CANCEL_CODE=0
 
-# Arguments are checked before loading common.sh because an add event may be
-# intentionally disabled and must not create LED, lock, mount, or I/O effects.
+# The remove sender must never load configuration or lifecycle dependencies:
+# a pulled card may already have erased sysfs, and cancellation is authorized
+# only by the immutable active owner's argv and published lock identity.
 ACTION="${1:-}"
 DEVNAME="${2:-}"
 DEVPATH="${3:-}"
+EVENT_SEQNUM="${4:-}"
 
 case "$ACTION" in
-	add|remove)
+	add)
+		[ "$#" -eq 3 ] || [ "$#" -eq 4 ] || {
+			printf '%s\n' 'outdoor-backup: add requires DEVNAME DEVPATH [SEQNUM]' >&2
+			exit 1
+		}
+		;;
+	remove)
+		[ "$#" -eq 3 ] || [ "$#" -eq 4 ] || {
+			printf '%s\n' 'outdoor-backup: remove requires DEVNAME DEVPATH [SEQNUM]' >&2
+			exit 1
+		}
+		if [ "$#" -eq 3 ]; then
+			printf '%s\n' 'outdoor-backup: remove event lacks identity; no cancellation requested' >&2
+			logger -t outdoor-backup -p daemon.notice \
+				'remove event lacks identity; no cancellation requested' 2>/dev/null || :
+			exit 0
+		fi
+		# Both libraries are source-only. target-device contributes just the lexical
+		# DEVNAME validator; neither source path reads sysfs or changes shared state.
+		. "$SCRIPT_DIR/target-device.sh"
+		. "$SCRIPT_DIR/owner-event.sh"
+		owner_event_cancel "$LOCK_LINK" "$SCRIPT_DIR/backup-manager.sh" \
+			"$DEVNAME" "$DEVPATH" "$EVENT_SEQNUM"
+		exit $?
 		;;
 	*)
-		printf 'outdoor-backup: invalid action: %s\n' "$ACTION" >&2
+		printf '%s\n' 'outdoor-backup: invalid action' >&2
 		exit 1
 		;;
 esac
@@ -55,7 +80,8 @@ esac
 . "$SCRIPT_DIR/config.sh"
 config_load "$BASE_DIR/conf/backup.conf" || exit 1
 
-if [ "$ACTION" = "add" ] && [ "$ENABLED" = "0" ]; then
+# Preserve the legacy disabled-add fast exit before loading jq or event helpers.
+if [ "$ENABLED" = "0" ]; then
 	config_notice "backup disabled; ignoring add event for $DEVNAME"
 	exit 0
 fi
@@ -64,6 +90,10 @@ fi
 # before common.sh can create logs, aliases, LEDs, locks, or source mounts.
 . "$SCRIPT_DIR/target.sh"
 . "$SCRIPT_DIR/target-device.sh"
+if [ "$#" -eq 4 ]; then
+	. "$SCRIPT_DIR/owner-event.sh"
+	owner_event_validate_event "$DEVNAME" "$DEVPATH" "$EVENT_SEQNUM" || exit 1
+fi
 
 # Signal a rejected target without entering the backup lifecycle. common.sh is
 # deliberately sourced only here: it defines the configured LED helper without
@@ -588,61 +618,49 @@ perform_backup() {
 	return "$transfer_exit"
 }
 
-# Handle remove without requiring a mounted target. Args: none.
-handle_remove() {
-	log_info 'Handling SD card removal'
-	pkill -f "rsync.*$MOUNT_POINT" 2>/dev/null || true
-	exit 0
-}
-
-# Run the requested lifecycle action. Args: event action arguments.
+# Run the add lifecycle. Remove returns above before any trap, common helper,
+# target probe, lock, mount, status, LED, or cleanup ownership can be touched.
 main() {
 	trap cleanup EXIT
 	trap 'record_cancel 130' INT
 	trap 'record_cancel 143' TERM
-	case "$ACTION" in
-		add)
-			if ! acquire_lock; then
-				if [ "${BACKUP_CANCEL_CODE:-0}" -ne 0 ]; then
-					ERROR_TYPE=cancelled
-					exit "$BACKUP_CANCEL_CODE"
-				fi
-				ERROR_TYPE=lock_timeout
-				exit 1
-			fi
-			check_cancel_request || exit "$?"
-			led_backup_start
-			check_cancel_request || exit "$?"
-			if ! mount_sdcard ro; then
-				ERROR_TYPE=device_unknown
-				exit 1
-			fi
-			check_cancel_request || exit "$?"
-			if ! read_source_identity; then
-				ERROR_TYPE=card_config
-				exit 1
-			fi
-			check_cancel_request || exit "$?"
-			if ! setup_sdcard_config; then
-				ERROR_TYPE=card_config
-				exit 1
-			fi
-			check_cancel_request || exit "$?"
-			if ! bind_card_identity; then
-				ERROR_TYPE=card_config
-				exit 1
-			fi
-			check_cancel_request || exit "$?"
-			if perform_backup; then
-				exit 0
-			else
-				backup_exit=$?
-				exit "$backup_exit"
-			fi
-			;;
-		remove) handle_remove ;;
-		*) log_error "Invalid action: $ACTION"; exit 1 ;;
-	esac
+	if ! acquire_lock; then
+		if [ "${BACKUP_CANCEL_CODE:-0}" -ne 0 ]; then
+			ERROR_TYPE=cancelled
+			exit "$BACKUP_CANCEL_CODE"
+		fi
+		ERROR_TYPE=lock_timeout
+		exit 1
+	fi
+	check_cancel_request || exit "$?"
+	led_backup_start
+	check_cancel_request || exit "$?"
+	if ! mount_sdcard ro; then
+		ERROR_TYPE=device_unknown
+		exit 1
+	fi
+	check_cancel_request || exit "$?"
+	if ! read_source_identity; then
+		ERROR_TYPE=card_config
+		exit 1
+	fi
+	check_cancel_request || exit "$?"
+	if ! setup_sdcard_config; then
+		ERROR_TYPE=card_config
+		exit 1
+	fi
+	check_cancel_request || exit "$?"
+	if ! bind_card_identity; then
+		ERROR_TYPE=card_config
+		exit 1
+	fi
+	check_cancel_request || exit "$?"
+	if perform_backup; then
+		exit 0
+	else
+		backup_exit=$?
+		exit "$backup_exit"
+	fi
 }
 
 main "$@"
