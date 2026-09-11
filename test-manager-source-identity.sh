@@ -391,6 +391,7 @@ case_s05_capture_failure_disabled_and_remove_do_not_touch_source() {
 
     reset_case || { ms_fail 'S05 remove fixture setup failed'; return; }
     rm -f "$SCRIPTS/source-identity.sh"
+    ms_success 'S05 four-argument remove does not load source identity library' run_manager remove sda1 /devices/mock/sda/sda1 20
     ms_success 'S05 legacy remove does not load source identity library' run_manager remove sda1 /devices/mock
 }
 
@@ -589,8 +590,8 @@ assert_assertion_gate_is_live() {
     ms_success 'assertion-count mutant failed specifically at the MS_ASSERTIONS gate' \
         /bin/ash -c "grep -F -q \"\$1\" \"\$2\" && grep -F -q \"\$3\" \"\$4\"" \
         assertion-count-mutant \
-        'expected 244 base assertions, ran 243' "$TEST_ROOT/assertion-mutant.stderr" \
-        'RESULT cases=12 assertions=243 failed=1' "$TEST_ROOT/assertion-mutant.stdout"
+        'expected 245 base assertions, ran 244' "$TEST_ROOT/assertion-mutant.stderr" \
+        'RESULT cases=12 assertions=244 failed=1' "$TEST_ROOT/assertion-mutant.stdout"
 }
 
 main() {
@@ -608,7 +609,7 @@ main() {
     case_s11_premount_probe_term_stops_before_rw
     case_s12_postmount_uuid_mismatch_and_read_failure_are_source_rejections
     [ "$MS_CASES" -eq 12 ] || ms_fail "expected 12 cases, ran $MS_CASES"
-    [ "$MS_ASSERTIONS" -eq 244 ] || ms_fail "expected 244 base assertions, ran $MS_ASSERTIONS"
+    [ "$MS_ASSERTIONS" -eq 245 ] || ms_fail "expected 245 base assertions, ran $MS_ASSERTIONS"
     assert_assertion_gate_is_live "$@"
     printf 'RESULT cases=%s assertions=%s failed=%s\n' "$MS_CASES" "$MS_ASSERTIONS" "$MS_FAILED"
     [ "$MS_FAILED" -eq 0 ]
