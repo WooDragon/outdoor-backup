@@ -74,6 +74,14 @@ manager 只接受三参数或四参数的 `add` 和 `remove`。三参数 add 保
 
 The pre-finalization sync gates transfer completion. The summary is appended to the backup log; `status.json` is replaced atomically. Neither update carries a power-loss durability guarantee.
 
+### 行为 CI gate（#17）
+
+GitHub Actions 的 `behavior` job 在原生 ARM64 Ubuntu runner 上先运行 `run-local-container.py` 的 Python 单测，再运行完整根目录行为套件。`build` job 仅在该 job 成功后开始。
+
+`tests/run-ci.sh` 按名称顺序将每个根目录 `test-*.sh` 交给 bounded runner。runner 在固定 ARM64 OpenWrt guest 中执行 `ci-suite.sh`，并只清理已验证属于本次运行的 guest。失败证据保存在各 suite 的目录中，包括 stdout、stderr 和退出码。
+
+`ci-suite.sh` 只接受允许名单中的 suite。`test-service-state.sh`、`test-service-lifecycle.sh` 和 `test-cleanup.sh` 的 `opkg` 准备失败会直接退出。前者以真实 UID `65534` 验证 state 读取失败。生命周期 suite 校验固定上游 commit 及包装器 SHA-256。
+
 ### 服务生命周期与准入（#16）
 
 [`service-state.sh`](../files/opt/outdoor-backup/scripts/service-state.sh) 是 source-only 生命周期库。它在私有运行目录维护严格的 `running:<generation>` 或 `stopped:<generation>` 状态记录。generation 是从 `0` 到 `2147483647` 的十进制整数。controller 在固定 FD 7 上持有独占 control lock。manager 在固定 FD 8 上持有 shared admission lease。controller 在 FD 8 上持有独占 admission lock。库会校验 FD 的锁模式、mount ID 与 inode，并拒绝链接、非普通锁文件和无效状态记录。

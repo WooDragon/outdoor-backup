@@ -1,7 +1,10 @@
 name: Build and Release IPK
 
 on:
+  pull_request:
   push:
+    branches:
+      - main
     tags:
       - 'v*.*.*'
   workflow_dispatch:
@@ -21,8 +24,34 @@ env:
   OPENWRT_VERSION: 23.05.5
 
 jobs:
+  behavior:
+    name: Run OpenWrt behavior suites
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run bounded runner unit tests
+        run: python3 tests/test-run-local-container.py
+
+      - name: Run pinned OpenWrt behavior suites
+        run: bash tests/run-ci.sh "$GITHUB_WORKSPACE/evidence-$GITHUB_SHA"
+
+      - name: Upload behavior evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: behavior-evidence-${{ github.sha }}
+          path: evidence-${{ github.sha }}
+          if-no-files-found: warn
+          retention-days: 30
+
   build:
     name: Build IPK Packages
+    needs: behavior
     runs-on: ubuntu-22.04
     strategy:
       matrix:

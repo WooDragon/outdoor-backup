@@ -222,6 +222,7 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 - **Artifacts 过滤**: 只收集目标包，不收集依赖包（避免 rate limit）
 - **ShellCheck 配置**: 使用 `shell=bash` 模式（BusyBox ash 支持 bash 特性）
 - **多架构构建**: 使用 matrix 策略并行构建 ARM64 和 x86_64
+- **行为 CI gate**: `behavior` job 在 ARM64 runner 上通过后，`build` 才可开始。host 入口、前置条件和失败证据位置见 [README.md 的 Local Behavior CI](README.md#local-behavior-ci)。
 - **详细指南**: [docs/github-actions-ci-cd.md](docs/github-actions-ci-cd.md)
 
 ## 性能指标
