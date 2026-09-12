@@ -208,6 +208,7 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 - **行长度**: ≤100 字符
 - **函数长度**: ≤50 行
 - **注释**: 关键逻辑必须注释
+- `test-cleanup.sh` 只可在一次性隔离测试目录中以 `--force` 清理破坏性 fixture。无 `--force` 的拒绝门必须保留。测试不得在真实备份目录中运行。
 
 ### Makefile 规范
 - **依赖明确**: `DEPENDS:=+rsync +block-mount ...`

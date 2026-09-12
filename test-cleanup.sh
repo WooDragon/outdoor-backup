@@ -21,6 +21,8 @@ NC='\033[0m' # No Color
 # Test counter
 TESTS_PASSED=0
 TESTS_FAILED=0
+SCENARIOS_RUN=0
+EXPECTED_SCENARIOS=5
 
 # Helper functions
 test_passed() {
@@ -93,6 +95,7 @@ EOF
 
 # Test 1: is_valid_uuid function
 test_uuid_validation() {
+	SCENARIOS_RUN=$((SCENARIOS_RUN + 1))
 	echo ""
 	echo "=== Test 1: UUID Validation ==="
 
@@ -134,6 +137,7 @@ test_uuid_validation() {
 
 # Test 2: get_total_backup_size function
 test_total_size_calculation() {
+	SCENARIOS_RUN=$((SCENARIOS_RUN + 1))
 	echo ""
 	echo "=== Test 2: Total Size Calculation ==="
 
@@ -145,7 +149,7 @@ test_total_size_calculation() {
 	if [ "$total_size" -gt 23000000 ] && [ "$total_size" -lt 30000000 ]; then
 		test_passed "Total size calculated: $total_size bytes (~23MB)"
 	else
-		test_warning "Total size: $total_size bytes (expected ~23MB)"
+		test_failed "Total size: $total_size bytes (expected ~23MB)"
 	fi
 
 	# Test non-existent directory
@@ -159,6 +163,7 @@ test_total_size_calculation() {
 
 # Test 3: cleanup-all.sh execution with keep_aliases=1
 test_cleanup_keep_aliases() {
+	SCENARIOS_RUN=$((SCENARIOS_RUN + 1))
 	echo ""
 	echo "=== Test 3: Cleanup with Aliases Preserved ==="
 
@@ -171,7 +176,7 @@ test_cleanup_keep_aliases() {
 	export BASE_DIR="$TEST_ROOT"
 
 	# Run cleanup script from test location
-	bash "$TEST_ROOT/scripts/cleanup-all.sh" "$BACKUP_ROOT" 1
+	bash "$TEST_ROOT/scripts/cleanup-all.sh" --force "$BACKUP_ROOT" 1
 
 	# Check if UUID directories are empty
 	local uuid1_files=$(find "$BACKUP_ROOT/550e8400-e29b-41d4-a716-446655440000" -type f 2>/dev/null | wc -l)
@@ -223,6 +228,7 @@ test_cleanup_keep_aliases() {
 
 # Test 4: cleanup-all.sh execution with keep_aliases=0
 test_cleanup_clear_aliases() {
+	SCENARIOS_RUN=$((SCENARIOS_RUN + 1))
 	echo ""
 	echo "=== Test 4: Cleanup with Aliases Cleared ==="
 
@@ -238,7 +244,7 @@ test_cleanup_clear_aliases() {
 	export BASE_DIR="$TEST_ROOT"
 
 	# Run cleanup script with keep_aliases=0
-	bash "$TEST_ROOT/scripts/cleanup-all.sh" "$BACKUP_ROOT" 0
+	bash "$TEST_ROOT/scripts/cleanup-all.sh" --force "$BACKUP_ROOT" 0
 
 	# Check if aliases.json is cleared
 	if [ -f "$CONF_DIR/aliases.json" ]; then
@@ -256,8 +262,48 @@ test_cleanup_clear_aliases() {
 
 # Test 5: Error handling
 test_error_handling() {
+	SCENARIOS_RUN=$((SCENARIOS_RUN + 1))
 	echo ""
 	echo "=== Test 5: Error Handling ==="
+
+	local uuid_dir="$BACKUP_ROOT/550e8400-e29b-41d4-a716-446655440000"
+	local sentinel="$uuid_dir/force-required-sentinel.txt"
+	local aliases_before="$TEST_ROOT/aliases.before-force-check.json"
+	local force_output="$TEST_ROOT/force-required.out"
+	local force_rc=0
+
+	# Use the existing fixture and delivered script to prove the force gate blocks deletion.
+	printf 'must survive missing --force\n' > "$sentinel"
+	cp "$CONF_DIR/aliases.json" "$aliases_before"
+	if bash "$SCRIPTS_DIR/cleanup-all.sh" "$BACKUP_ROOT" 1 > "$force_output" 2>&1; then
+		force_rc=0
+	else
+		force_rc=$?
+	fi
+
+	if [ "$force_rc" -eq 1 ]; then
+		test_passed "Valid backup root without --force returns exit code 1"
+	else
+		test_failed "Valid backup root without --force returned exit code $force_rc"
+	fi
+
+	if grep -Fq "ERROR: --force flag required for safety" "$force_output"; then
+		test_passed "Missing --force reports explicit safety diagnostic"
+	else
+		test_failed "Missing --force did not report explicit safety diagnostic"
+	fi
+
+	if [ "$(cat "$sentinel")" = "must survive missing --force" ]; then
+		test_passed "Missing --force preserves fixture sentinel bytes"
+	else
+		test_failed "Missing --force changed or deleted fixture sentinel"
+	fi
+
+	if cmp -s "$aliases_before" "$CONF_DIR/aliases.json"; then
+		test_passed "Missing --force preserves aliases.json"
+	else
+		test_failed "Missing --force changed aliases.json"
+	fi
 
 	# Test missing argument
 	if ! bash "$SCRIPTS_DIR/cleanup-all.sh" 2>/dev/null; then
@@ -266,15 +312,15 @@ test_error_handling() {
 		test_failed "Missing argument accepted"
 	fi
 
-	# Test non-existent directory
-	if ! bash "$SCRIPTS_DIR/cleanup-all.sh" "/non/existent/path" 2>/dev/null; then
+	# Test non-existent directory after the force gate
+	if ! bash "$SCRIPTS_DIR/cleanup-all.sh" --force "/non/existent/path" 2>/dev/null; then
 		test_passed "Non-existent directory rejected"
 	else
 		test_failed "Non-existent directory accepted"
 	fi
 
-	# Test unsafe path (directory traversal attempt)
-	if ! bash "$SCRIPTS_DIR/cleanup-all.sh" "/tmp/../etc" 2>/dev/null; then
+	# Test unsafe path after the force gate
+	if ! bash "$SCRIPTS_DIR/cleanup-all.sh" --force "/tmp/../etc" 2>/dev/null; then
 		test_passed "Unsafe path rejected (directory traversal)"
 	else
 		test_failed "Unsafe path accepted (security issue!)"
@@ -298,8 +344,13 @@ main() {
 	echo "========================================"
 	echo "  Test Results"
 	echo "========================================"
-	echo -e "${GREEN}Passed: $TESTS_PASSED${NC}"
-	echo -e "${RED}Failed: $TESTS_FAILED${NC}"
+	if [ "$SCENARIOS_RUN" -ne "$EXPECTED_SCENARIOS" ]; then
+		test_failed "Scenario invocation count: $SCENARIOS_RUN (expected $EXPECTED_SCENARIOS)"
+	fi
+	echo "SCENARIOS_RUN=$SCENARIOS_RUN"
+	echo "EXPECTED_SCENARIOS=$EXPECTED_SCENARIOS"
+	echo "TESTS_PASSED=$TESTS_PASSED"
+	echo "TESTS_FAILED=$TESTS_FAILED"
 
 	# Cleanup test environment
 	echo ""

@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- #12: `test-cleanup.sh` 只在一次性隔离测试目录中以显式 `--force` 清理破坏性 fixture。生产 `cleanup-all.sh` 与 `common.sh` 未改动。有效目录在缺少 `--force` 时仍必须拒绝清理。测试不得在真实备份目录中运行。
+
 ### Changed
 - Current package build metadata in `Makefile` is `PKG_VERSION` `1.2.0` and `PKG_RELEASE` `11` (`1.2.0-11`). This Unreleased section records development work. No external release evidence was checked for this documentation update, and this entry does not mark a release. The historical `[v1.1.0] - 2025-01` section remains unchanged below.
 - #16: Added controller-owned service lifecycle state. The controller serializes `start`, `stop`, and `restart` through FD 7. It publishes strict running or stopped generations. Managers obtain FD 8 admission before backup-side effects and leave when the admitted generation is no longer current. Hotplug captures the running generation before its settle delay, suppresses stopped-state adds, and keeps remove independent of lifecycle and reader gates. Stop closes admission first, then requires both admission exclusivity and business-lock absence before success. It sends `TERM` only to a proven owner and rechecks absence after that owner exits. Init, upgrade, and `prerm` preserve controller failures. The package adds the BusyBox `flock` dependency and removes duplicate custom post-install enablement/start and broad `pkill`. ImmortalWrt's `default_postinst` wrapper still enables and starts a first installation. During `PKG_UPGRADE=1`, init restarts an enabled service and leaves a disabled service stopped. The package preserves backup data and does not delete an unverifiable residual lock. This entry does not claim CI, package build, firmware build, or real-device validation.
