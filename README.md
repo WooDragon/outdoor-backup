@@ -9,6 +9,7 @@ Automatic SD card backup system for OpenWrt routers with internal storage (SSD/H
 - ✅ **Automatic Backup**: Hotplug-triggered backup on SD card insertion
 - ✅ **Incremental Sync**: rsync updates files when size or modification time differs, preserves partial transfers, and does not delete target files
 - ✅ **Controlled Cancellation**: Before terminal publication, `SIGINT` or `SIGTERM` requests cancellation at a safe phase boundary; partial rsync data is preserved and accepted cancellation cannot report success
+- ✅ **Lifecycle Control**: A stopped service rejects new hotplug `add` events. A stop operation succeeds only after active admitted work becomes quiescent.
 - ✅ **Owner-Aware Removal**: A four-argument block `remove` event can request cancellation only from the matching active backup owner; an unrelated card removal does not modify that owner's shared state
 - ✅ **LED Indicators**: Visual feedback for backup status
 - ✅ **Concurrent Protection**: PID-based locking prevents conflicts
@@ -22,13 +23,14 @@ Automatic SD card backup system for OpenWrt routers with internal storage (SSD/H
 
 - OpenWrt 19.07+ (tested on Lean's LEDE)
 - BusyBox with the `setsid` applet. ImmortalWrt 24.10.6 includes it by default. OpenWrt 19.07.10 does not; use a custom image that enables it.
+- A compatible `flock` command. The service lifecycle requires it.
 - A user-configured target storage mount; `/mnt/ssd/` is the compatibility default
 - USB port for SD card reader
 - Required kernel modules (auto-installed with package):
   - `kmod-usb-storage`
   - `kmod-fs-ext4`, `kmod-fs-exfat`, `kmod-fs-ntfs3`
 
-The package checks for `setsid` before it starts `rsync`. A missing applet causes a clear failure and starts no transfer. Installing this IPK cannot add the applet to an existing BusyBox binary.
+The package checks for `setsid` before it starts `rsync`. A missing applet causes a clear failure and starts no transfer. The service lifecycle requires a compatible `flock` command. The Makefile's BusyBox Kconfig selections affect only source firmware builds. Installing this IPK cannot add the `setsid` or `flock` applet to an existing BusyBox binary.
 
 ### Installation
 
@@ -61,10 +63,18 @@ ssh root@router "opkg install /tmp/outdoor-backup_*.ipk"
 #### Method 2: Direct IPK Installation
 
 ```bash
-# If you have a pre-built .ipk file
+# If you have a pre-built .ipk file, verify the lifecycle lock command first.
+ssh root@router "command -v flock"
+
+# If that command prints no path, install the currently validated provider.
+ssh root@router "opkg update && opkg install flock"
+
+# Any installation method that provides a compatible `flock` command satisfies this prerequisite.
 scp outdoor-backup_*.ipk root@router:/tmp/
 ssh root@router "opkg install /tmp/outdoor-backup_*.ipk"
 ```
+
+Automatic backup follows after ImmortalWrt's `default_postinst` wrapper enables and starts the service on a first installation. The package's custom post-install script does not repeat those actions.
 
 ### First Run
 
@@ -181,7 +191,7 @@ The hotplug trigger always calls the manager with four event slots: `remove DEVN
 
 Owner-event matching requires `jq` support for raw slurp (`-Rs`), complete preservation of NUL bytes from `/proc/<PID>/cmdline`, and the jq string operations used by the matcher. This change has native-ARM, native-`/proc` regression coverage on OpenWrt 24.10.8. It does not independently verify that capability on OpenWrt 19.07. Before deploying on an older release, operators should verify this jq capability and the existing `setsid` prerequisite. A matching no-op is not evidence that automatic cancellation works after a card removal.
 
-This release does not cancel lock waiters. A waiter can remain blocked until it acquires the lock or times out. Every three-argument and four-argument `add` captures its source snapshot before lock contention and rechecks it after lock acquisition. The manager checks sticky cancellation after every snapshot probe. Therefore, a `TERM` received during a probe prevents a later LED or mount side effect. A mismatch fails as `device_unknown` before the LED start and source mount; it does not update the baseline to accept a replacement. Legacy three-argument add calls have a separate limitation: they do not receive automatic remove identity matching. The snapshot narrows substitution races but does not make mount atomic. A delayed add can begin after an earlier medium was already replaced, and a replacement can occur after a successful recheck but before the mount. The implementation makes no hotplug delivery, latency, or zero-loss guarantee. POSIX `/proc` inspection plus `kill` still has a final time-of-check/time-of-use gap and is not equivalent to pidfd. Service/package-stop broad `pkill` behavior and crash-mount recovery remain follow-up work under #16. There is no LuCI cancellation control, rollback, immediate-release promise, or `SIGKILL` escalation. A process that ignores `TERM` can retain the mount and lock.
+A hotplug `remove` event does not cancel a lock waiter. That waiter can remain blocked until it acquires the lock or times out. An administrative `stop` marks the current generation stopped without incrementing it. The generation-current admission gate then cancels an already admitted waiter. Every three-argument and four-argument `add` captures its source snapshot before lock contention and rechecks it after lock acquisition. The manager checks sticky cancellation after every snapshot probe. Therefore, a `TERM` received during a probe prevents a later LED or mount side effect. A mismatch fails as `device_unknown` before the LED start and source mount; it does not update the baseline to accept a replacement. Legacy three-argument add calls have a separate limitation: they do not receive automatic remove identity matching. The snapshot narrows substitution races but does not make mount atomic. A delayed add can begin after an earlier medium was already replaced, and a replacement can occur after a successful recheck but before the mount. The implementation makes no hotplug delivery, latency, or zero-loss guarantee. POSIX `/proc` inspection plus `kill` still has a final time-of-check/time-of-use gap and is not equivalent to pidfd. Crash-mount recovery remains follow-up work under #16. There is no LuCI cancellation control, rollback, immediate-release promise, or `SIGKILL` escalation. A process that ignores `TERM` can retain the mount and lock.
 
 ### Runtime status and LuCI storage fields
 
@@ -342,6 +352,8 @@ outdoor-backup/
 │   ├── opt/outdoor-backup/
 │   │   ├── scripts/
 │   │   │   ├── backup-manager.sh    # Core backup logic
+│   │   │   ├── service-control.sh   # Start, stop, and restart controller
+│   │   │   ├── service-state.sh     # Lifecycle state and admission API
 │   │   │   ├── transfer-process.sh  # rsync process-group lifecycle
 │   │   │   ├── owner-event.sh       # exact remove-event owner matching
 │   │   │   └── common.sh            # Shared functions
@@ -395,17 +407,24 @@ find bin/ -name "outdoor-backup*.ipk"
 ### Service Management
 
 ```bash
-# Enable/disable service
+# Enable or disable boot-time service activation.
 /etc/init.d/outdoor-backup enable
 /etc/init.d/outdoor-backup disable
 
-# Start/stop (primarily controls directory setup)
+# Open or close backup admission. `stop` returns success only after admitted work quiesces.
 /etc/init.d/outdoor-backup start
 /etc/init.d/outdoor-backup stop
 
-# Reload configuration
+# Close admission, wait for quiescence, then start a new generation.
+/etc/init.d/outdoor-backup restart
+
+# Configuration is read by each backup task; reload does not change lifecycle state.
 /etc/init.d/outdoor-backup reload
 ```
+
+`stop` does not delete backup data or terminate processes by broad name matching. If it cannot prove quiescence or verify the active owner, it returns nonzero. Package removal preserves that failure: it does not force removal, delete a residual lock it cannot verify, or guarantee that the package wrapper rolls back.
+
+Only a completely absent lifecycle-state path uses compatibility state. A genuine enabled init rc link makes that state virtual `running:0`; every other absent-state case is `stopped:0`. An existing malformed state never falls back. `stop` writes `stopped` with the current generation. `start` advances the generation only from `stopped`.
 
 ### Troubleshooting
 

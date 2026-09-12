@@ -377,10 +377,15 @@ case_r06_real_hotplug_dispatches_remove_without_reader_config() {
         'R06 partition remove manager argv is exact and fully recorded'
 
     rm -f "$TEST_ROOT/hotplug-argv" "$TEST_ROOT/hotplug-argc"
+    cp "$REPO_ROOT/files/opt/outdoor-backup/scripts/service-state.sh" \
+        /opt/outdoor-backup/scripts/service-state.sh || {
+        mr_fail 'R06 service-state fixture installation failed'
+        return
+    }
     TEST_HOTPLUG_ARGC="$TEST_ROOT/hotplug-argc" TEST_HOTPLUG_ARGV="$TEST_ROOT/hotplug-argv" \
         SUBSYSTEM=block ACTION=add DEVTYPE=partition DEVNAME=sda1 DEVPATH=/devices/mock/card-reader/sda1 SEQNUM=73 \
         OUTDOOR_BACKUP_CONFIG="$TEST_ROOT/no-config" OUTDOOR_BACKUP_CONFIG_SCRIPT=/src/files/opt/outdoor-backup/scripts/config.sh \
-        /bin/ash "$HOTPLUG_SOURCE"
+        OUTDOOR_BACKUP_SERVICE_DIR="$SERVICE_RUNTIME" /bin/ash "$HOTPLUG_SOURCE"
     mr_success 'R06 recognized partition add preserves settle then dispatches manager' mr_wait_path "$TEST_ROOT/hotplug-argv"
     assert_hotplug_argv '["add","sda1","/devices/mock/card-reader/sda1","73"]' \
         'R06 add manager argv is exact and fully recorded'

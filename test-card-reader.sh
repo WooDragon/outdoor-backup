@@ -864,7 +864,11 @@ wait_for_hotplug_argv() {
 case_r19_real_hotplug_dispatch_preserves_event_argv() {
     begin_case R19 "real hotplug dispatch preserves four event slots, including an empty SEQNUM"
     prepare_reader_state
-    mkdir -p /opt/outdoor-backup/scripts
+    mkdir -p /opt/outdoor-backup/scripts "$TEST_ROOT/r19/service-rc" "$TEST_ROOT/r19/init"
+    cp "$REPO_ROOT/files/opt/outdoor-backup/scripts/service-state.sh" \
+        /opt/outdoor-backup/scripts/service-state.sh
+    : > "$TEST_ROOT/r19/init/outdoor-backup"
+    ln -s "$TEST_ROOT/r19/init/outdoor-backup" "$TEST_ROOT/r19/service-rc/S95outdoor-backup"
     cat > /opt/outdoor-backup/scripts/backup-manager.sh <<'EOF'
 #!/bin/ash
 printf '%s\000' "$@" > "$TEST_HOTPLUG_ARGV"
@@ -877,7 +881,8 @@ EOF
     TEST_HOTPLUG_ARGV="$add_argv" SUBSYSTEM=block ACTION=add DEVTYPE=partition \
         DEVNAME=sdz1 DEVPATH=/devices/mock/card-reader/sdz1 SEQNUM=91 \
         OUTDOOR_BACKUP_CONFIG="$LEGACY_FILE" OUTDOOR_BACKUP_CONFIG_SCRIPT="$CONFIG_SCRIPT" \
-        /bin/ash "$HOTPLUG_SRC"
+        OUTDOOR_BACKUP_RC_DIR="$TEST_ROOT/r19/service-rc" \
+        OUTDOOR_BACKUP_INIT_SCRIPT="$TEST_ROOT/r19/init/outdoor-backup" /bin/ash "$HOTPLUG_SRC"
     wait_for_hotplug_argv "$add_argv" || :
     printf 'add\000sdz1\000/devices/mock/card-reader/sdz1\00091\000' > "$add_expected"
     assert_equal "$(wc -c < "$add_argv")" "43" "R19 add manager argv was dispatched after settle"
@@ -902,7 +907,8 @@ EOF
     TEST_HOTPLUG_ARGV="$empty_add_argv" SUBSYSTEM=block ACTION=add DEVTYPE=partition \
         DEVNAME=sdz1 DEVPATH=/devices/mock/card-reader/sdz1 \
         OUTDOOR_BACKUP_CONFIG="$LEGACY_FILE" OUTDOOR_BACKUP_CONFIG_SCRIPT="$CONFIG_SCRIPT" \
-        /bin/ash "$HOTPLUG_SRC"
+        OUTDOOR_BACKUP_RC_DIR="$TEST_ROOT/r19/service-rc" \
+        OUTDOOR_BACKUP_INIT_SCRIPT="$TEST_ROOT/r19/init/outdoor-backup" /bin/ash "$HOTPLUG_SRC"
     wait_for_hotplug_argv "$empty_add_argv" || :
     printf 'add\000sdz1\000/devices/mock/card-reader/sdz1\000\000' > "$empty_add_expected"
     assert_equal "$(wc -c < "$empty_add_argv")" "41" \

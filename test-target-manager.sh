@@ -49,7 +49,7 @@ fi
 
 mkdir -p /var/lock
 opkg update >/dev/null
-opkg install jq >/dev/null
+opkg install jq flock >/dev/null
 
 REPO_ROOT=/src
 # Every case gets its own directory tree under SUITE_ROOT and cases never
@@ -70,6 +70,9 @@ TEST_ROOT="$SUITE_ROOT/case-0"
 derive_fixture_paths() {
     RUNTIME="$TEST_ROOT/runtime/opt/outdoor-backup"
     SCRIPTS="$RUNTIME/scripts"
+    SERVICE_RUNTIME="$TEST_ROOT/runtime/var/run/outdoor-backup"
+    SERVICE_RC_DIR="$TEST_ROOT/runtime/etc/rc.d"
+    SERVICE_INIT_SCRIPT="$TEST_ROOT/runtime/etc/init.d/outdoor-backup"
     TARGET_MOUNT="$TEST_ROOT/target mount"
     SOURCE_MOUNT="$TEST_ROOT/source mount"
     SYSFS="$TEST_ROOT/sys"
@@ -354,7 +357,8 @@ prepare_runtime() {
     rm -rf "$RUNTIME" "$SOURCE_MOUNT" "$BIN" "$EFFECTS" "$NOTICES" \
         "$SOURCE_MOUNT_STATE" /opt/outdoor-backup/conf
     mkdir -p "$SCRIPTS" "$RUNTIME/conf" "$RUNTIME/var/lock" \
-        "$RUNTIME/log" "$BIN" "$SOURCE_MOUNT" /opt/outdoor-backup/conf
+        "$RUNTIME/log" "$BIN" "$SOURCE_MOUNT" "$SERVICE_RUNTIME" \
+        "$SERVICE_RC_DIR" "${SERVICE_INIT_SCRIPT%/*}" /opt/outdoor-backup/conf
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/backup-manager.sh" "$SCRIPTS/backup-manager.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/config.sh" "$SCRIPTS/config.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/common.sh" "$SCRIPTS/common.sh"
@@ -367,6 +371,9 @@ prepare_runtime() {
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/target.sh" "$SCRIPTS/target.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/target-device.sh" "$SCRIPTS/target-device.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/owner-event.sh" "$SCRIPTS/owner-event.sh"
+    ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/service-state.sh" "$SCRIPTS/service-state.sh"
+    : > "$SERVICE_INIT_SCRIPT"
+    printf '%s' 'running:0' > "$SERVICE_RUNTIME/state"
     : > "$EFFECTS"
     : > "$NOTICES"
     cat > "$RUNTIME/conf/backup.conf" <<EOF
@@ -389,6 +396,11 @@ fi
 if [ -n "${TEST_LOGGER_STAGE_MATCH:-}" ] && [ -n "${TEST_LOGGER_STAGE_FILE:-}" ]; then
     case "$*" in
         *"$TEST_LOGGER_STAGE_MATCH"*) : > "$TEST_LOGGER_STAGE_FILE" ;;
+    esac
+fi
+if [ -n "${TEST_LOGGER_SIGNAL_MATCH:-}" ] && [ -n "${TEST_LOGGER_SIGNAL:-}" ]; then
+    case "$*" in
+        *"$TEST_LOGGER_SIGNAL_MATCH"*) kill "-$TEST_LOGGER_SIGNAL" "$PPID" ;;
     esac
 fi
 if [ "${TEST_RECORD_CLEANUP_PHASES:-0}" = 1 ]; then
@@ -827,13 +839,17 @@ set_config_target_uuid() {
 # Background cancellation cases use exec so $! is the actual manager, not a
 # helper shell that would otherwise inherit ignored SIGINT from job control.
 run_manager_program() {
+    # The async x86 harness can retain high descriptors. Production correctly
+    # reserves FD8, while ash may select its lowest free descriptor to source a
+    # library. This isolated fixture owns none of 4..8, so clear them first.
+    exec 4>&- 5>&- 6>&- 7>&- 8>&-
     if [ "${TEST_RUN_MANAGER_EXEC:-0}" = 1 ]; then
         exec "${TEST_MANAGER_SHELL:-/bin/ash}" "$@"
     fi
     "${TEST_MANAGER_SHELL:-/bin/ash}" "$@"
 }
 
-run_manager() {
+run_manager_with_env() {
     TEST_EFFECTS="$EFFECTS" TEST_NOTICES="$NOTICES" \
         TARGET_TEST_BLOCK_NODE="$TARGET_TEST_BLOCK_NODE" \
         TARGET_SYSFS_ROOT="$SYSFS" TARGET_MOUNTINFO_FILE="$MOUNTINFO" \
@@ -894,6 +910,8 @@ run_manager() {
         TEST_LOGGER_TRACE="${TEST_LOGGER_TRACE:-}" \
         TEST_LOGGER_STAGE_MATCH="${TEST_LOGGER_STAGE_MATCH:-}" \
         TEST_LOGGER_STAGE_FILE="${TEST_LOGGER_STAGE_FILE:-}" \
+        TEST_LOGGER_SIGNAL_MATCH="${TEST_LOGGER_SIGNAL_MATCH:-}" \
+        TEST_LOGGER_SIGNAL="${TEST_LOGGER_SIGNAL:-}" \
         TEST_CONFIG_MKTEMP_FAIL="${TEST_CONFIG_MKTEMP_FAIL:-0}" \
         TEST_CONFIG_MV_FAIL="${TEST_CONFIG_MV_FAIL:-0}" \
         TEST_IDENTITY_MKTEMP_FAIL="${TEST_IDENTITY_MKTEMP_FAIL:-0}" \
@@ -909,9 +927,28 @@ run_manager() {
         TEST_CLOCK_AFTER_RSYNC="${TEST_CLOCK_AFTER_RSYNC:-}" \
         TEST_CLOCK_AFTER_SYNC="${TEST_CLOCK_AFTER_SYNC:-}" \
         TEST_SUMMARY_CAPTURE="${TEST_SUMMARY_CAPTURE:-}" \
+        TEST_MANAGER_SERVICE_READY="${TEST_MANAGER_SERVICE_READY:-}" \
+        TEST_MANAGER_SERVICE_RELEASE="${TEST_MANAGER_SERVICE_RELEASE:-}" \
+        TEST_MANAGER_SERVICE_RSYNC_PID="${TEST_MANAGER_SERVICE_RSYNC_PID:-}" \
+        TEST_MANAGER_SERVICE_SIGNAL="${TEST_MANAGER_SERVICE_SIGNAL:-}" \
+        TEST_MANAGER_SERVICE_SIGNAL_PID_FILE="${TEST_MANAGER_SERVICE_SIGNAL_PID_FILE:-}" \
+        OUTDOOR_BACKUP_SERVICE_DIR="$SERVICE_RUNTIME" \
+        OUTDOOR_BACKUP_RC_DIR="$SERVICE_RC_DIR" \
+        OUTDOOR_BACKUP_INIT_SCRIPT="$SERVICE_INIT_SCRIPT" \
         DEBUG="${DEBUG:-0}" PATH="$BIN:$PATH" \
         TEST_RUN_MANAGER_EXEC="${TEST_RUN_MANAGER_EXEC:-0}" \
         run_manager_program "${MANAGER_SCRIPT:-$SCRIPTS/backup-manager.sh}" "$@"
+}
+
+# Preserve a genuinely absent generation for legacy add tests; pass an explicit
+# value (including empty) only when the caller intentionally set the variable.
+run_manager() {
+    if [ "${OUTDOOR_BACKUP_SERVICE_GENERATION+x}" = x ]; then
+        OUTDOOR_BACKUP_SERVICE_GENERATION="$OUTDOOR_BACKUP_SERVICE_GENERATION" \
+            run_manager_with_env "$@"
+    else
+        run_manager_with_env "$@"
+    fi
 }
 
 settle_led_fixture() {

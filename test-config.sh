@@ -18,6 +18,9 @@ if [ "${IN_OPENWRT_TEST:-}" != "1" ]; then
 fi
 
 REPO_ROOT=/src
+mkdir -p /var/lock || { printf '%s\n' 'FAIL: cannot create OpenWrt package lock directory' >&2; exit 1; }
+opkg update >/dev/null || { printf '%s\n' 'FAIL: cannot refresh OpenWrt metadata' >&2; exit 1; }
+opkg install --force-space jq flock >/dev/null || { printf '%s\n' 'FAIL: cannot install jq and flock' >&2; exit 1; }
 CONFIG_SCRIPT="$REPO_ROOT/files/opt/outdoor-backup/scripts/config.sh"
 MANAGER="$REPO_ROOT/files/opt/outdoor-backup/scripts/backup-manager.sh"
 FACTORY_UCI="$REPO_ROOT/files/etc/config/outdoor-backup"
@@ -29,6 +32,9 @@ NOTICES_FILE="$TEST_ROOT/notices.log"
 RUNTIME_BASE="$TEST_ROOT/runtime/opt/outdoor-backup"
 RUNTIME_SCRIPTS="$RUNTIME_BASE/scripts"
 RUNTIME_MANAGER="$RUNTIME_SCRIPTS/backup-manager.sh"
+SERVICE_RUNTIME="$TEST_ROOT/runtime/var/run/outdoor-backup"
+SERVICE_RC_DIR="$TEST_ROOT/runtime/etc/rc.d"
+SERVICE_INIT_SCRIPT="$TEST_ROOT/runtime/etc/init.d/outdoor-backup"
 ORIGINAL_PATH=$PATH
 CASES=0
 ASSERTIONS=0
@@ -94,7 +100,8 @@ prepare_manager_runtime() {
     rm -rf "$RUNTIME_BASE" "$TEST_ROOT/led-green" "$TEST_ROOT/led-red" \
         "$TEST_ROOT/card" "$TEST_ROOT/backups"
     mkdir -p "$RUNTIME_SCRIPTS" "$RUNTIME_BASE/conf" \
-        "$RUNTIME_BASE/var/lock" "$RUNTIME_BASE/log" \
+        "$RUNTIME_BASE/var/lock" "$RUNTIME_BASE/log" "$SERVICE_RUNTIME" \
+        "$SERVICE_RC_DIR" "${SERVICE_INIT_SCRIPT%/*}" \
         "$TEST_ROOT/led-green" "$TEST_ROOT/led-red"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/backup-manager.sh" \
         "$RUNTIME_SCRIPTS/backup-manager.sh"
@@ -106,6 +113,10 @@ prepare_manager_runtime() {
         "$RUNTIME_SCRIPTS/target.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/target-device.sh" \
         "$RUNTIME_SCRIPTS/target-device.sh"
+    ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/service-state.sh" \
+        "$RUNTIME_SCRIPTS/service-state.sh"
+    : > "$SERVICE_INIT_SCRIPT"
+    printf '%s' 'running:0' > "$SERVICE_RUNTIME/state"
     cat > "$RUNTIME_BASE/conf/backup.conf" <<EOF
 BACKUP_ROOT="$TEST_ROOT/backups"
 MOUNT_POINT="$TEST_ROOT/card"
@@ -146,10 +157,16 @@ EOF
 }
 
 run_manager() {
+    # This isolated fixture owns no descriptors 4..8. Clear harness leftovers
+    # so ash sources libraries below the manager's fixed service lease FD8.
+    exec 4>&- 5>&- 6>&- 7>&- 8>&-
     TEST_EFFECTS="$EFFECTS_FILE" \
         TEST_NOTICES="$NOTICES_FILE" \
         PATH="$TEST_ROOT/bin:$ORIGINAL_PATH" \
         UCI_CONFIG_DIR="$UCI_DIR" \
+        OUTDOOR_BACKUP_SERVICE_DIR="$SERVICE_RUNTIME" \
+        OUTDOOR_BACKUP_RC_DIR="$SERVICE_RC_DIR" \
+        OUTDOOR_BACKUP_INIT_SCRIPT="$SERVICE_INIT_SCRIPT" \
         /bin/ash "$RUNTIME_MANAGER" "$@"
 }
 

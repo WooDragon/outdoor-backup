@@ -2,99 +2,13 @@
 
 ## 1. 热插拔触发脚本
 
-### 文件: `/etc/hotplug.d/block/90-outdoor-backup`
-
-```bash
-#!/bin/sh
-#
-# OpenWrt SD Card Backup - Hotplug Trigger
-# Triggered when block devices are added/removed
-#
-
-# Only handle block device events
-[ "$SUBSYSTEM" = "block" ] || exit 0
-
-# Load common functions
-. /opt/outdoor-backup/scripts/common.sh
-
-# Configuration
-BACKUP_MANAGER="/opt/outdoor-backup/scripts/backup-manager.sh"
-LOG_TAG="outdoor-backup-hotplug"
-
-# Log function
-log_message() {
-    logger -t "$LOG_TAG" "$1"
-}
-
-# Check if device is an SD card
-is_sdcard() {
-    local dev_path="$1"
-
-    # Check multiple indicators for SD card
-    # 1. USB card reader pattern
-    if echo "$dev_path" | grep -q "usb.*card\|reader\|SD\|mmc"; then
-        return 0
-    fi
-
-    # 2. Check device model
-    if [ -f "/sys/block/${DEVNAME%%[0-9]*}/device/model" ]; then
-        local model=$(cat "/sys/block/${DEVNAME%%[0-9]*}/device/model" 2>/dev/null)
-        if echo "$model" | grep -iq "card\|reader\|SD\|mmc"; then
-            return 0
-        fi
-    fi
-
-    # 3. Size check - SD cards typically ≤512GB
-    if [ -f "/sys/block/${DEVNAME%%[0-9]*}/size" ]; then
-        local size=$(cat "/sys/block/${DEVNAME%%[0-9]*}/size" 2>/dev/null)
-        # Size in 512-byte sectors, 512GB = 1073741824 sectors
-        if [ "$size" -le 1073741824 ] 2>/dev/null; then
-            return 0
-        fi
-    fi
-
-    return 1
-}
-
-# Main logic
-case "$ACTION" in
-    add)
-        # Only process partitions, not whole disks
-        [ "$DEVTYPE" = "partition" ] || exit 0
-
-        # Check if this is an SD card
-        if is_sdcard "$DEVPATH"; then
-            log_message "SD card detected: $DEVNAME"
-
-            # Launch backup manager in background
-            (
-                # Wait for device to settle
-                sleep 2
-
-                # Execute backup
-                $BACKUP_MANAGER "add" "$DEVNAME" "$DEVPATH" &
-            ) &
-        fi
-        ;;
-
-    remove)
-        if is_sdcard "$DEVPATH"; then
-            log_message "SD card removed: $DEVNAME"
-
-            # Notify backup manager to cleanup
-            $BACKUP_MANAGER "remove" "$DEVNAME" "$DEVPATH" &
-        fi
-        ;;
-esac
-
-exit 0
-```
+运行时实现以 [`90-outdoor-backup`](../files/etc/hotplug.d/block/90-outdoor-backup) 为单一事实源。`add` 仅处理分区事件。它在读卡器识别后读取生命周期状态。运行态的 `add` 在 settle 前捕获 generation，并通过环境变量传给 manager。停止态的 `add` 不排队 manager。`remove` 绕过 service、configuration 和 reader gate，并传入原始事件参数 `DEVNAME`、`DEVPATH` 和 `SEQNUM`。
 
 ## 2. 备份管理器主脚本
 
 ### 文件：`/opt/outdoor-backup/scripts/backup-manager.sh`
 
-管理器先由 [`config.sh`](../files/opt/outdoor-backup/scripts/config.sh) 加载有效配置。有效值的顺序是 defaults < legacy `backup.conf` < 显式 UCI option。`TARGET_MOUNT` 的默认值为 `/mnt/ssd`。`TARGET_UUID` 的默认值为空。`add` 事件要求用户配置非空的目标 UUID。`remove` 事件不要求目标介质在场，仍进入清理路径。
+管理器先验证事件。它随后取得 FD 8 shared admission lease。它再通过 FD 9 运行目标守卫。目标守卫成功后，管理器才进入其余既有流程。管理器由 [`config.sh`](../files/opt/outdoor-backup/scripts/config.sh) 加载有效配置。有效值的顺序是 defaults < legacy `backup.conf` < 显式 UCI option。`TARGET_MOUNT` 的默认值为 `/mnt/ssd`。`TARGET_UUID` 的默认值为空。`add` 事件要求用户配置非空的目标 UUID。`remove` 事件不要求目标介质在场，仍进入清理路径。
 
 目标守卫在加载 `common.sh`、注册 cleanup trap、获取锁、挂载来源卡、读取别名和创建应用日志之前运行。管理器按以下顺序调用当前实现：
 
@@ -152,11 +66,25 @@ manager 只接受三参数或四参数的 `add` 和 `remove`。三参数 add 保
 
 发送前 helper 重读 starttime 和锁链接。两项都未变化时，它才向该单一 PID 发送一次 `TERM`。缺锁、陈旧锁、无效字段、argv 不匹配、路径不匹配、序号不递增或证据变化均不会改写共享资源。身份输入无效、缺 `jq` 或 `TERM` 失败返回非零；无 owner 或 owner 不匹配记录 notice 后以 0 返回。已有 owner 的 sticky cancel、传输 drain 和 cleanup 负责其后的收尾。
 
-该实现的保证是：拔出 B 不应取消正在备份 A 的匹配 owner。它不保证拔出 B 会自动使 B 的备份消失。它不取消 waiter，waiter 可以等待至获锁或超时；但三参数和四参数 `add` 都在获锁后复验其 pre-lock source snapshot。三参数 add 另有独立限制：它不具备自动 remove 身份匹配。`SEQNUM` 只是顺序证据，不是卡身份。hotplug 没有零丢包或时延保证。POSIX `/proc` 加 `kill` 仍有最终 TOCTOU，不能宣称等价 pidfd。service/package-stop 的宽 `pkill` 与 crash 后残留挂载恢复仍属 #16 后续工作。
+该实现的保证是：拔出 B 不应取消正在备份 A 的匹配 owner。它不保证拔出 B 会自动使 B 的备份消失。hotplug `remove` 不取消 waiter；waiter 可以等待至获锁或超时。administrative `stop` 通过 generation-current 准入 gate 取消已准入 waiter。三参数和四参数 `add` 都在获锁后复验其 pre-lock source snapshot。三参数 add 另有独立限制：它不具备自动 remove 身份匹配。`SEQNUM` 只是顺序证据，不是卡身份。hotplug 没有零丢包或时延保证。POSIX `/proc` 加 `kill` 仍有最终 TOCTOU，不能宣称等价 pidfd。crash 后残留挂载恢复仍属 #16 后续工作。
 
 本批在固定 `openwrt/rootfs:x86_64-24.10.8` 隔离容器和 sysfs/block fixture 中记录：`test-source-identity.sh` 为 8 cases、42 assertions、0 failures；`test-manager-source-identity.sh` 为 12 cases、247 assertions、0 failures；`test-target-manager.sh` 为 40 cases、366 assertions、0 failures；`test-manager-cancellation.sh` 为 8 cases、96 assertions、0 failures。来源库覆盖稳定双拓扑采样、UUID/节点/major:minor/diskseq 变化、严格 `diskseq` 读取和观测期间变化，并以函数局部 `LC_ALL=C` 固定 20 位 unsigned-64-bit 的字典序比较，不改变调用方 locale。manager suite 的 base 计数为 245 assertions。该 suite 的独立计数 mutant 只删除一条无副作用观测，结果为 244 assertions、1 failure，唯一计数门失败；外层检查另增加 2 条断言。S06 删除获锁后门时可启动 LED，但逐 mount 门仍拒绝挂载，因而该证据不表示已复制或写入卡。S12 在初始只读 mount 后将夹具来源 UUID 从 A 切换至 B；正常路径在消费 UUID 与 snapshot `filesystem_uuid` 不一致时以 `device_unknown` 停止，不创建 identity、alias、`rsync` 或 completion。仅删除该消费比较的 runtime mutant 会让 B 到达原本错误的 binding 路径。S12 也覆盖 post-mount UUID 读取失败的同一错误分类。C05 证明 source-UUID lookup 期间的 `TERM` 被 outer gate 拦截而不进入 setup；删除 outer gate 的 runtime mutant 可进入 setup，但 per-mount cancel gate 仍阻止 RW mount 和配置发布。C06 的 sync 期间 `TERM` 保留已发布配置，并阻止后续只读恢复、identity、alias 与 `rsync`；外层 post-setup gate 的 normal/mutant 对照只在真实 setup 成功返回后才注入 `TERM`，不将该证据描述为 sync 期间信号穿透内部检查。上述记录不代表完整回归、CI、真机、包构建或固件构建。
 
 The pre-finalization sync gates transfer completion. The summary is appended to the backup log; `status.json` is replaced atomically. Neither update carries a power-loss durability guarantee.
+
+### 服务生命周期与准入（#16）
+
+[`service-state.sh`](../files/opt/outdoor-backup/scripts/service-state.sh) 是 source-only 生命周期库。它在私有运行目录维护严格的 `running:<generation>` 或 `stopped:<generation>` 状态记录。generation 是从 `0` 到 `2147483647` 的十进制整数。controller 在固定 FD 7 上持有独占 control lock。manager 在固定 FD 8 上持有 shared admission lease。controller 在 FD 8 上持有独占 admission lock。库会校验 FD 的锁模式、mount ID 与 inode，并拒绝链接、非普通锁文件和无效状态记录。
+
+[`service-control.sh`](../files/opt/outdoor-backup/scripts/service-control.sh) 在一次 FD 7 获取内执行 `start`、`stop` 或 `restart`。`start` 仅在停止态推进 generation。它先取得 admission 独占锁并确认业务锁缺席，再发布新的 running generation。`restart` 先完成 stop；失败的 stop 不会进入 start。
+
+`stop` 先把当前 generation 发布为 stopped。controller 随后反复取得 admission 独占锁，并检查业务锁缺席。二者同时成立时才证明 quiescence。业务锁仍存在时，controller 只向经锁链接、`/proc` starttime 和原始 NUL 分隔 argv 复核的当前 manager owner 发送一次 `TERM`。owner 的正常退出不是成功结论；controller 会在下一轮重新确认 admission 独占与业务锁缺席。无法证明 owner、无法获取 admission、超时或收到取消时，stop 返回非零。
+
+manager 在目标守卫、来源 mount、LED、业务锁和其他备份副作用前取得 shared admission lease。hotplug 传入 generation 时，manager 只接受该 running generation。manager 在取消检查点复验 lease 仍对应当前 running generation。lease 失效会以取消路径退出。cleanup 显式释放 lease；仅原始 FD owner 可解锁，继承 FD 的子进程只能关闭已验证的副本。
+
+hotplug 的 `add` 分支在读卡器识别后读取状态。停止态直接退出而不排队 manager。运行态在 settle sleep 前捕获 generation，并以原始 `DEVNAME`、`DEVPATH` 和 `SEQNUM` 调用 manager；sleep 不会改写 argv。`remove` 分支绕过状态、配置和读卡器 gate，直接将原始事件槽位送入 manager 的 remove 验证路径。
+
+[`/etc/init.d/outdoor-backup`](../files/etc/init.d/outdoor-backup) 只准备私有运行路径并逐字传播 controller 的退出状态。`PKG_UPGRADE=1` 时，init 只有在已解析的 `/etc/rc.d/SNNoutdoor-backup` 链接仍指向该 init 脚本时才 restart；禁用服务保持 stopped。`reload` 不改变生命周期状态。Makefile 的当前包元数据为 `1.2.0-11`，并按 BusyBox CUSTOM 条件选择 `flock`。`prerm` 只调用 controller stop，保留其失败状态，不执行广泛 `pkill`，不删除备份数据，也不自动删除无法验证的残留业务锁。因而失败的 stop 不保证 package wrapper 回滚。
 
 ### #16b：传输取消与进程边界
 

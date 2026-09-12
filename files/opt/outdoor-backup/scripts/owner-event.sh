@@ -73,6 +73,20 @@ if (length == 6 and (.[0] == "/bin/sh" or .[0] == "/bin/ash")) then
 else false end
 JQ
             ;;
+        stop_cmdline) cat <<'JQ'
+def nul: [0] | implode;
+if endswith(nul) then split(nul)[:-1] else empty end |
+. as $argv |
+($argv | length) as $length |
+($length == 5 or $length == 6) and
+($argv[0] == "/bin/sh" or $argv[0] == "/bin/ash") and
+$argv[1] == $manager and $argv[2] == "add" and
+($argv[3] | valid_devname) and
+(if $length == 5 then true
+ else valid_event($argv[3]; $argv[4]; $argv[5])
+ end)
+JQ
+            ;;
         *) return 1 ;;
     esac
 }
@@ -160,6 +174,16 @@ owner_event_cmdline_matches() {
         --arg event_seq "$5" "$1" >/dev/null
 }
 
+# Match a raw NUL-terminated active manager argv for administrator stop.
+# Arguments: cmdline path, canonical manager path. Returns zero only for exact
+# legacy five-slot or canonical six-slot add argv.
+owner_event_cmdline_matches_stop() {
+    owner_event_require_jq || return 1
+    [ -r "$1" ] || return 1
+    owner_event_jq_program stop_cmdline | jq -eRs -f /dev/stdin \
+        --arg manager "$2" "$1" >/dev/null
+}
+
 # Snapshot a lock target without command substitution trimming payload LFs.
 # Argument: lock path. Success assigns owner_event_lock_snapshot_value.
 owner_event_lock_snapshot() {
@@ -197,9 +221,11 @@ owner_event_send_term() {
     kill -TERM "$1"
 }
 
-# Capture a live matching owner. Uses cancel's validated argument globals.
-# Returns zero with link, PID and first stat globals; otherwise emits a no-op notice.
+# Capture a live proven owner. Argument: event or stop matching mode. Both modes
+# keep the same lock/stat/cmdline proof sequence; only argv policy differs.
+# Returns zero with link, PID and first stat globals, otherwise emits a notice.
 owner_event_capture_matching_owner() {
+    owner_event_match_kind=$1
     owner_event_lock_snapshot "$owner_event_lock" 2>/dev/null || {
         owner_event_notice 'no readable owner lock'
         return 1
@@ -217,9 +243,18 @@ owner_event_capture_matching_owner() {
         owner_event_notice 'owner cmdline path is unavailable'
         return 1
     }
-    owner_event_cmdline_matches "$owner_event_cmdline" "$owner_event_manager" \
-        "$owner_event_event_devname" "$owner_event_event_devpath" \
-        "$owner_event_event_seq" || {
+    case "$owner_event_match_kind" in
+        event)
+            owner_event_cmdline_matches "$owner_event_cmdline" "$owner_event_manager" \
+                "$owner_event_event_devname" "$owner_event_event_devpath" \
+                "$owner_event_event_seq"
+            ;;
+        stop)
+            owner_event_cmdline_matches_stop "$owner_event_cmdline" \
+                "$owner_event_manager"
+            ;;
+        *) return 1 ;;
+    esac || {
         owner_event_notice 'owner argv or event identity does not match'
         return 1
     }
@@ -268,12 +303,64 @@ owner_event_cancel() {
         owner_event_notice 'manager path is not canonical'
         return 1
     }
-    owner_event_capture_matching_owner || return 0
+    owner_event_capture_matching_owner event || return 0
     owner_event_matching_owner_is_stable || return 0
     owner_event_send_term "$owner_event_pid" || {
         owner_event_notice 'failed to request owner cancellation'
         return 1
     }
     owner_event_notice 'requested cancellation from matching owner'
+    return 0
+}
+
+# Validate administrator stop arguments and required parser dependencies.
+# Arguments: lock link, canonical manager path, optional opaque prior identity.
+owner_event_validate_stop_arguments() {
+    [ "$#" -eq 2 ] || [ "$#" -eq 3 ] || return 1
+    owner_event_require_jq || {
+        owner_event_notice 'jq is required for owner stop validation'
+        return 1
+    }
+    command -v target_device_valid_devname >/dev/null 2>&1 || {
+        owner_event_notice 'target device name validator is unavailable'
+        return 1
+    }
+    owner_event_valid_manager_path "$2" || {
+        owner_event_notice 'manager path is not canonical'
+        return 1
+    }
+    return 0
+}
+
+# Stop only a fully proven current manager owner. Arguments: lock link, canonical
+# manager path, optional opaque previous PID:starttime identity. Returns 0 after
+# one TERM or a verified same-identity skip, 2 only if the lock does not exist,
+# and 1 for every invalid, unproven, changing, or signalling-failure state.
+# Success exports OWNER_EVENT_STOP_IDENTITY; every failure clears it.
+owner_event_stop() {
+    unset OWNER_EVENT_STOP_IDENTITY
+    owner_event_validate_stop_arguments "$@" || return 1
+    owner_event_lock=$1
+    owner_event_manager=$2
+    owner_event_stop_previous=${3-}
+
+    if [ ! -e "$owner_event_lock" ] && [ ! -L "$owner_event_lock" ]; then
+        return 2
+    fi
+    owner_event_capture_matching_owner stop || return 1
+    owner_event_matching_owner_is_stable || return 1
+    owner_event_stop_identity="$owner_event_pid:$owner_event_stat_after"
+    if [ "$owner_event_stop_identity" = "$owner_event_stop_previous" ]; then
+        OWNER_EVENT_STOP_IDENTITY=$owner_event_stop_identity
+        owner_event_notice 'current owner already received stop request'
+        return 0
+    fi
+    owner_event_send_term "$owner_event_pid" || {
+        owner_event_notice 'failed to request owner stop'
+        unset OWNER_EVENT_STOP_IDENTITY
+        return 1
+    }
+    OWNER_EVENT_STOP_IDENTITY=$owner_event_stop_identity
+    owner_event_notice 'requested stop from proven owner'
     return 0
 }

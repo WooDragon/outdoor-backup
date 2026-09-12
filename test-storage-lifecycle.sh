@@ -26,6 +26,16 @@ if [ ! -r /etc/openwrt_release ] || \
     printf '%s\n' 'FAIL: --inside requires an OpenWrt rootfs' >&2
     exit 1
 fi
+mkdir -p /var/lock || { printf '%s\n' 'FAIL: cannot create OpenWrt package lock directory' >&2; exit 1; }
+opkg update >/dev/null || { printf '%s\n' 'FAIL: cannot refresh OpenWrt package metadata' >&2; exit 1; }
+opkg install --force-space jq flock >/dev/null || {
+    printf '%s\n' 'FAIL: cannot install jq and flock in pinned OpenWrt rootfs' >&2
+    exit 1
+}
+command -v jq >/dev/null 2>&1 && command -v flock >/dev/null 2>&1 || {
+    printf '%s\n' 'FAIL: jq or flock missing after installation' >&2
+    exit 1
+}
 
 REPO_ROOT=/src
 MAKEFILE="$REPO_ROOT/Makefile"
@@ -118,7 +128,7 @@ reset_owned_state() {
 }
 
 prepare_fixture() {
-    mkdir -p /var/lock /opt/outdoor-backup /etc/init.d /etc/config \
+    mkdir -p /var/lock /var/run /opt/outdoor-backup /etc/init.d /etc/config \
         /etc/hotplug.d/block
     cp -R "$REPO_ROOT/files/opt/outdoor-backup/." /opt/outdoor-backup/
     cp "$REPO_ROOT/files/etc/init.d/outdoor-backup" "$INIT_SCRIPT"
@@ -188,13 +198,8 @@ case_l01_install_without_storage() {
         'L01 postinst created the absent backup storage directory'
     assert_path_exists "$ALIAS_FILE" \
         'L01 postinst did not initialize aliases.json'
-    assert_path_exists "$SERVICE_LINK" \
-        'L01 postinst did not enable the service at START99'
-    assert_symlink "$SERVICE_LINK" \
-        'L01 generated START99 entry is not a symlink'
-    assert_equal "$(readlink "$SERVICE_LINK" 2>/dev/null || true)" \
-        '../init.d/outdoor-backup' \
-        'L01 generated START99 link targets the delivered init script'
+    assert_path_absent "$SERVICE_LINK" \
+        'L01 custom postinst must leave default wrapper enablement to default_postinst'
 }
 
 case_l02_start_without_storage() {
@@ -255,8 +260,8 @@ main() {
 
     assert_equal "$CASES" '4' 'all required cases executed'
     ASSERTIONS=$((ASSERTIONS + 1))
-    if [ "$ASSERTIONS" -ne 21 ]; then
-        fail "all required assertions executed (expected=21, actual=$ASSERTIONS)"
+    if [ "$ASSERTIONS" -ne 19 ]; then
+        fail "all required assertions executed (expected=19, actual=$ASSERTIONS)"
     fi
     if [ "$FAILED" -ne 0 ]; then
         printf 'cases=%s assertions=%s failed=%s\n' \

@@ -104,11 +104,12 @@ outdoor-backup/
 - **职责**: LED 控制、日志函数、工具函数
 - **能力**: 别名管理、安全检查、UUID 生成
 
-### 4. 服务脚本
-- **文件**: `/etc/init.d/outdoor-backup`
-- **职责**: procd 服务管理，目录初始化
+### 4. 服务生命周期
+- **文件**: `/etc/init.d/outdoor-backup`、`service-control.sh`、`service-state.sh`
+- **约束**: init 只准备私有运行目录并逐字传播 controller 退出状态。controller 以独立控制锁和准入锁协调 `running`/`stopped` 状态及 generation；manager 只有在当前运行 generation 获得准入后才可进入备份生命周期。
+- **停止边界**: stop 只有在 controller 关闭状态、取得准入独占锁且业务锁缺席时才成功。它只请求经 owner 证据核验的进程退出；不猜测进程，不使用广泛 `pkill`，不删除备份数据。
 
-*详细实现见 [docs/component-implementation.md](docs/component-implementation.md)*
+> **前置阅读**：服务状态、hotplug、manager 准入和包生命周期的稳定设计边界，修改这些接口前必须先读取：[docs/component-implementation.md](docs/component-implementation.md)。
 
 ## 配置系统
 
@@ -187,7 +188,7 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 - **增量备份**：传输模块应直接调用 `rsync` 并保留真实退出码。它应使用 `--partial`，不应使用 `--ignore-existing`、`--append`、`--append-verify` 或 `--delete`。rsync 的 size/mtime quick check 不保证发现值相同的内容变化。
 - **状态单一来源**：`status.sh` 应使用 `jq` 原子替换唯一的 `status.json` 快照。它不得创建 `history.jsonl` 或手写 JSON。状态仅在守卫建立后写入，且只有 rsync、摘要写入、最终锚点健康和设备身份复验均成功时才可写 `completed`。
 - **空间守卫**：管理器应通过已锚定目标 FD 执行 `df`，而非扫描备份树计算空间。`MIN_FREE_SPACE` 的默认值为 1024 MB；合法非负整数 `0` 禁用余量，未知 `df` 值必须失败关闭。只有明确 ENOSPC 诊断可把 rsync 失败归类为满盘。
-- **错误恢复**：`remove` 不依赖目标存储、sysfs、UCI 或读卡器白名单。四参数 remove 只可向经过 owner 证据核验的管理器发送一次 `TERM`。清理必须先确认本进程仍持有 `backup.lock`，再修改来源挂载、状态、LED 或锁。来源挂载只在本进程成功 mount 后可由 cleanup 卸载。持锁 cleanup 应在来源清理、目标 FD 关闭和 LED 终态后释放锁。服务或卸包路径的广泛 `pkill` 与崩溃残留挂载仍由 #16 后续处理。
+- **错误恢复**：`remove` 不依赖目标存储、sysfs、UCI 或读卡器白名单。四参数 remove 只可向经过 owner 证据核验的管理器发送一次 `TERM`。hotplug `remove` 不取消 waiter；administrative stop 通过 generation-current gate 取消已准入 waiter。清理必须先确认本进程仍持有 `backup.lock`，再修改来源挂载、状态、LED 或锁。来源挂载只在本进程成功 mount 后可由 cleanup 卸载。持锁 cleanup 应在来源清理、目标 FD 关闭和 LED 终态后释放锁。崩溃残留挂载恢复仍由 #16 后续处理。
 
 ### 路径安全
 - **目录遍历防护**: `is_safe_path()` 检查 `../`
