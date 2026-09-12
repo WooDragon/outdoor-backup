@@ -92,12 +92,58 @@ fi
 
 # Target libraries are inert when sourced. An add must prove and pin its target
 # before common.sh can create logs, aliases, LEDs, locks, or source mounts.
-. "$SCRIPT_DIR/target.sh"
+# Event syntax must be valid before service admission. Keep remove and disabled
+# add above this point: both remain compatible fast paths without this library.
 . "$SCRIPT_DIR/target-device.sh"
 if [ "$#" -eq 4 ]; then
 	. "$SCRIPT_DIR/owner-event.sh"
 	owner_event_validate_event "$DEVNAME" "$DEVPATH" "$EVENT_SEQNUM" || exit 1
 fi
+
+# Hold a shared admission lease before opening the target or causing any backup
+# side effect. An explicitly supplied environment value, including an empty one,
+# is the caller's expected generation; omission preserves legacy add behavior.
+. "$SCRIPT_DIR/service-state.sh"
+if [ "${OUTDOOR_BACKUP_SERVICE_GENERATION+x}" = x ]; then
+	if service_lease_acquire "$OUTDOOR_BACKUP_SERVICE_GENERATION"; then
+		service_lease_rc=0
+	else
+		service_lease_rc=$?
+	fi
+elif service_lease_acquire; then
+	service_lease_rc=0
+else
+	service_lease_rc=$?
+fi
+case "$service_lease_rc" in
+	0) ;;
+	2)
+		printf '%s\n' 'outdoor-backup: service admission not admitted' >&2
+		exit 2
+		;;
+	*)
+		printf '%s\n' 'outdoor-backup: service state error' >&2
+		exit 1
+		;;
+esac
+
+# This trap covers failures before main installs the full lifecycle cleanup.
+# A guard failure can fork an LED timer that inherits FD 8; only this original
+# owner unlocks, so the child cannot keep the controller's stop blocked.
+temporary_lease_cleanup() {
+	temporary_exit_code=$?
+	trap - EXIT
+	if ! service_lease_release; then
+		printf '%s\n' 'outdoor-backup: explicit service lease release failed' >&2
+		[ "$temporary_exit_code" -ne 0 ] || temporary_exit_code=1
+	fi
+	exit "$temporary_exit_code"
+}
+trap temporary_lease_cleanup EXIT
+
+# Target libraries are inert when sourced. An add must prove and pin its target
+# before common.sh can create logs, aliases, LEDs, locks, or source mounts.
+. "$SCRIPT_DIR/target.sh"
 
 # Signal a rejected target without entering the backup lifecycle. common.sh is
 # deliberately sourced only here: it defines the configured LED helper without
@@ -154,9 +200,17 @@ record_cancel() {
 # Parameters: none. Returns zero when work may continue, else INT/TERM code.
 check_cancel_request() {
 	cancel_code=${BACKUP_CANCEL_CODE:-0}
-	[ "$cancel_code" -eq 0 ] && return 0
+	if [ "$cancel_code" -ne 0 ]; then
+		ERROR_TYPE=cancelled
+		return "$cancel_code"
+	fi
+	service_lease_current
+	lease_current_rc=$?
+	[ "$lease_current_rc" -eq 0 ] && return 0
 	ERROR_TYPE=cancelled
-	return "$cancel_code"
+	printf '%s\n' 'outdoor-backup: service no longer current' >&2
+	record_cancel 143
+	return 143
 }
 
 # Return success only for an integer that ash can compare safely. Args: $1 MB.
@@ -228,6 +282,10 @@ cleanup() {
 			ERROR_TYPE=cancelled
 		fi
 		target_close
+		if ! service_lease_release; then
+			printf '%s\n' 'outdoor-backup: explicit service lease release failed' >&2
+			[ "$cleanup_exit_code" -ne 0 ] || cleanup_exit_code=1
+		fi
 		exit "$cleanup_exit_code"
 	fi
 
@@ -275,6 +333,10 @@ cleanup() {
 		log_error "Backup failed with code $cleanup_exit_code"
 	fi
 	release_lock
+	if ! service_lease_release; then
+		printf '%s\n' 'outdoor-backup: explicit service lease release failed' >&2
+		[ "$cleanup_exit_code" -ne 0 ] || cleanup_exit_code=1
+	fi
 	exit "$cleanup_exit_code"
 }
 
@@ -300,9 +362,7 @@ acquire_lock() {
 	elapsed=0
 	mkdir -p "$(dirname "$LOCK_LINK")"
 	while [ "$elapsed" -lt "$timeout" ]; do
-		if [ "${BACKUP_CANCEL_CODE:-0}" -ne 0 ]; then
-			return "$BACKUP_CANCEL_CODE"
-		fi
+		check_cancel_request || return "$?"
 		if ln -s "/proc/$$" "$LOCK_LINK" 2>/dev/null; then
 			LOCK_HELD=1
 			log_info 'Lock acquired'
@@ -318,6 +378,7 @@ acquire_lock() {
 		sleep "$interval"
 		elapsed=$((elapsed + interval))
 	done
+	check_cancel_request || return "$?"
 	log_error "Failed to acquire lock after ${timeout}s"
 	return 1
 }

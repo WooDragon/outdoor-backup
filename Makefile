@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=outdoor-backup
 PKG_VERSION:=1.2.0
-PKG_RELEASE:=10
+PKG_RELEASE:=11
 
 PKG_MAINTAINER:=Your Name <your.email@example.com>
 PKG_LICENSE:=GPL-2.0-only
@@ -21,7 +21,7 @@ define Package/outdoor-backup
   SECTION:=utils
   CATEGORY:=Utilities
   TITLE:=Outdoor Backup - SD card auto backup system
-  DEPENDS:=+rsync +jq +block-mount +kmod-usb-storage +kmod-fs-ext4 +kmod-fs-vfat +kmod-fs-exfat +kmod-fs-ntfs3 +@BUSYBOX_CUSTOM:BUSYBOX_CONFIG_SETSID +@!BUSYBOX_CUSTOM:BUSYBOX_DEFAULT_SETSID
+  DEPENDS:=+rsync +jq +block-mount +kmod-usb-storage +kmod-fs-ext4 +kmod-fs-vfat +kmod-fs-exfat +kmod-fs-ntfs3 +@BUSYBOX_CUSTOM:BUSYBOX_CONFIG_SETSID +@!BUSYBOX_CUSTOM:BUSYBOX_DEFAULT_SETSID +@BUSYBOX_CUSTOM:BUSYBOX_CONFIG_FLOCK +@!BUSYBOX_CUSTOM:BUSYBOX_DEFAULT_FLOCK
   PKGARCH:=all
 endef
 
@@ -103,9 +103,6 @@ EOF
     chmod 644 /opt/outdoor-backup/conf/aliases.json
 fi
 
-# Enable service
-/etc/init.d/outdoor-backup enable
-
 echo "======================================"
 echo "Outdoor Backup Installed"
 echo "======================================"
@@ -114,7 +111,7 @@ echo "Backup location: /mnt/ssd/SDMirrors/"
 echo "Configuration: /opt/outdoor-backup/conf/backup.conf"
 echo "or UCI: /etc/config/outdoor-backup"
 echo ""
-echo "The system will automatically backup SD cards when inserted."
+echo "Automatic backup follows the configured service state."
 echo "Monitor logs: logread -f | grep outdoor-backup"
 echo ""
 exit 0
@@ -124,14 +121,12 @@ define Package/outdoor-backup/prerm
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] && exit 0
 
-# Disable service
+# Stop only through the controller; preserve an exact failure for default_prerm.
 /etc/init.d/outdoor-backup stop
-/etc/init.d/outdoor-backup disable
+stop_rc=$?
+[ "$stop_rc" -eq 0 ] || exit "$stop_rc"
 
-# Kill any running backup processes
-pkill -f "backup-manager.sh" 2>/dev/null || true
-
-echo "Outdoor Backup system disabled"
+echo "Outdoor Backup tasks stopped"
 echo "Note: Backup data in /mnt/ssd/SDMirrors/ was preserved"
 exit 0
 endef

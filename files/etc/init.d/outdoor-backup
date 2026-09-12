@@ -1,40 +1,82 @@
 #!/bin/sh /etc/rc.common
 #
-# OpenWrt SD Card Backup - Init Script
-# Procd-style service management
+# OpenWrt SD Card Backup lifecycle entrypoint.
+# The controller owns service state, admission and owner quiescence; this file
+# only prepares runtime paths and propagates the controller's exact status.
 #
 
 START=99
 STOP=10
 
-USE_PROCD=1
-PROG=/opt/outdoor-backup/scripts/backup-manager.sh
+CONTROLLER=/opt/outdoor-backup/scripts/service-control.sh
+STATE_LIBRARY=/opt/outdoor-backup/scripts/service-state.sh
 
+# Invoke the controller with its reserved descriptor numbers clear of rc.common.
+controller_run() {
+	(
+		exec 3>&-
+		exec 4>&-
+		exec 5>&-
+		exec 6>&-
+		exec 7>&-
+		exec 8>&-
+		"$CONTROLLER" "$1"
+	)
+}
+
+# Start the lifecycle controller after preparing only private runtime paths.
+# On package upgrade an rc-disabled service must remain disabled and stopped.
 start_service() {
-	# Create runtime directories
-	mkdir -p /opt/outdoor-backup/var/lock
-	mkdir -p /opt/outdoor-backup/log
+	controller_action=start
+	if [ "${PKG_UPGRADE:-}" = 1 ]; then
+		. "$STATE_LIBRARY" || return 1
+		service_state_rc_enabled || return 0
+		controller_action=restart
+	fi
 
-	# Set permissions
-	chmod 755 /opt/outdoor-backup/scripts/*.sh
-	chmod 755 /etc/hotplug.d/block/90-outdoor-backup
+	mkdir -p /opt/outdoor-backup/var/lock || return 1
+	mkdir -p /opt/outdoor-backup/log || return 1
+	chmod 755 /opt/outdoor-backup/scripts/*.sh || return 1
+	chmod 755 /etc/hotplug.d/block/90-outdoor-backup || return 1
 
-	logger -t outdoor-backup "Service enabled - SD cards will be backed up automatically"
+	controller_run "$controller_action"
+	controller_rc=$?
+	[ "$controller_rc" -eq 0 ] || return "$controller_rc"
+	logger -t outdoor-backup 'Service enabled - SD cards will be backed up automatically' || :
+	return 0
 }
 
+# Stop only through the controller, which proves quiescence before success.
 stop_service() {
-	# Kill any running backup processes
-	pkill -f "backup-manager.sh" 2>/dev/null || true
-
-	logger -t outdoor-backup "Service stopped"
+	controller_run stop
+	controller_rc=$?
+	[ "$controller_rc" -eq 0 ] || return "$controller_rc"
+	logger -t outdoor-backup 'Service stopped' || :
+	return 0
 }
 
+# Configuration is read per backup task, so reload does not alter lifecycle state.
 reload_service() {
-	# Reload configuration
-	logger -t outdoor-backup "Configuration reloaded"
+	logger -t outdoor-backup 'Configuration reloaded'
 }
 
-service_triggers() {
-	# Reload on config changes
-	procd_add_reload_trigger "outdoor-backup"
+start() {
+	start_service "$@"
+}
+
+stop() {
+	stop_service "$@"
+}
+
+# Use the controller's single FD7 acquisition instead of rc.common's stop/start.
+restart() {
+	controller_run restart
+	controller_rc=$?
+	[ "$controller_rc" -eq 0 ] || return "$controller_rc"
+	logger -t outdoor-backup 'Service restarted' || :
+	return 0
+}
+
+reload() {
+	reload_service "$@"
 }

@@ -22,6 +22,10 @@ SYSFS_ROOT="${SYSFS_ROOT:-}"
 # production; the test suite points it at the repo copy. No behavior change
 # when unset.
 CONFIG_SCRIPT="${OUTDOOR_BACKUP_CONFIG_SCRIPT:-/opt/outdoor-backup/scripts/config.sh}"
+# SERVICE_STATE_SCRIPT is the installed lifecycle-state API. It is deliberately
+# consulted only by the add branch after card-reader detection; remove must keep
+# dispatching even when lifecycle state and config files have disappeared.
+SERVICE_STATE_SCRIPT="/opt/outdoor-backup/scripts/service-state.sh"
 
 # Log function
 log_message() {
@@ -219,15 +223,32 @@ case "$ACTION" in
 
 		# Check if this is an SD card
 		if is_sdcard "$DEVPATH"; then
+			if [ ! -r "$SERVICE_STATE_SCRIPT" ]; then
+				log_message "service-state library unavailable: $SERVICE_STATE_SCRIPT; refusing add event"
+				exit 1
+			fi
+			# shellcheck disable=SC1090
+			. "$SERVICE_STATE_SCRIPT"
+			if ! service_state_read; then
+				log_message "service state read failed; refusing add event"
+				exit 1
+			fi
+			case "$SERVICE_STATE_MODE" in
+				running) service_generation=$SERVICE_STATE_GENERATION ;;
+				stopped) exit 0 ;;
+				*)
+					log_message "service state mode is invalid; refusing add event"
+					exit 1
+					;;
+			esac
 			log_message "SD card detected: $DEVNAME"
 
-			# Launch backup manager in background
+			# Keep the add event's observed epoch across the settle delay. A restart
+			# during sleep must not turn this old event into a new-generation add.
 			(
-				# Wait for device to settle
 				sleep 2
-
-				# Execute backup with the original event identity after settling.
-				"$BACKUP_MANAGER" "add" "$DEVNAME" "$DEVPATH" "${SEQNUM:-}" &
+				OUTDOOR_BACKUP_SERVICE_GENERATION="$service_generation" \
+					exec "$BACKUP_MANAGER" "add" "$DEVNAME" "$DEVPATH" "${SEQNUM:-}"
 			) &
 		fi
 		;;

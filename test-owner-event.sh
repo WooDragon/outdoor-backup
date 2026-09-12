@@ -161,6 +161,78 @@ start_owner() {
     ln -s "/proc/$OWNER_PID" "$LOCK"
 }
 
+start_legacy_owner() {
+    term_file=$1
+    devname=$2
+    legacy_data_slot=$3
+    TERM_FILE="$term_file" "$MANAGER" add "$devname" "$legacy_data_slot" &
+    OWNER_PID=$!
+    ACTIVE_PIDS="$ACTIVE_PIDS $OWNER_PID"
+    sleep 1
+    ln -s "/proc/$OWNER_PID" "$LOCK"
+}
+
+write_reusable_owner_script() {
+    cat > "$1" <<'EOF'
+#!/bin/sh
+trap 'printf TERM >> "$TERM_FILE"; [ "$(wc -c < "$TERM_FILE")" -lt 8 ] || exit 143' TERM
+while :; do
+    sleep 1
+done
+EOF
+    chmod 755 "$1"
+}
+
+start_reusable_owner() {
+    term_file=$1
+    devname=$2
+    devpath=$3
+    seq=$4
+    write_reusable_owner_script "$MANAGER"
+    TERM_FILE="$term_file" "$MANAGER" add "$devname" "$devpath" "$seq" &
+    OWNER_PID=$!
+    ACTIVE_PIDS="$ACTIVE_PIDS $OWNER_PID"
+    sleep 1
+    ln -s "/proc/$OWNER_PID" "$LOCK"
+}
+
+assert_status() {
+    actual=$1
+    expected=$2
+    message=$3
+    assert_equal "$actual" "$expected" "$message"
+}
+
+call_stop() {
+    owner_event_stop "$@"
+    STOP_STATUS=$?
+}
+
+# Record each sender invocation synchronously, then preserve the real TERM path.
+# Argument: test-private append-only PID log path.
+install_counting_sender() {
+    OWNER_EVENT_SEND_LOG=$1
+    owner_event_send_term() {
+        printf '%s\n' "$1" >> "$OWNER_EVENT_SEND_LOG" || return 1
+        kill -TERM "$1"
+    }
+}
+
+# Build a test-private mutant which incorrectly sends TERM for same identity.
+# Argument: output library path. The production source is never modified.
+write_same_previous_sender_mutant() {
+    awk '
+        {
+            print
+            if ($0 ~ /current owner already received stop request/) {
+                print "        owner_event_send_term \"$owner_event_pid\" || return 1"
+                matches++
+            }
+        }
+        END { exit(matches == 1 ? 0 : 1) }
+    ' "$OWNER_EVENT_SCRIPT" > "$1"
+}
+
 start_raw_owner() {
     term_file=$1
     shift
@@ -557,6 +629,195 @@ case_missing_dependencies_and_action_failures() {
     assert_success 'A10 logger failure owner received actual TERM' wait_for_term "$term_file"
 }
 
+case_stop_accepts_proven_legacy_and_new_owners() {
+    begin_case A11 'administrator stop accepts complete legacy and new add argv without remove event data'
+    reset_case
+    term_file="$TEST_ROOT/legacy-stop.term"
+    start_legacy_owner "$term_file" sda1 /devices/mock
+    expected_identity="$OWNER_PID:$(owner_event_stat_identity "$OWNER_PID")"
+    call_stop "$LOCK" "$MANAGER"
+    assert_status "$STOP_STATUS" 0 'A11 legacy owner is a proven stop target'
+    assert_equal "$OWNER_EVENT_STOP_IDENTITY" "$expected_identity" 'A11 legacy stop exports PID:starttime'
+    assert_success 'A11 legacy owner received TERM' wait_for_term "$term_file"
+
+    reset_case
+    term_file="$TEST_ROOT/new-stop.term"
+    start_owner "$term_file" sda1 /devices/pci0000:00/block/sda/sda1 10
+    call_stop "$LOCK" "$MANAGER"
+    assert_status "$STOP_STATUS" 0 'A11 new owner needs no remove SEQNUM'
+    assert_success 'A11 new owner received TERM' wait_for_term "$term_file"
+}
+
+case_stop_rejects_non_owner_argv() {
+    begin_case A12 'administrator stop rejects malformed complete argv without signalling'
+    reset_case
+    term_file="$TEST_ROOT/wrong-action-stop.term"
+    start_raw_owner "$term_file" "$MANAGER" remove sda1 /devices/mock
+    call_stop "$LOCK" "$MANAGER"
+    assert_status "$STOP_STATUS" 1 'A12 remove action is not a stop owner'
+    assert_owner_unterminated "$OWNER_PID" "$term_file" 'A12 remove action was signalled'
+
+    reset_case
+    term_file="$TEST_ROOT/wrong-manager-stop.term"
+    start_raw_owner "$term_file" "$OTHER_MANAGER" add sda1 /devices/mock
+    call_stop "$LOCK" "$MANAGER"
+    assert_status "$STOP_STATUS" 1 'A12 another manager is not a stop owner'
+    assert_owner_unterminated "$OWNER_PID" "$term_file" 'A12 another manager was signalled'
+
+    reset_case
+    term_file="$TEST_ROOT/prefix-manager-stop.term"
+    write_owner_script "${MANAGER}.bak"
+    start_raw_owner "$term_file" "${MANAGER}.bak" add sda1 /devices/mock
+    call_stop "$LOCK" "$MANAGER"
+    assert_status "$STOP_STATUS" 1 'A12 manager prefix is not an exact path match'
+    assert_owner_unterminated "$OWNER_PID" "$term_file" 'A12 prefix manager was signalled'
+
+    reset_case
+    term_file="$TEST_ROOT/extra-argv-stop.term"
+    start_raw_owner "$term_file" "$MANAGER" add sda1 /devices/mock extra
+    call_stop "$LOCK" "$MANAGER"
+    assert_status "$STOP_STATUS" 1 'A12 extra argv slot is not an owner'
+    assert_owner_unterminated "$OWNER_PID" "$term_file" 'A12 extra argv was signalled'
+
+    reset_case
+    term_file="$TEST_ROOT/shell-c-stop.term"
+    start_raw_owner "$term_file" /bin/sh -c 'while :; do sleep 1; done'
+    call_stop "$LOCK" "$MANAGER"
+    assert_status "$STOP_STATUS" 1 'A12 shell -c is not an owner'
+    assert_owner_unterminated "$OWNER_PID" "$term_file" 'A12 shell -c was signalled'
+}
+
+case_stop_fails_closed_for_lock_and_evidence_errors() {
+    begin_case A13 'administrator stop distinguishes missing lock from every unproven owner state'
+    reset_case
+    OWNER_EVENT_STOP_IDENTITY=stale
+    call_stop "$LOCK" "$MANAGER"
+    assert_status "$STOP_STATUS" 2 'A13 entirely absent lock returns 2'
+    assert_equal "${OWNER_EVENT_STOP_IDENTITY:-}" '' 'A13 absent lock clears prior identity'
+
+    reset_case
+    ln -s /proc/999999 "$LOCK"
+    OWNER_EVENT_STOP_IDENTITY=stale
+    call_stop "$LOCK" "$MANAGER"
+    assert_status "$STOP_STATUS" 1 'A13 dangling lock is unproven, not absent'
+    assert_equal "${OWNER_EVENT_STOP_IDENTITY:-}" '' 'A13 dangling lock clears prior identity'
+
+    reset_case
+    printf 'business lock residue\n' > "$LOCK"
+    call_stop "$LOCK" "$MANAGER"
+    assert_status "$STOP_STATUS" 1 'A13 ordinary lock residue is not deleted or classified absent'
+    assert_equal "$(sed -n '1p' "$LOCK")" 'business lock residue' 'A13 ordinary lock remains intact'
+
+    reset_case
+    term_file="$TEST_ROOT/unreadable-stop.term"
+    start_owner "$term_file" sda1 /devices/pci0000:00/block/sda/sda1 10
+    owner_event_cmdline_path() { printf '%s\n' "$TEST_ROOT/not-readable-cmdline"; }
+    call_stop "$LOCK" "$MANAGER"
+    assert_status "$STOP_STATUS" 1 'A13 unreadable cmdline is unproven'
+    assert_owner_unterminated "$OWNER_PID" "$term_file" 'A13 unreadable cmdline was signalled'
+
+    reset_case
+    term_file="$TEST_ROOT/changing-identity-stop.term"
+    start_owner "$term_file" sda1 /devices/pci0000:00/block/sda/sda1 10
+    printf 'S 100\nR 101\n' > "$TEST_ROOT/stat-sequence"
+    install_stat_sequence_wrapper
+    call_stop "$LOCK" "$MANAGER"
+    assert_status "$STOP_STATUS" 1 'A13 starttime change is unproven'
+    assert_owner_unterminated "$OWNER_PID" "$term_file" 'A13 changed identity was signalled'
+}
+
+case_stop_dependency_and_term_failures_are_errors() {
+    begin_case A14 'administrator stop treats missing jq and TERM failure as errors'
+    reset_case
+    PATH=/no-such-path
+    export PATH
+    call_stop "$LOCK" "$MANAGER"
+    assert_status "$STOP_STATUS" 1 'A14 missing jq returns 1 even without a lock'
+    PATH=$ORIGINAL_PATH
+    export PATH
+
+    reset_case
+    term_file="$TEST_ROOT/term-failure-stop.term"
+    start_owner "$term_file" sda1 /devices/pci0000:00/block/sda/sda1 10
+    owner_event_send_term() { return 1; }
+    call_stop "$LOCK" "$MANAGER"
+    assert_status "$STOP_STATUS" 1 'A14 failed TERM returns 1'
+    assert_equal "${OWNER_EVENT_STOP_IDENTITY:-}" '' 'A14 failed TERM clears output identity'
+    assert_owner_unterminated "$OWNER_PID" "$term_file" 'A14 failed TERM unexpectedly signalled owner'
+}
+
+case_stop_previous_identity_is_idempotent_without_event_mode_leak() {
+    begin_case A15 'same previous identity skips a second TERM and a new identity is signalled once'
+    reset_case
+    path=/devices/pci0000:00/block/sda/sda1
+    term_file="$TEST_ROOT/first-idempotent.term"
+    sender_log="$TEST_ROOT/first-sender.log"
+    start_reusable_owner "$term_file" sda1 "$path" 10
+    first_pid=$OWNER_PID
+    install_counting_sender "$sender_log"
+    call_stop "$LOCK" "$MANAGER"
+    first_identity=$OWNER_EVENT_STOP_IDENTITY
+    assert_status "$STOP_STATUS" 0 'A15 first stop succeeds'
+    assert_success 'A15 first owner received TERM' wait_for_term "$term_file"
+    assert_equal "$(wc -l < "$sender_log")" 1 'A15 first stop calls sender once'
+    assert_equal "$(sed -n '1p' "$sender_log")" "$first_pid" 'A15 first sender targets proven PID'
+    call_stop "$LOCK" "$MANAGER" "$first_identity"
+    assert_status "$STOP_STATUS" 0 'A15 same verified identity returns success'
+    assert_equal "$OWNER_EVENT_STOP_IDENTITY" "$first_identity" 'A15 same identity remains stable'
+    assert_equal "$(wc -l < "$sender_log")" 1 'A15 same identity does not call sender again'
+    assert_equal "$(sed -n '1p' "$sender_log")" "$first_pid" 'A15 same identity retains original sender target'
+    assert_success 'A15 old event API still makes equal sequence a no-op after stop' \
+        owner_event_cancel "$LOCK" "$MANAGER" sda1 "$path" 10
+    assert_equal "$(wc -l < "$sender_log")" 1 'A15 old event API does not call stop sender'
+    assert_equal "$(sed -n '1p' "$sender_log")" "$first_pid" 'A15 event mode retains original sender target'
+
+    reset_case
+    term_file="$TEST_ROOT/new-identity.term"
+    sender_log="$TEST_ROOT/new-sender.log"
+    start_reusable_owner "$term_file" sda1 "$path" 10
+    new_pid=$OWNER_PID
+    install_counting_sender "$sender_log"
+    call_stop "$LOCK" "$MANAGER" "$first_identity"
+    assert_status "$STOP_STATUS" 0 'A15 distinct owner identity receives a new TERM'
+    assert_success 'A15 new owner received TERM' wait_for_term "$term_file"
+    assert_equal "$(wc -l < "$sender_log")" 1 'A15 distinct identity calls sender once'
+    assert_equal "$(sed -n '1p' "$sender_log")" "$new_pid" 'A15 distinct identity targets new proven PID'
+    assert_failure 'A15 new PID:starttime differs from prior identity' \
+        test "$OWNER_EVENT_STOP_IDENTITY" = "$first_identity"
+
+    reset_case
+    mutant_library="$TEST_ROOT/owner-event-same-identity-mutant.sh"
+    assert_success 'A15 writes a test-private same-identity sender mutant' \
+        write_same_previous_sender_mutant "$mutant_library"
+    # shellcheck disable=SC1090
+    . "$mutant_library"
+    term_file="$TEST_ROOT/mutant-idempotent.term"
+    sender_log="$TEST_ROOT/mutant-sender.log"
+    start_reusable_owner "$term_file" sda1 "$path" 10
+    mutant_pid=$OWNER_PID
+    install_counting_sender "$sender_log"
+    call_stop "$LOCK" "$MANAGER"
+    mutant_identity=$OWNER_EVENT_STOP_IDENTITY
+    assert_status "$STOP_STATUS" 0 'A15 mutant first stop remains a valid delivery path'
+    assert_success 'A15 mutant first owner received TERM before extra sender call' \
+        wait_for_term "$term_file"
+    call_stop "$LOCK" "$MANAGER" "$mutant_identity"
+    assert_status "$STOP_STATUS" 0 'A15 mutant same identity exposes its extra sender call'
+    assert_equal "$(wc -l < "$sender_log")" 2 'A15 mutant invoked sender twice'
+    assert_equal "$(sed -n '1p' "$sender_log")" "$mutant_pid" 'A15 mutant first sender targets proven PID'
+    assert_equal "$(sed -n '2p' "$sender_log")" "$mutant_pid" 'A15 mutant extra sender targets the same proven PID'
+    [ "$(wc -l < "$sender_log")" -eq 1 ]
+    mutant_sender_oracle_rc=$?
+    printf 'MUTANT A15 sender-count oracle: calls=%s rc=%s\n' \
+        "$(wc -l < "$sender_log")" "$mutant_sender_oracle_rc"
+    ASSERTIONS=$((ASSERTIONS + 1))
+    if [ "$mutant_sender_oracle_rc" -eq 0 ]; then
+        fail 'A15 sender-count oracle failed to detect same-identity mutant'
+    fi
+    # Restore production functions after the test-private seam and mutant source.
+    load_libraries
+}
+
 main() {
     mkdir -p /var/lock
     opkg update >/dev/null || {
@@ -590,8 +851,13 @@ main() {
     case_bad_proc_evidence_is_noop
     case_stat_and_lock_rechecks_block_races
     case_missing_dependencies_and_action_failures
+    case_stop_accepts_proven_legacy_and_new_owners
+    case_stop_rejects_non_owner_argv
+    case_stop_fails_closed_for_lock_and_evidence_errors
+    case_stop_dependency_and_term_failures_are_errors
+    case_stop_previous_identity_is_idempotent_without_event_mode_leak
 
-    assert_equal "$CASES" 10 'all required owner-event cases executed'
+    assert_equal "$CASES" 15 'all required owner-event cases executed'
     if [ "$FAILED" -ne 0 ]; then
         printf 'cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"
         exit 1
