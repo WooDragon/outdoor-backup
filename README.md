@@ -74,6 +74,8 @@ scp outdoor-backup_*.ipk root@router:/tmp/
 ssh root@router "opkg install /tmp/outdoor-backup_*.ipk"
 ```
 
+Automatic backup follows after ImmortalWrt's `default_postinst` wrapper enables and starts the service on a first installation. The package's custom post-install script does not repeat those actions.
+
 ### First Run
 
 Configure and mount the target storage before inserting an SD card. The manager does not format, mount, or select a target disk automatically. Follow [Configure target storage](#configure-target-storage) first.
@@ -421,6 +423,8 @@ find bin/ -name "outdoor-backup*.ipk"
 ```
 
 `stop` does not delete backup data or terminate processes by broad name matching. If it cannot prove quiescence or verify the active owner, it returns nonzero. Package removal preserves that failure: it does not force removal, delete a residual lock it cannot verify, or guarantee that the package wrapper rolls back.
+
+Only a completely absent lifecycle-state path uses compatibility state. A genuine enabled init rc link makes that state virtual `running:0`; every other absent-state case is `stopped:0`. An existing malformed state never falls back. `stop` writes `stopped` with the current generation. `start` advances the generation only from `stopped`.
 
 ### Troubleshooting
 

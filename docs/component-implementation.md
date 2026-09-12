@@ -2,99 +2,13 @@
 
 ## 1. 热插拔触发脚本
 
-### 文件: `/etc/hotplug.d/block/90-outdoor-backup`
-
-```bash
-#!/bin/sh
-#
-# OpenWrt SD Card Backup - Hotplug Trigger
-# Triggered when block devices are added/removed
-#
-
-# Only handle block device events
-[ "$SUBSYSTEM" = "block" ] || exit 0
-
-# Load common functions
-. /opt/outdoor-backup/scripts/common.sh
-
-# Configuration
-BACKUP_MANAGER="/opt/outdoor-backup/scripts/backup-manager.sh"
-LOG_TAG="outdoor-backup-hotplug"
-
-# Log function
-log_message() {
-    logger -t "$LOG_TAG" "$1"
-}
-
-# Check if device is an SD card
-is_sdcard() {
-    local dev_path="$1"
-
-    # Check multiple indicators for SD card
-    # 1. USB card reader pattern
-    if echo "$dev_path" | grep -q "usb.*card\|reader\|SD\|mmc"; then
-        return 0
-    fi
-
-    # 2. Check device model
-    if [ -f "/sys/block/${DEVNAME%%[0-9]*}/device/model" ]; then
-        local model=$(cat "/sys/block/${DEVNAME%%[0-9]*}/device/model" 2>/dev/null)
-        if echo "$model" | grep -iq "card\|reader\|SD\|mmc"; then
-            return 0
-        fi
-    fi
-
-    # 3. Size check - SD cards typically ≤512GB
-    if [ -f "/sys/block/${DEVNAME%%[0-9]*}/size" ]; then
-        local size=$(cat "/sys/block/${DEVNAME%%[0-9]*}/size" 2>/dev/null)
-        # Size in 512-byte sectors, 512GB = 1073741824 sectors
-        if [ "$size" -le 1073741824 ] 2>/dev/null; then
-            return 0
-        fi
-    fi
-
-    return 1
-}
-
-# Main logic
-case "$ACTION" in
-    add)
-        # Only process partitions, not whole disks
-        [ "$DEVTYPE" = "partition" ] || exit 0
-
-        # Check if this is an SD card
-        if is_sdcard "$DEVPATH"; then
-            log_message "SD card detected: $DEVNAME"
-
-            # Launch backup manager in background
-            (
-                # Wait for device to settle
-                sleep 2
-
-                # Execute backup
-                $BACKUP_MANAGER "add" "$DEVNAME" "$DEVPATH" &
-            ) &
-        fi
-        ;;
-
-    remove)
-        if is_sdcard "$DEVPATH"; then
-            log_message "SD card removed: $DEVNAME"
-
-            # Notify backup manager to cleanup
-            $BACKUP_MANAGER "remove" "$DEVNAME" "$DEVPATH" &
-        fi
-        ;;
-esac
-
-exit 0
-```
+运行时实现以 [`90-outdoor-backup`](../files/etc/hotplug.d/block/90-outdoor-backup) 为单一事实源。`add` 仅处理分区事件。它在读卡器识别后读取生命周期状态。运行态的 `add` 在 settle 前捕获 generation，并通过环境变量传给 manager。停止态的 `add` 不排队 manager。`remove` 绕过 service、configuration 和 reader gate，并传入原始事件参数 `DEVNAME`、`DEVPATH` 和 `SEQNUM`。
 
 ## 2. 备份管理器主脚本
 
 ### 文件：`/opt/outdoor-backup/scripts/backup-manager.sh`
 
-管理器先由 [`config.sh`](../files/opt/outdoor-backup/scripts/config.sh) 加载有效配置。有效值的顺序是 defaults < legacy `backup.conf` < 显式 UCI option。`TARGET_MOUNT` 的默认值为 `/mnt/ssd`。`TARGET_UUID` 的默认值为空。`add` 事件要求用户配置非空的目标 UUID。`remove` 事件不要求目标介质在场，仍进入清理路径。
+管理器先验证事件。它随后取得 FD 8 shared admission lease。它再通过 FD 9 运行目标守卫。目标守卫成功后，管理器才进入其余既有流程。管理器由 [`config.sh`](../files/opt/outdoor-backup/scripts/config.sh) 加载有效配置。有效值的顺序是 defaults < legacy `backup.conf` < 显式 UCI option。`TARGET_MOUNT` 的默认值为 `/mnt/ssd`。`TARGET_UUID` 的默认值为空。`add` 事件要求用户配置非空的目标 UUID。`remove` 事件不要求目标介质在场，仍进入清理路径。
 
 目标守卫在加载 `common.sh`、注册 cleanup trap、获取锁、挂载来源卡、读取别名和创建应用日志之前运行。管理器按以下顺序调用当前实现：
 
