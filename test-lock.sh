@@ -7,7 +7,8 @@
 # anchored sed and sourced directly by real per-process ash instances; every
 # acquirer/holder is a genuine OS process with its own PID, so `ln -s`,
 # `/proc/<pid>` dereferencing, and `kill -9` all exercise real kernel state,
-# not a simulation. log_info/log_error are the only fixtures.
+# not a simulation. Logging and cancellation-boundary fixtures are the only
+# fixtures; service lease semantics are verified by the manager integration suite.
 #
 # Design: acquiring the lock is one syscall -- `ln -s "/proc/$$" "$LOCK_LINK"`
 # -- that publishes the holder's identity (its own /proc entry) atomically
@@ -117,6 +118,7 @@ LOCK_IDENTITY=${LOCK_IDENTITY:-backup-manager.sh}
 log_info() { printf 'INFO %s\n' "$*" >> "${TEST_LOG:-/dev/null}"; }
 log_warn() { printf 'WARN %s\n' "$*" >> "${TEST_LOG:-/dev/null}"; }
 log_error() { printf 'ERROR %s\n' "$*" >> "${TEST_LOG:-/dev/null}"; }
+check_cancel_request() { return "${BACKUP_CANCEL_CODE:-0}"; }
 eval "$snippet"
 EOF
     chmod 755 "$RUNNER"
