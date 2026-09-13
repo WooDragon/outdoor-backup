@@ -23,9 +23,9 @@ fi
     exit 1
 }
 
-mkdir -p /var/lock
-opkg update >/dev/null
-opkg install jq >/dev/null
+mkdir -p /var/lock || { printf '%s\n' 'FAIL: cannot create OpenWrt package lock directory' >&2; exit 1; }
+opkg update >/dev/null || { printf '%s\n' 'FAIL: cannot refresh OpenWrt package metadata' >&2; exit 1; }
+opkg install jq >/dev/null || { printf '%s\n' 'FAIL: cannot install jq in pinned OpenWrt rootfs' >&2; exit 1; }
 
 REPO_ROOT=/src
 TARGET_SCRIPT="$REPO_ROOT/files/opt/outdoor-backup/scripts/target.sh"

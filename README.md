@@ -510,6 +510,17 @@ echo 'DEBUG=1' >> /opt/outdoor-backup/conf/backup.conf
 logread -f | grep outdoor-backup
 ```
 
+### Local Behavior CI
+
+在 ARM64 Docker 主机上运行完整行为套件前，应安装 Bash、Python 3 和 Docker。该命令会下载固定的 OpenWrt ARM64 镜像；测试 runner 会预检磁盘空间。CI runner 已为这项检查提供所需空间。测试只使用隔离 guest，不会访问真机。一次性测试 guest 使用 `SYS_ADMIN` 以及 `seccomp=unconfined` 和 `apparmor=unconfined` 执行受控 tmpfs 测试；这不是宿主全局策略，也不触碰真实介质。
+
+```bash
+EVIDENCE_PARENT=$(mktemp -d)
+bash tests/run-ci.sh "$EVIDENCE_PARENT/evidence"
+```
+
+入口要求 `evidence` 子目录在运行前不存在。失败时检查该目录中的每个 suite 证据，包括 stdout、stderr 和退出码。GitHub Actions 下载的 `behavior-evidence-<SHA>` artifact 是 `behavior-evidence-<SHA>.tar.gz`。该 tar.gz 保留每个 suite 的 stdout、stderr、退出码和 runtime 原权限。
+
 ### Shellcheck Validation
 
 `test-owner-event.sh` 和 `test-manager-removal.sh` 需要真实 `/proc` argv。它们在 ARM 主机选择官方 `openwrt/rootfs@sha256:f6dd33c1d9b7d6f1e0848f2fbb92b8d03fc9b425dc08c3574a44936b93133704` 的 `linux/aarch64_generic` 实体，在 x86 主机选择既有固定 `linux/amd64` 实体 `openwrt/rootfs:x86_64-24.10.8@sha256:9972a4b4747cd136abd597475d7b88c51a49fd849d0d53f069a2f4bf446061b9`。其他测试套件的平台不变；生产代码不为 Rosetta 增加分支。
