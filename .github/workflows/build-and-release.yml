@@ -145,6 +145,27 @@ jobs:
           cd sdk
           make defconfig
 
+      - name: Verify BusyBox capability selection
+        run: |
+          config_file=sdk/.config
+          test -r "$config_file" || {
+            echo "SDK configuration is unavailable: $config_file" >&2
+            exit 1
+          }
+          if grep -F -x -q 'CONFIG_BUSYBOX_CUSTOM=y' "$config_file"; then
+            busybox_namespace=BUSYBOX_CONFIG
+          else
+            busybox_namespace=BUSYBOX_DEFAULT
+          fi
+          for capability in SETSID FLOCK; do
+            symbol="CONFIG_${busybox_namespace}_${capability}"
+            grep -F -x -q "${symbol}=y" "$config_file" || {
+              echo "Required BusyBox capability is disabled: ${symbol}" >&2
+              exit 1
+            }
+            printf 'Verified BusyBox symbol: %s=y\n' "$symbol"
+          done
+
       - name: Build outdoor-backup
         run: |
           cd sdk
@@ -154,6 +175,54 @@ jobs:
         run: |
           cd sdk
           make package/feeds/outdoor/luci-app-outdoor-backup/compile V=s -j$(nproc)
+
+      - name: Verify outdoor-backup IPK metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t core_ipks < <(find sdk/bin/packages -type f -name 'outdoor-backup_*.ipk' -print)
+          [ "${#core_ipks[@]}" -eq 1 ] || {
+            printf 'Expected exactly one core IPK, found %s\n' "${#core_ipks[@]}" >&2
+            printf '%s\n' "${core_ipks[@]}" >&2
+            exit 1
+          }
+          mapfile -t package_versions < <(sed -n 's/^PKG_VERSION:=//p' outdoor-backup/Makefile)
+          mapfile -t package_releases < <(sed -n 's/^PKG_RELEASE:=//p' outdoor-backup/Makefile)
+          [ "${#package_versions[@]}" -eq 1 ] && [ -n "${package_versions[0]}" ] || {
+            echo 'Package recipe must contain exactly one non-empty PKG_VERSION' >&2
+            exit 1
+          }
+          [ "${#package_releases[@]}" -eq 1 ] && [ -n "${package_releases[0]}" ] || {
+            echo 'Package recipe must contain exactly one non-empty PKG_RELEASE' >&2
+            exit 1
+          }
+          expected_version="${package_versions[0]}-${package_releases[0]}"
+          control_file=$(mktemp)
+          trap 'rm -f "$control_file"' EXIT
+          tar -xOzf "${core_ipks[0]}" ./control.tar.gz | tar -xOzf - ./control > "$control_file"
+          grep -F -x -q 'Package: outdoor-backup' "$control_file"
+          grep -F -x -q "Version: $expected_version" "$control_file"
+          depends=$(sed -n 's/^Depends: //p' "$control_file")
+          [ -n "$depends" ] || {
+            echo 'Core IPK control file has no Depends field' >&2
+            exit 1
+          }
+          has_rsync=false
+          has_jq=false
+          while IFS= read -r dependency; do
+            dependency="${dependency#"${dependency%%[![:space:]]*}"}"
+            case "$dependency" in
+              BUSYBOX_*)
+                printf 'Unexpected BusyBox runtime dependency: %s\n' "$dependency" >&2
+                exit 1
+                ;;
+              rsync) has_rsync=true ;;
+              jq) has_jq=true ;;
+            esac
+          done < <(printf '%s\n' "$depends" | tr ',' '\n')
+          [ "$has_rsync" = true ] || { echo 'Core IPK Depends lost rsync' >&2; exit 1; }
+          [ "$has_jq" = true ] || { echo 'Core IPK Depends lost jq' >&2; exit 1; }
+          printf 'Verified core IPK metadata: %s\n' "${core_ipks[0]}"
 
       - name: Run ShellCheck validation
         run: |

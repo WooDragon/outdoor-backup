@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- Corrected the four BusyBox `setsid` and `flock` CUSTOM/default conditions in `outdoor-backup/Makefile` from `+@` to `@+`. The former order leaked a negated `BUSYBOX_DEFAULT_*` condition into the installed IPK's runtime `Depends`; the corrected order remains a Kconfig-only select. `PKG_RELEASE` changes from `12` to `13`. The workflow now checks the selected BusyBox namespace in the actual SDK `.config` and rejects any `BUSYBOX_*` control dependency while retaining `rsync` and `jq`. Read [docs/component-implementation.md](docs/component-implementation.md) for the stripping-order cause and validation boundary.
 - #32: Moved the core-package recipe from the repository root to `outdoor-backup/Makefile` so OpenWrt feed scanning discovers it instead of failing in `scan.mk` when a consumer registers the repository as a feed. The root `files/` tree remains the sole runtime source. `outdoor-backup/files` is the relative link `../files`; runtime content and installed paths are unchanged. The LuCI recipe remains in `luci-app-outdoor-backup/Makefile`.
 - #12: `test-cleanup.sh` 只在一次性隔离测试目录中以显式 `--force` 清理破坏性 fixture。生产 `cleanup-all.sh` 与 `common.sh` 未改动。有效目录在缺少 `--force` 时仍必须拒绝清理。测试不得在真实备份目录中运行。
 

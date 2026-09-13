@@ -53,6 +53,11 @@ assert_contains() {
     grep -F -q "$1" "$2" || fail "$3"
 }
 
+assert_not_contains() {
+    ASSERTIONS=$((ASSERTIONS + 1))
+    ! grep -F -q "$1" "$2" || fail "$3"
+}
+
 case_l01_core_recipe_is_a_feed_package() {
     begin_case L01 'core package recipe resides in the standard feed subdirectory'
     assert_file "$CORE_MAKEFILE" 'L01 core recipe is missing from outdoor-backup/'
@@ -97,6 +102,20 @@ case_l05_install_sources_exist_at_recipe_relative_paths() {
         "$CORE_MAKEFILE" 'L05 core recipe no longer installs its recipe-relative scripts'
 }
 
+case_l06_busybox_selectors_are_metadata_only() {
+    begin_case L06 'BusyBox capability selectors use metadata-only conditional tokens'
+    assert_contains '@+BUSYBOX_CUSTOM:BUSYBOX_CONFIG_SETSID' "$CORE_MAKEFILE" \
+        'L06 SETSID custom selector is not metadata-only'
+    assert_contains '@+!BUSYBOX_CUSTOM:BUSYBOX_DEFAULT_SETSID' "$CORE_MAKEFILE" \
+        'L06 SETSID default selector is not metadata-only'
+    assert_contains '@+BUSYBOX_CUSTOM:BUSYBOX_CONFIG_FLOCK' "$CORE_MAKEFILE" \
+        'L06 FLOCK custom selector is not metadata-only'
+    assert_contains '@+!BUSYBOX_CUSTOM:BUSYBOX_DEFAULT_FLOCK' "$CORE_MAKEFILE" \
+        'L06 FLOCK default selector is not metadata-only'
+    assert_not_contains '+@' "$CORE_MAKEFILE" \
+        'L06 legacy runtime dependency selector remains in the delivered recipe'
+}
+
 main() {
     [ -d "$REPO_ROOT" ] || {
         printf 'FAIL: repository root is unavailable: %s\n' "$REPO_ROOT" >&2
@@ -108,13 +127,14 @@ main() {
     case_l03_root_has_no_scannable_recipe
     case_l04_core_files_are_the_single_runtime_source
     case_l05_install_sources_exist_at_recipe_relative_paths
+    case_l06_busybox_selectors_are_metadata_only
 
     ASSERTIONS=$((ASSERTIONS + 1))
-    if [ "$CASES" -ne 5 ]; then
-        fail "all required cases executed (expected=5, actual=$CASES)"
+    if [ "$CASES" -ne 6 ]; then
+        fail "all required cases executed (expected=6, actual=$CASES)"
     fi
-    if [ "$ASSERTIONS" -ne 13 ]; then
-        fail "all required assertions executed (expected=13, actual=$ASSERTIONS)"
+    if [ "$ASSERTIONS" -ne 18 ]; then
+        fail "all required assertions executed (expected=18, actual=$ASSERTIONS)"
     fi
     printf 'cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"
     [ "$FAILED" -eq 0 ]
