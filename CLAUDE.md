@@ -223,6 +223,7 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 
 ### GitHub Workflow 规范
 - **构建策略**: 使用 OpenWrt SDK，不使用完整源码（避免超时）
+- **SDK 包选择**: 包 CI 应只选择受测包及其真实依赖，不默认全选；配置与断言的因果见 [docs/component-implementation.md](docs/component-implementation.md)。
 - **权限配置**: release job 必须声明 `permissions: contents: write`
 - **Artifacts 过滤**: 只收集目标包，不收集依赖包（避免 rate limit）
 - **ShellCheck 配置**: 使用 `shell=bash` 模式（BusyBox ash 支持 bash 特性）

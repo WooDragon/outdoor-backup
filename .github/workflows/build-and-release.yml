@@ -142,8 +142,28 @@ jobs:
 
       - name: Configure SDK
         run: |
+          set -euo pipefail
           cd sdk
+          # SDK defaults select every package; keep only the two packages under test and their dependencies.
+          printf '%s\n' \
+            '# CONFIG_ALL is not set' \
+            '# CONFIG_ALL_NONSHARED is not set' \
+            '# CONFIG_ALL_KMODS is not set' \
+            'CONFIG_PACKAGE_outdoor-backup=y' \
+            'CONFIG_PACKAGE_luci-app-outdoor-backup=y' > .config
           make defconfig
+          for symbol in ALL ALL_NONSHARED ALL_KMODS; do
+            grep -F -x -q "# CONFIG_${symbol} is not set" .config || {
+              printf 'SDK unexpectedly enables CONFIG_%s\n' "$symbol" >&2
+              exit 1
+            }
+          done
+          for package in outdoor-backup luci-app-outdoor-backup; do
+            grep -F -x -q "CONFIG_PACKAGE_${package}=y" .config || {
+              printf 'SDK dropped required package: %s\n' "$package" >&2
+              exit 1
+            }
+          done
 
       - name: Verify BusyBox capability selection
         run: |

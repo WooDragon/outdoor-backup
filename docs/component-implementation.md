@@ -88,6 +88,8 @@ GitHub Actions 在 PR、main push、版本 tag 和手动触发时，先运行 `t
 
 生命周期 suite 从 delivered canonical recipe 提取包元数据。`test-feed-layout.sh` 覆盖 feed 子目录、相对链接和两个配方的可发现性。SDK 构建先将当前 `HEAD` 的 tracked 文件归档到 `RUNNER_TEMP` 外置 stage。它随后执行 feeds update、索引断言和 feeds install。只有两个 feed-installed recipe 均可读时，构建才可调用 `package/feeds/outdoor/<name>/compile`。该边界避免 SDK 扫描内嵌工作区或未跟踪文件。
 
+包 CI 在 `make defconfig` 前关闭 `CONFIG_ALL`、`CONFIG_ALL_NONSHARED` 与 `CONFIG_ALL_KMODS`，并显式选择 `outdoor-backup` 和 `luci-app-outdoor-backup`。`make defconfig` 后，workflow 检查三项全选符号仍关闭，并检查两个受测包仍为 `y`。包 CI 只选择受测包及其真实依赖，不默认全选 SDK 包。构建命令继续使用正常依赖解析，不使用 `NO_DEPS`。
+
 ### 服务生命周期与准入（#16）
 
 [`service-state.sh`](../files/opt/outdoor-backup/scripts/service-state.sh) 是 source-only 生命周期库。它在私有运行目录维护严格的 `running:<generation>` 或 `stopped:<generation>` 状态记录。generation 是从 `0` 到 `2147483647` 的十进制整数。controller 在固定 FD 7 上持有独占 control lock。manager 在固定 FD 8 上持有 shared admission lease。controller 在 FD 8 上持有独占 admission lock。库会校验 FD 的锁模式、mount ID 与 inode，并拒绝链接、非普通锁文件和无效状态记录。
