@@ -94,25 +94,51 @@ jobs:
           echo "SDK extracted to: sdk/"
           ls -la sdk/
 
-      - name: Prepare packages
+      - name: Stage complete feed snapshot
         run: |
-          # Copy both packages to SDK package directory
-          # Both are now standard packages (luci-app no longer uses luci.mk)
-          mkdir -p sdk/package/$PACKAGE_NAME
-          cp Makefile sdk/package/$PACKAGE_NAME/
-          cp -r files sdk/package/$PACKAGE_NAME/
-
-          mkdir -p sdk/package/$LUCI_PACKAGE_NAME
-          cp -r $LUCI_PACKAGE_NAME/* sdk/package/$LUCI_PACKAGE_NAME/
-
-          echo "Packages prepared:"
-          ls -la sdk/package/
+          FEED_STAGE=$(mktemp -d "$RUNNER_TEMP/outdoor-feed.XXXXXX")
+          git archive --format=tar HEAD | tar -x -C "$FEED_STAGE"
+          test -f "$FEED_STAGE/outdoor-backup/Makefile" || {
+            echo "Canonical outdoor-backup recipe is missing from feed snapshot: $FEED_STAGE" >&2
+            exit 1
+          }
+          test -f "$FEED_STAGE/luci-app-outdoor-backup/Makefile" || {
+            echo "LuCI recipe is missing from feed snapshot: $FEED_STAGE" >&2
+            exit 1
+          }
+          printf 'FEED_STAGE=%s\n' "$FEED_STAGE" >> "$GITHUB_ENV"
+          echo "Staged complete tracked feed snapshot at: $FEED_STAGE"
 
       - name: Update and install feeds
         run: |
+          test -d "$FEED_STAGE" || {
+            echo "Feed snapshot directory is unavailable: $FEED_STAGE" >&2
+            exit 1
+          }
+          printf 'src-link outdoor %s\n' "$FEED_STAGE" >> sdk/feeds.conf.default
           cd sdk
           ./scripts/feeds update -a
+
+          feed_index=feeds/outdoor.index
+          test -s "$feed_index" || {
+            echo "Feed index is empty or missing after update: $feed_index" >&2
+            exit 1
+          }
+          for package in outdoor-backup luci-app-outdoor-backup; do
+            grep -F -x -q "Package: $package" "$feed_index" || {
+              echo "Required package is absent from $feed_index: $package" >&2
+              exit 1
+            }
+          done
+
           ./scripts/feeds install -a
+          for package in outdoor-backup luci-app-outdoor-backup; do
+            package_makefile="package/feeds/outdoor/$package/Makefile"
+            test -f "$package_makefile" && test -r "$package_makefile" || {
+              echo "Feed-installed package Makefile is unavailable: $package_makefile" >&2
+              exit 1
+            }
+          done
 
       - name: Configure SDK
         run: |
@@ -122,12 +148,12 @@ jobs:
       - name: Build outdoor-backup
         run: |
           cd sdk
-          make package/$PACKAGE_NAME/compile V=s -j$(nproc)
+          make package/feeds/outdoor/outdoor-backup/compile V=s -j$(nproc)
 
       - name: Build luci-app-outdoor-backup
         run: |
           cd sdk
-          make package/$LUCI_PACKAGE_NAME/compile V=s -j$(nproc)
+          make package/feeds/outdoor/luci-app-outdoor-backup/compile V=s -j$(nproc)
 
       - name: Run ShellCheck validation
         run: |
@@ -191,8 +217,8 @@ jobs:
       - name: Extract version from Makefile
         id: version
         run: |
-          VERSION=$(grep "^PKG_VERSION:=" Makefile | cut -d'=' -f2)
-          RELEASE=$(grep "^PKG_RELEASE:=" Makefile | cut -d'=' -f2)
+          VERSION=$(grep "^PKG_VERSION:=" outdoor-backup/Makefile | cut -d'=' -f2)
+          RELEASE=$(grep "^PKG_RELEASE:=" outdoor-backup/Makefile | cut -d'=' -f2)
           FULL_VERSION="${VERSION}-${RELEASE}"
           echo "version=${FULL_VERSION}" >> $GITHUB_OUTPUT
           echo "Extracted version: $FULL_VERSION"

@@ -74,7 +74,7 @@ validate_suite() {
         exit 64
     }
     case $suite in
-        test-backup-core.sh|test-card-config.sh|test-card-identity.sh|test-card-reader.sh|test-cleanup.sh|test-config.sh|test-hotplug-service.sh|test-led.sh|test-lock.sh|test-luci-target-config.sh|test-manager-cancellation.sh|test-manager-removal.sh|test-manager-service.sh|test-manager-source-identity.sh|test-owner-event.sh|test-service-control.sh|test-service-lifecycle.sh|test-service-state.sh|test-source-identity.sh|test-status.sh|test-storage-lifecycle.sh|test-target-anchor.sh|test-target-device.sh|test-target-manager.sh|test-transfer-process.sh) ;;
+        test-backup-core.sh|test-card-config.sh|test-card-identity.sh|test-card-reader.sh|test-cleanup.sh|test-config.sh|test-feed-layout.sh|test-hotplug-service.sh|test-led.sh|test-lock.sh|test-luci-target-config.sh|test-manager-cancellation.sh|test-manager-removal.sh|test-manager-service.sh|test-manager-source-identity.sh|test-owner-event.sh|test-service-control.sh|test-service-lifecycle.sh|test-service-state.sh|test-source-identity.sh|test-status.sh|test-storage-lifecycle.sh|test-target-anchor.sh|test-target-device.sh|test-target-manager.sh|test-transfer-process.sh) ;;
         *)
             printf 'FAIL: unsupported suite: %s\n' "$suite" >&2
             exit 64
