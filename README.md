@@ -519,7 +519,7 @@ EVIDENCE_PARENT=$(mktemp -d)
 bash tests/run-ci.sh "$EVIDENCE_PARENT/evidence"
 ```
 
-入口要求 `evidence` 子目录在运行前不存在。失败时检查该目录中的每个 suite 证据，包括 stdout、stderr 和退出码。
+入口要求 `evidence` 子目录在运行前不存在。失败时检查该目录中的每个 suite 证据，包括 stdout、stderr 和退出码。GitHub Actions 下载的 `behavior-evidence-<SHA>` artifact 是 `behavior-evidence-<SHA>.tar.gz`。该 tar.gz 保留每个 suite 的 stdout、stderr、退出码和 runtime 原权限。
 
 ### Shellcheck Validation
 
