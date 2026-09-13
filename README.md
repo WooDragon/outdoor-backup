@@ -512,7 +512,7 @@ logread -f | grep outdoor-backup
 
 ### Local Behavior CI
 
-在 ARM64 Docker 主机上运行完整行为套件前，应安装 Bash、Python 3 和 Docker。该命令会下载固定的 OpenWrt ARM64 镜像；测试 runner 会预检磁盘空间。CI runner 已为这项检查提供所需空间。测试只使用隔离 guest，不会访问真机。
+在 ARM64 Docker 主机上运行完整行为套件前，应安装 Bash、Python 3 和 Docker。该命令会下载固定的 OpenWrt ARM64 镜像；测试 runner 会预检磁盘空间。CI runner 已为这项检查提供所需空间。测试只使用隔离 guest，不会访问真机。一次性测试 guest 使用 `SYS_ADMIN` 以及 `seccomp=unconfined` 和 `apparmor=unconfined` 执行受控 tmpfs 测试；这不是宿主全局策略，也不触碰真实介质。
 
 ```bash
 EVIDENCE_PARENT=$(mktemp -d)

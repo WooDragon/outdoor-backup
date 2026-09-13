@@ -76,7 +76,7 @@ The pre-finalization sync gates transfer completion. The summary is appended to 
 
 ### 行为 CI gate（#17）
 
-GitHub Actions 的 `behavior` job 在原生 ARM64 Ubuntu runner 上先运行 `run-local-container.py` 的 Python 单测，再运行完整根目录行为套件。`build` job 仅在该 job 成功后开始。
+GitHub Actions 在 PR、main push、版本 tag 和手动触发时，先运行 `tests/test-run-local-container.py` 与完整行为套件，再构建现有两架构 IPK；只有版本 tag 或显式手动发布请求可创建 Release。行为套件继续在原生 ARM64 Ubuntu runner 上运行。
 
 `tests/run-ci.sh` 按名称顺序将每个根目录 `test-*.sh` 交给 bounded runner。runner 在固定 ARM64 OpenWrt guest 中执行 `ci-suite.sh`，并只清理已验证属于本次运行的 guest。失败证据保存在各 suite 的目录中，包括 stdout、stderr 和退出码。
 
