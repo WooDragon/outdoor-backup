@@ -4,6 +4,8 @@
 
 本文档总结了从 12 次测试迭代中提炼的最佳实践，涵盖构建策略、ShellCheck 配置、权限管理和 Rate Limit 规避。
 
+> **本仓库限定**：本仓库当前采用子目录 feed 布局，勿直接套用下方根配方复制示例。操作本仓库前，应先读取 README 的[源码构建章节](../README.md#method-1-build-from-source-recommended-for-leans-lede)与[实际 feed 索引流程](../.github/workflows/build-and-release.yml)。
+
 ## 目录
 
 1. [核心决策：SDK vs 完整源码](#核心决策sdk-vs-完整源码)

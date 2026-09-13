@@ -37,13 +37,14 @@
 - 文件系统挂载逻辑使用 `ntfs3`（内核原生驱动），无需 FUSE 层
 - 支持的文件系统：exFAT / NTFS / ext4 / ext3 / ext2 / FAT32
 
-*依赖声明和挂载逻辑详见 [Makefile](Makefile) 和 [backup-manager.sh](files/opt/outdoor-backup/scripts/backup-manager.sh)*
+*依赖声明和挂载逻辑详见 [核心包配方](outdoor-backup/Makefile) 和 [backup-manager.sh](files/opt/outdoor-backup/scripts/backup-manager.sh)*
 
 ## 核心设计原则（Linus 风格）
 
 ### 1. 数据结构优先
-- **files/ 目录直接映射目标系统**: 所见即所得，无隐藏转换
-- **Makefile 只定义"是什么"**: 避免复杂的构建逻辑
+- **根 `files/` 目录直接映射目标系统**: 所见即所得，无隐藏转换
+- **`outdoor-backup/Makefile` 只定义核心包是什么**: 避免复杂的构建逻辑
+- **根 `files/` 是运行时内容的唯一来源**: `outdoor-backup/files` 必须保持指向 `../files` 的相对链接
 - **配置文件分层**: 全局配置 + 每卡配置
 
 ### 2. 消除特殊情况
@@ -65,8 +66,10 @@
 
 ```
 outdoor-backup/
-├── Makefile                      # OpenWrt 包定义
-├── files/                        # 安装文件树
+├── outdoor-backup/
+│   ├── Makefile                  # 核心包的 canonical feed recipe
+│   └── files -> ../files         # 指向唯一运行时源的相对链接
+├── files/                        # 唯一安装文件树
 │   ├── etc/
 │   │   ├── config/outdoor-backup         # UCI 配置
 │   │   ├── hotplug.d/block/90-outdoor-backup  # 热插拔触发器
@@ -210,10 +213,11 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 - **注释**: 关键逻辑必须注释
 - `test-cleanup.sh` 只可在一次性隔离测试目录中以 `--force` 清理破坏性 fixture。无 `--force` 的拒绝门必须保留。测试不得在真实备份目录中运行。
 
-### Makefile 规范
+### 核心包配方规范
+- **配方入口**: `outdoor-backup/Makefile` 是核心包的唯一 canonical recipe；LuCI 配方仍在 `luci-app-outdoor-backup/Makefile`
 - **依赖明确**: `DEPENDS:=+rsync +block-mount ...`
 - **架构标识**: `PKGARCH:=all` (纯脚本包)
-- **版本递增**: 功能变更递增 `PKG_VERSION`，打包变更递增 `PKG_RELEASE`
+- **版本递增**: 功能变更递增 `PKG_VERSION`，打包或 feed 布局变更递增 `PKG_RELEASE`
 - **安装/启动规则**: 安装/启动仅初始化运行目录，不预建备份介质目录；prerm 负责清理进程。
 
 ### GitHub Workflow 规范
@@ -323,7 +327,7 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 **场景 4: 打包和构建**
 - 必读: [BUILD.md](BUILD.md) - 构建指南
 - 必读: [IPK_PACKAGING.md](IPK_PACKAGING.md) - IPK 打包原理
-- 必读: [Makefile](Makefile) - 包定义
+- 必读: [outdoor-backup/Makefile](outdoor-backup/Makefile) - 核心包的 feed recipe
 
 **场景 5: 部署和运维**
 - 必读: [README.md](README.md) - 用户手册
@@ -409,7 +413,7 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 - [cleanup-all.sh](files/opt/outdoor-backup/scripts/cleanup-all.sh) - 批量清理脚本
 - [90-outdoor-backup](files/etc/hotplug.d/block/90-outdoor-backup) - 热插拔触发器
 - [outdoor-backup](files/etc/init.d/outdoor-backup) - 服务管理脚本
-- [Makefile](Makefile) - OpenWrt 包定义
+- [outdoor-backup/Makefile](outdoor-backup/Makefile) - 核心包的 canonical feed recipe
 
 **WebUI 应用（luci-app-outdoor-backup）**：
 - [outdoor-backup.lua](luci-app-outdoor-backup/luasrc/controller/outdoor-backup.lua) - Controller 和 API 路由

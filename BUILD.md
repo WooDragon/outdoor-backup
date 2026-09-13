@@ -10,15 +10,26 @@
 
 ## 构建流程（Linus 风格 - 直截了当）
 
-### 1. 集成到构建系统
+### 1. 以本仓库作为本地 feed 集成
+
+工作副本应位于 SDK 或 OpenWrt 源码树外。该工作副本不得包含 SDK 子树。`outdoor-backup/Makefile` 是核心包的唯一配方。`outdoor-backup/files` 是指向根目录 `files/` 的相对链接，根目录 `files/` 是唯一运行时源树。开发者应编辑这两个规范路径，不应编辑或复制第二份运行时内容。
 
 ```bash
-# 克隆到 package 目录
-cd ~/lede/package
-git clone https://github.com/your-repo/outdoor-backup.git
+# 在 SDK 或 OpenWrt 源码树外克隆干净工作副本。
+git clone https://github.com/your-repo/outdoor-backup.git ~/src/outdoor-backup
 
-# 或者使用软链接（便于开发）
-ln -s /path/to/outdoor-backup ~/lede/package/
+# 将该工作副本注册为本地 feed。
+cd ~/lede
+printf 'src-link outdoor %s\n' "$HOME/src/outdoor-backup" >> feeds.conf.default
+
+# 更新 feed，并确认两个包已被索引。
+./scripts/feeds update outdoor
+grep -F -x 'Package: outdoor-backup' feeds/outdoor.index
+grep -F -x 'Package: luci-app-outdoor-backup' feeds/outdoor.index
+
+# 安装 feed 中的两个包。
+./scripts/feeds install outdoor-backup
+./scripts/feeds install luci-app-outdoor-backup
 ```
 
 ### 2. 配置包
@@ -26,27 +37,28 @@ ln -s /path/to/outdoor-backup ~/lede/package/
 ```bash
 cd ~/lede
 
-# 更新 feeds（如果添加了新包）
-./scripts/feeds update -a
-./scripts/feeds install -a
+# 确认 feed 安装的配方可读。
+test -r package/feeds/outdoor/outdoor-backup/Makefile
+test -r package/feeds/outdoor/luci-app-outdoor-backup/Makefile
 
-# 配置 menuconfig
+# 配置 menuconfig。
 make menuconfig
 
 # 导航路径：
 #   Utilities --->
 #     <*> outdoor-backup
 #
-# 按 Y 选中，保存退出
+# 按 Y 选中，保存退出。
 ```
 
 ### 3. 编译
 
 ```bash
-# 单包编译（推荐，快速）
-make package/outdoor-backup/compile V=s
+# 编译 feed 安装的核心包和 LuCI 包。
+make package/feeds/outdoor/outdoor-backup/compile V=s
+make package/feeds/outdoor/luci-app-outdoor-backup/compile V=s
 
-# 完整编译（首次构建）
+# 完整编译（首次构建）。
 make -j$(nproc) V=s
 ```
 
@@ -77,18 +89,20 @@ ssh root@192.168.1.1 "opkg install /tmp/outdoor-backup*.ipk"
 ### 快速迭代循环
 
 ```bash
-# 1. 修改脚本
-vim package/outdoor-backup/files/opt/outdoor-backup/scripts/backup-manager.sh
+# 1. 在干净工作副本中修改规范源文件。
+cd ~/src/outdoor-backup
+vim files/opt/outdoor-backup/scripts/backup-manager.sh
 
-# 2. 增加版本号
-vim package/outdoor-backup/Makefile
+# 2. 修改核心包的规范配方。
+vim outdoor-backup/Makefile
 # PKG_RELEASE:=$(PKG_RELEASE + 1)
 
-# 3. 重新编译
-make package/outdoor-backup/clean
-make package/outdoor-backup/compile V=s
+# 3. 在 OpenWrt 树中清理并重新编译 feed 安装的核心包。
+cd ~/lede
+make package/feeds/outdoor/outdoor-backup/clean
+make package/feeds/outdoor/outdoor-backup/compile V=s
 
-# 4. 测试部署
+# 4. 测试部署。
 scp $(find bin/packages/ -name "outdoor-backup*.ipk" | head -1) root@router:/tmp/
 ssh root@router "opkg upgrade /tmp/outdoor-backup*.ipk"
 ```
@@ -96,8 +110,9 @@ ssh root@router "opkg upgrade /tmp/outdoor-backup*.ipk"
 ### 调试技巧
 
 ```bash
-# 不安装，直接测试脚本
-scp -r package/outdoor-backup/files/opt/outdoor-backup root@router:/tmp/test-backup/
+# 在干净工作副本中直接测试规范运行时源文件。
+cd ~/src/outdoor-backup
+scp -r files/opt/outdoor-backup root@router:/tmp/test-backup/
 ssh root@router "sh -x /tmp/test-backup/scripts/backup-manager.sh add sda1 /devices/test"
 
 # 查看包内容（不安装）
@@ -112,17 +127,17 @@ shellcheck --shell=sh files/opt/outdoor-backup/scripts/*.sh
 
 ### 编译失败
 
-**问题**: `ERROR: package/outdoor-backup failed to build`
+**问题**: `ERROR: package/feeds/outdoor/outdoor-backup failed to build`
 
 ```bash
 # 解决方案：
 # 1. 检查 Makefile 语法
-make package/outdoor-backup/compile V=s 2>&1 | less
+make package/feeds/outdoor/outdoor-backup/compile V=s 2>&1 | less
 
 # 2. 清理重建
-make package/outdoor-backup/clean
+make package/feeds/outdoor/outdoor-backup/clean
 rm -rf build_dir/target-*/outdoor-backup*
-make package/outdoor-backup/compile V=s
+make package/feeds/outdoor/outdoor-backup/compile V=s
 ```
 
 ### 依赖包缺失
@@ -157,7 +172,7 @@ ssh root@router "chmod 755 /etc/hotplug.d/block/90-outdoor-backup"
 
 ### 修改版本号
 
-编辑 `Makefile`:
+编辑 `outdoor-backup/Makefile`:
 
 ```makefile
 PKG_VERSION:=1.0.0    # 主版本.次版本.修订号
@@ -173,7 +188,7 @@ PKG_RELEASE:=1        # 包发布号（Makefile 变更递增）
 
 ```bash
 # ARM64 (R5S)
-make package/outdoor-backup/compile V=s
+make package/feeds/outdoor/outdoor-backup/compile V=s
 
 # MIPS (老路由器)
 # 需要在 menuconfig 中切换目标架构
@@ -205,7 +220,7 @@ make menuconfig
 # Advanced -> ccache -> enable
 
 # 并行编译
-make -j$(nproc) package/outdoor-backup/compile
+make -j$(nproc) package/feeds/outdoor/outdoor-backup/compile
 ```
 
 ## CI/CD 集成
@@ -221,13 +236,13 @@ make -j$(nproc) package/outdoor-backup/compile
 **发布新版本**（3 步）：
 
 ```bash
-# 1. 更新版本号
-vim Makefile
+# 1. 更新核心包版本号
+vim outdoor-backup/Makefile
 # PKG_VERSION:=1.1.0  # 新功能
 # PKG_RELEASE:=1      # 重置为 1
 
 # 2. 提交变更
-git add Makefile
+git add outdoor-backup/Makefile
 git commit -m "Bump version to 1.1.0"
 git push
 
@@ -314,7 +329,7 @@ ssh root@router "opkg update && opkg install outdoor-backup"
 
 **核心流程（3 步）**:
 ```bash
-1. make package/outdoor-backup/compile V=s
+1. make package/feeds/outdoor/outdoor-backup/compile V=s
 2. scp bin/packages/*/base/outdoor-backup*.ipk root@router:/tmp/
 3. ssh root@router "opkg install /tmp/outdoor-backup*.ipk"
 ```

@@ -38,7 +38,7 @@ command -v jq >/dev/null 2>&1 && command -v flock >/dev/null 2>&1 || {
 }
 
 REPO_ROOT=/src
-MAKEFILE="$REPO_ROOT/Makefile"
+MAKEFILE="$REPO_ROOT/outdoor-backup/Makefile"
 INIT_SCRIPT=/etc/init.d/outdoor-backup
 STORAGE_ROOT=/mnt/ssd/SDMirrors
 ALIAS_FILE=/opt/outdoor-backup/conf/aliases.json

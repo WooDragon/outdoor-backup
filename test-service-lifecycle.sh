@@ -75,7 +75,7 @@ command -v jq >/dev/null 2>&1 && command -v flock >/dev/null 2>&1 || {
 REPO_ROOT=/src
 SOURCE_SCRIPTS="$REPO_ROOT/files/opt/outdoor-backup/scripts"
 SOURCE_INIT="$REPO_ROOT/files/etc/init.d/outdoor-backup"
-MAKEFILE="$REPO_ROOT/Makefile"
+MAKEFILE="$REPO_ROOT/outdoor-backup/Makefile"
 INIT=/etc/init.d/outdoor-backup
 CONTROL=/opt/outdoor-backup/scripts/service-control.sh
 RUNTIME=/var/run/outdoor-backup
@@ -467,9 +467,9 @@ case_staged_prerm_skips_controller() {
 }
 
 case_package_metadata_contract() {
-    begin_case L10 'Makefile release and BusyBox flock dependencies cover the delivered lifecycle scripts'
-    assert_success 'L10 package release is exactly 11' \
-        grep -F -x -q 'PKG_RELEASE:=11' "$MAKEFILE"
+    begin_case L10 'canonical recipe release and BusyBox flock dependencies cover the delivered lifecycle scripts'
+    assert_success 'L10 package release is exactly 12' \
+        grep -F -x -q 'PKG_RELEASE:=12' "$MAKEFILE"
     assert_success 'L09 custom BusyBox declares flock Kconfig' \
         grep -F -q '+@BUSYBOX_CUSTOM:BUSYBOX_CONFIG_FLOCK' "$MAKEFILE"
     assert_success 'L09 default BusyBox declares flock capability' \

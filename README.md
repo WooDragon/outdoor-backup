@@ -30,29 +30,32 @@ Automatic SD card backup system for OpenWrt routers with internal storage (SSD/H
   - `kmod-usb-storage`
   - `kmod-fs-ext4`, `kmod-fs-exfat`, `kmod-fs-ntfs3`
 
-The package checks for `setsid` before it starts `rsync`. A missing applet causes a clear failure and starts no transfer. The service lifecycle requires a compatible `flock` command. The Makefile's BusyBox Kconfig selections affect only source firmware builds. Installing this IPK cannot add the `setsid` or `flock` applet to an existing BusyBox binary.
+The package checks for `setsid` before it starts `rsync`. A missing applet causes a clear failure and starts no transfer. The service lifecycle requires a compatible `flock` command. The BusyBox Kconfig selections in `outdoor-backup/Makefile` affect only source firmware builds. Installing this IPK cannot add the `setsid` or `flock` applet to an existing BusyBox binary.
 
 ### Installation
 
 #### Method 1: Build from Source (Recommended for Lean's LEDE)
 
 ```bash
-# 1. Clone into OpenWrt package feeds
-cd ~/lede/package
-git clone https://github.com/your-repo/outdoor-backup.git
+# 1. Clone the repository outside the OpenWrt SDK or source tree.
+git clone https://github.com/your-repo/outdoor-backup.git ~/src/outdoor-backup
 
-# 2. Update feeds
+# 2. Register the clean repository checkout as an OpenWrt feed.
+# Do not link an enclosing workspace that contains an SDK or untracked build files.
 cd ~/lede
-./scripts/feeds update -a
-./scripts/feeds install -a
+printf 'src-link outdoor %s\n' "$HOME/src/outdoor-backup" >> feeds.conf.default
+./scripts/feeds update outdoor
+./scripts/feeds install outdoor-backup
+./scripts/feeds install luci-app-outdoor-backup
 
 # 3. Configure package
 make menuconfig
 # Navigate to: Utilities -> outdoor-backup
 # Press Y to select
 
-# 4. Build package
-make package/outdoor-backup/compile V=s
+# 4. Build the feed-installed packages.
+make package/feeds/outdoor/outdoor-backup/compile V=s
+make package/feeds/outdoor/luci-app-outdoor-backup/compile V=s
 
 # 5. Install on device
 cd bin/packages/*/base/
@@ -347,8 +350,10 @@ until you do.
 
 ```
 outdoor-backup/
-├── Makefile                          # OpenWrt package definition
-├── files/                            # Files to install
+├── outdoor-backup/
+│   ├── Makefile                      # Canonical core-package recipe
+│   └── files -> ../files             # Relative link to the runtime source tree
+├── files/                            # Sole runtime source tree
 │   ├── opt/outdoor-backup/
 │   │   ├── scripts/
 │   │   │   ├── backup-manager.sh    # Core backup logic
@@ -371,25 +376,27 @@ outdoor-backup/
 └── IPK_PACKAGING.md                  # Packaging guide
 ```
 
+`outdoor-backup/Makefile` is the core package recipe. Its `files` link resolves to the root `files/` tree, which remains the sole source of installed runtime content. The `luci-app-outdoor-backup/` directory keeps its existing independent recipe.
+
 ## Building the IPK
 
-### Build Variables in Makefile
+### Build Variables in `outdoor-backup/Makefile`
 
 | Variable | Description |
 |----------|-------------|
 | `PKG_NAME` | Package name: `outdoor-backup` |
 | `PKG_VERSION` | Version number (increment on changes) |
-| `PKG_RELEASE` | Build number (increment on Makefile changes) |
+| `PKG_RELEASE` | Build number (increment on recipe changes) |
 | `DEPENDS` | Auto-installs: rsync, block-mount, filesystem modules |
 
 ### Build Commands
 
 ```bash
-# Clean build
-make package/outdoor-backup/clean
+# Clean core-package build
+make package/feeds/outdoor/outdoor-backup/clean
 
 # Compile with verbose output
-make package/outdoor-backup/compile V=s
+make package/feeds/outdoor/outdoor-backup/compile V=s
 
 # Find built package
 find bin/ -name "outdoor-backup*.ipk"
@@ -400,7 +407,7 @@ find bin/ -name "outdoor-backup*.ipk"
 1. **LED Paths**: Edit `files/opt/outdoor-backup/conf/backup.conf`
 2. **Mount Point**: Change `BACKUP_ROOT` in config
 3. **Hotplug Priority**: Rename `90-outdoor-backup` (higher number = later execution)
-4. **Dependencies**: Add to `DEPENDS` in Makefile
+4. **Dependencies**: Add to `DEPENDS` in `outdoor-backup/Makefile`
 
 ## Maintenance
 
