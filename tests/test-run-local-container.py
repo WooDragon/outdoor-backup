@@ -71,9 +71,13 @@ if args[:2] == ["system", "df"]:
     print("TYPE TOTAL ACTIVE SIZE RECLAIMABLE"); raise SystemExit(0)
 if args[:1] == ["run"]:
     required = ["--rm", "--pull=never", "--platform", "linux/aarch64_generic",
-                "--network", "bridge", "--cap-add", "SYS_ADMIN", "--security-opt",
-                "seccomp=unconfined"]
+                "--network", "bridge", "--cap-add", "SYS_ADMIN"]
     if any(item not in args for item in required): fail(93, "run contract missing")
+    security_options = [(args[index], args[index + 1]) for index, item in enumerate(args[:-1])
+                        if item == "--security-opt"]
+    if security_options != [("--security-opt", "seccomp=unconfined"),
+                            ("--security-opt", "apparmor=unconfined")]:
+        fail(98, "security option contract missing")
     labels = [args[index + 1] for index, item in enumerate(args[:-1]) if item == "--label"]
     if "io.mcpe.test=manager-service" not in labels or not any(item.startswith("io.mcpe.test-run=") for item in labels):
         fail(94, "label contract missing")

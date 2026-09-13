@@ -143,7 +143,9 @@ def run_arguments(state: RunState, image: str, command_argv: list[str]) -> list[
         "run", "--rm", "--pull=never", "--cidfile", str(state.evidence / "container.cid"),
         "--label", "io.mcpe.test=manager-service", "--label", f"io.mcpe.test-run={state.run_label}",
         "--platform", "linux/aarch64_generic", "--network", "bridge", "--cap-add", "SYS_ADMIN",
-        "--security-opt", "seccomp=unconfined", "--tmpfs", "/tmp:rw,exec,size=512m",
+        # Test-owned guests need mount-related confinement exceptions without changing host policy.
+        "--security-opt", "seccomp=unconfined", "--security-opt", "apparmor=unconfined",
+        "--tmpfs", "/tmp:rw,exec,size=512m",
         "--tmpfs", "/opt:rw,exec,size=128m", "-v", f"{repo_root()}:/src:ro",
         "-v", f"{state.evidence}:/evidence", image, "/bin/ash", "-c", CONTAINER_PREFLIGHT,
         "container-preflight", *command_argv,

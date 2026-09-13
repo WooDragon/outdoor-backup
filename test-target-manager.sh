@@ -47,9 +47,9 @@ if [ "${2:-}" = "--stderr-replay-probe" ]; then
     exit 1
 fi
 
-mkdir -p /var/lock
-opkg update >/dev/null
-opkg install jq flock >/dev/null
+mkdir -p /var/lock || { printf '%s\n' 'FAIL: cannot create OpenWrt package lock directory' >&3; exit 1; }
+opkg update >/dev/null || { printf '%s\n' 'FAIL: cannot refresh OpenWrt package metadata' >&3; exit 1; }
+opkg install jq flock >/dev/null || { printf '%s\n' 'FAIL: cannot install jq and flock in pinned OpenWrt rootfs' >&3; exit 1; }
 
 REPO_ROOT=/src
 # Every case gets its own directory tree under SUITE_ROOT and cases never
