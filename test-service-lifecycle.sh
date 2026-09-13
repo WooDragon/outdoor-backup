@@ -468,13 +468,13 @@ case_staged_prerm_skips_controller() {
 
 case_package_metadata_contract() {
     begin_case L10 'canonical recipe release and BusyBox flock dependencies cover the delivered lifecycle scripts'
-    assert_success 'L10 package release is exactly 12' \
-        grep -F -x -q 'PKG_RELEASE:=12' "$MAKEFILE"
-    assert_success 'L09 custom BusyBox declares flock Kconfig' \
-        grep -F -q '+@BUSYBOX_CUSTOM:BUSYBOX_CONFIG_FLOCK' "$MAKEFILE"
-    assert_success 'L09 default BusyBox declares flock capability' \
-        grep -F -q '+@!BUSYBOX_CUSTOM:BUSYBOX_DEFAULT_FLOCK' "$MAKEFILE"
-    assert_success 'L09 wildcard installation includes controller and state library' \
+    assert_success 'L10 package release is a positive integer' \
+        grep -E -x -q 'PKG_RELEASE:=[1-9][0-9]*' "$MAKEFILE"
+    assert_success 'L10 custom BusyBox declares flock Kconfig' \
+        grep -F -q '@+BUSYBOX_CUSTOM:BUSYBOX_CONFIG_FLOCK' "$MAKEFILE"
+    assert_success 'L10 default BusyBox declares flock capability' \
+        grep -F -q '@+!BUSYBOX_CUSTOM:BUSYBOX_DEFAULT_FLOCK' "$MAKEFILE"
+    assert_success 'L10 wildcard installation includes controller and state library' \
         /bin/ash -c 'grep -F -q "\$(INSTALL_BIN) ./files/opt/outdoor-backup/scripts/*.sh \$(1)/opt/outdoor-backup/scripts/" "$1" && test -f "$2/service-control.sh" && test -f "$2/service-state.sh"' \
         ash "$MAKEFILE" "$SOURCE_SCRIPTS"
 }

@@ -88,6 +88,8 @@ GitHub Actions 在 PR、main push、版本 tag 和手动触发时，先运行 `t
 
 生命周期 suite 从 delivered canonical recipe 提取包元数据。`test-feed-layout.sh` 覆盖 feed 子目录、相对链接和两个配方的可发现性。SDK 构建先将当前 `HEAD` 的 tracked 文件归档到 `RUNNER_TEMP` 外置 stage。它随后执行 feeds update、索引断言和 feeds install。只有两个 feed-installed recipe 均可读时，构建才可调用 `package/feeds/outdoor/<name>/compile`。该边界避免 SDK 扫描内嵌工作区或未跟踪文件。
 
+包 CI 在 `make defconfig` 前关闭 `CONFIG_ALL`、`CONFIG_ALL_NONSHARED` 与 `CONFIG_ALL_KMODS`，并显式选择 `outdoor-backup` 和 `luci-app-outdoor-backup`。`make defconfig` 后，workflow 检查三项全选符号仍关闭，并检查两个受测包仍为 `y`。包 CI 只选择受测包及其真实依赖，不默认全选 SDK 包。构建命令继续使用正常依赖解析，不使用 `NO_DEPS`。
+
 ### 服务生命周期与准入（#16）
 
 [`service-state.sh`](../files/opt/outdoor-backup/scripts/service-state.sh) 是 source-only 生命周期库。它在私有运行目录维护严格的 `running:<generation>` 或 `stopped:<generation>` 状态记录。generation 是从 `0` 到 `2147483647` 的十进制整数。controller 在固定 FD 7 上持有独占 control lock。manager 在固定 FD 8 上持有 shared admission lease。controller 在 FD 8 上持有独占 admission lock。库会校验 FD 的锁模式、mount ID 与 inode，并拒绝链接、非普通锁文件和无效状态记录。
@@ -100,7 +102,7 @@ manager 在目标守卫、来源 mount、LED、业务锁和其他备份副作用
 
 hotplug 的 `add` 分支在读卡器识别后读取状态。停止态直接退出而不排队 manager。运行态在 settle sleep 前捕获 generation，并以原始 `DEVNAME`、`DEVPATH` 和 `SEQNUM` 调用 manager；sleep 不会改写 argv。`remove` 分支绕过状态、配置和读卡器 gate，直接将原始事件槽位送入 manager 的 remove 验证路径。
 
-[`/etc/init.d/outdoor-backup`](../files/etc/init.d/outdoor-backup) 只准备私有运行路径并逐字传播 controller 的退出状态。`PKG_UPGRADE=1` 时，init 只有在已解析的 `/etc/rc.d/SNNoutdoor-backup` 链接仍指向该 init 脚本时才 restart；禁用服务保持 stopped。`reload` 不改变生命周期状态。`outdoor-backup/Makefile` 的当前包元数据为 `1.2.0-12`，并按 BusyBox CUSTOM 条件选择 `flock`。`prerm` 只调用 controller stop，保留其失败状态，不执行广泛 `pkill`，不删除备份数据，也不自动删除无法验证的残留业务锁。因而失败的 stop 不保证 package wrapper 回滚。
+[`/etc/init.d/outdoor-backup`](../files/etc/init.d/outdoor-backup) 只准备私有运行路径并逐字传播 controller 的退出状态。`PKG_UPGRADE=1` 时，init 只有在已解析的 `/etc/rc.d/SNNoutdoor-backup` 链接仍指向该 init 脚本时才 restart；禁用服务保持 stopped。`reload` 不改变生命周期状态。`outdoor-backup/Makefile` 是包元数据的权威来源，并按 BusyBox CUSTOM 条件选择 `flock`。`prerm` 只调用 controller stop，保留其失败状态，不执行广泛 `pkill`，不删除备份数据，也不自动删除无法验证的残留业务锁。因而失败的 stop 不保证 package wrapper 回滚。
 
 ### #16b：传输取消与进程边界
 
@@ -109,6 +111,14 @@ hotplug 的 `add` 分支在读卡器识别后读取状态。停止态直接退�
 管理器只记录首个 `INT`/`TERM` 的 sticky 码（130/143），并在阶段边界阻止后续独立副作用。首个请求直接写入 syslog；它不写共享 `backup.log`。runner 验证 leader 的 PID、starttime、PGID 和 session 后，才向该组发送一次 `TERM`。leader 退出而子进程仍在时，它保守等待；连续两次空扫描后才返回。它向 stderr 保留自身诊断，并把首次取消等待、不可验证 leader、失败 TERM 和不可读 `/proc` 镜像到 syslog，但不转发任意 rsync stdout 或 stderr。它不猜测 PID、不用 pidfd 或原子进程快照，不能读 `/proc` 时也不升级为 `KILL`。终态出口先 ignore 信号再最后采样，故边界前已记录的取消不能写 `completed`，边界后的新信号被忽略。已建立 running 状态时，取消通过 failed 写入路径记录 history 的 `status="error"` 与 `error_message="cancelled"`；更早取消不改写既有状态。正在执行的卡配置发布或只读恢复可在下一检查点前完成，不承诺回滚。
 
 该协议要求 root、常规 Linux、可读 `/proc` 和 BusyBox `setsid`。`outdoor-backup/Makefile` 仅按 CUSTOM 条件选择 `BUSYBOX_CONFIG_SETSID` 或 `BUSYBOX_DEFAULT_SETSID`；ImmortalWrt 24.10.6 默认具备，OpenWrt 19.07.10 默认缺失。IPK 不会补齐既有 BusyBox，缺失时不启动 `rsync`。
+
+### BusyBox Kconfig dependency encoding
+
+The canonical recipe declares the `setsid` and `flock` capability gates with four `@+` tokens. Each token selects the matching `BUSYBOX_CONFIG_*` or `BUSYBOX_DEFAULT_*` symbol under its `BUSYBOX_CUSTOM` condition. The leading `@` keeps the token in the Kconfig dependency channel. The following `+` is accepted by `mconf_depends` and creates the required select.
+
+The fixed ImmortalWrt revision `5fa` and OpenWrt 23.05.5 run `strip_deps` by filtering `@%` before removing `+`. Therefore, `@+...` is removed before runtime dependencies are emitted. The former `+@...` order survives the first filter. Removing `+` later leaves a negated `BUSYBOX_DEFAULT_*` condition in the IPK `Depends` field. That condition is a build-time Kconfig gate, not an install-time package dependency.
+
+The workflow runs `make defconfig` before it checks the actual SDK `.config`. It selects the `BUSYBOX_CONFIG` namespace only when `CONFIG_BUSYBOX_CUSTOM=y`. Otherwise, it selects `BUSYBOX_DEFAULT`. The workflow requires both selected `SETSID` and `FLOCK` symbols to equal `y`. After the package build, it requires the control file to identify `outdoor-backup` at the recipe version. It also requires `rsync` and `jq` to remain in `Depends`. It rejects every `BUSYBOX_*` runtime dependency. These checks define the packaging contract. They do not claim that CI, a package build, or runtime validation has completed.
 
 固定 rootfs 的记录为 process 8/40、core 11/121、cancellation 7/61；未改动复测为 target-manager 40/365、config 20/96、lock 13/45，status 9/47 是早期基线。覆盖 session 隔离、起步窗口、0/23、leader 早退、fork replacement、实际 `TERM`/`INT`、ignore 两侧和 source config/`df` 取消。未声称全仓、CI、构建或真机验证；也未独立覆盖不可读 `/proc`、zombie-only、长期忽略 `TERM` 或混合信号。
 

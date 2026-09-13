@@ -218,10 +218,12 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 - **依赖明确**: `DEPENDS:=+rsync +block-mount ...`
 - **架构标识**: `PKGARCH:=all` (纯脚本包)
 - **版本递增**: 功能变更递增 `PKG_VERSION`，打包或 feed 布局变更递增 `PKG_RELEASE`
+- **BusyBox 能力门**: `setsid` 与 `flock` 的 CUSTOM/default 条件应使用 `@+` Kconfig token，不得将 `+@` 写入运行时依赖。条件编码、SDK 配置与 IPK 元数据检查见 [docs/component-implementation.md](docs/component-implementation.md)。
 - **安装/启动规则**: 安装/启动仅初始化运行目录，不预建备份介质目录；prerm 负责清理进程。
 
 ### GitHub Workflow 规范
 - **构建策略**: 使用 OpenWrt SDK，不使用完整源码（避免超时）
+- **SDK 包选择**: 包 CI 应只选择受测包及其真实依赖，不默认全选；配置与断言的因果见 [docs/component-implementation.md](docs/component-implementation.md)。
 - **权限配置**: release job 必须声明 `permissions: contents: write`
 - **Artifacts 过滤**: 只收集目标包，不收集依赖包（避免 rate limit）
 - **ShellCheck 配置**: 使用 `shell=bash` 模式（BusyBox ash 支持 bash 特性）
