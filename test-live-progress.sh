@@ -129,11 +129,11 @@ printf '%s\n' 'live-rsync-start' >> "$TEST_EFFECTS"
 case "$(cat "$(dirname "$0")/progress-mode" 2>/dev/null || printf suffix)" in
 suffix)
 	printf '\r 100 11%% 1.00kB/s 0:00:01 (xfr#1, to-chk=9/10)\n'
-	/bin/sleep 2
+	while [ ! -e "$TEST_L01_ALLOW_300" ]; do /bin/sleep 1; done
 	printf '\r 300 11%% 3.00kB/s 0:00:03 (xfr#3, to-chk=7/10)\n'
-	/bin/sleep 2
+	while [ ! -e "$TEST_L01_ALLOW_500" ]; do /bin/sleep 1; done
 	printf '\r 500 11%% 5.00kB/s 0:00:05 (xfr#5, to-chk=5/10)\n'
-	/bin/sleep 2
+	while [ ! -e "$TEST_L01_ALLOW_EXIT" ]; do /bin/sleep 1; done
 	;;
 unknown)
 	printf '\r 100 11%% 1.00kB/s 0:00:01\n'
@@ -191,21 +191,32 @@ case_live_suffix_progress_and_throttle() {
 	begin_case L01 'running snapshots use xfr and to-chk counters without raw rsync percentage'
 	live_reset || { fail 'L01 fixture setup failed'; return; }
 	printf '%s\n' suffix > "$BIN/progress-mode"
+	TEST_L01_ALLOW_300="$BIN/l01-allow-300"
+	TEST_L01_ALLOW_500="$BIN/l01-allow-500"
+	TEST_L01_ALLOW_EXIT="$BIN/l01-allow-exit"
+	export TEST_L01_ALLOW_300 TEST_L01_ALLOW_500 TEST_L01_ALLOW_EXIT
 	start_manager
 	assert_success 'L01 real rsync fixture starts through the manager runner' wait_for_effect live-rsync-start
+	assert_success 'L01 initial xfr snapshot is published before producer advances' \
+		wait_for_jq '.current_backup.files_done == 1 and .current_backup.bytes_done == 100 and .current_backup.live_progress.entries_done == 1 and .current_backup.live_progress.entries_total == 10 and .current_backup.live_progress.files_known == true'
+	# Release every stage even after an assertion failure so the fixture can clean up.
+	: > "$TEST_L01_ALLOW_300"
 	assert_success 'L01 first valid running snapshot is published' \
 		wait_for_jq '.current_backup.live_progress.entries_done == 3 and .current_backup.live_progress.entries_total == 10 and .current_backup.live_progress.files_known == true and .current_backup.bytes_done == 300'
 	first_update=$(jq -r '.last_update' "$RUNTIME/var/status.json")
 	/bin/sleep 1
 	second_update=$(jq -r '.last_update' "$RUNTIME/var/status.json")
 	assert_equal "$second_update" "$first_update" 'L01 one-second loop is throttled to at most one publication per two seconds'
+	: > "$TEST_L01_ALLOW_500"
 	assert_success 'L01 later valid record changes observed values' \
 		wait_for_jq '.current_backup.files_done == 5 and .current_backup.bytes_done == 500 and .current_backup.speed_bytes_per_sec == 5120 and .current_backup.live_progress.entries_done == 5 and .current_backup.progress_percent == 50'
 	assert_jq '.current_backup.files_total == 0 and .current_backup.bytes_total == 0 and .current_backup.progress_percent < 100 and .current_backup.live_progress == {basis:"file_list_entries", entries_done:5, entries_total:10, sampled_at:.current_backup.live_progress.sampled_at, files_known:true}' \
 		'L01 keeps old totals unknown and uses entry-list basis with running cap'
+	: > "$TEST_L01_ALLOW_EXIT"
 	assert_success 'L01 manager eventually completes' wait_for_exit "$MANAGER_PID"
 	wait "$MANAGER_PID" 2>/dev/null || manager_rc=$?
 	manager_rc=${manager_rc:-0}
+	unset TEST_L01_ALLOW_300 TEST_L01_ALLOW_500 TEST_L01_ALLOW_EXIT
 	assert_equal "$manager_rc" 0 'L01 live observation preserves successful rsync exit'
 	assert_jq '.current_backup == null and .history[0].status == "completed"' 'L01 terminal snapshot cannot be overwritten by a running observer'
 }
@@ -364,7 +375,7 @@ main() {
 	case_legacy_status_call_keeps_shape_and_history_reader
 	printf 'RESULT cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"
 	[ "$CASES" -eq 4 ] || fail "expected 4 cases, ran $CASES"
-	[ "$ASSERTIONS" -eq 50 ] || fail "expected 50 assertions, ran $ASSERTIONS"
+	[ "$ASSERTIONS" -eq 51 ] || fail "expected 51 assertions, ran $ASSERTIONS"
 	[ "$FAILED" -eq 0 ]
 }
 
