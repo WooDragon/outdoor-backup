@@ -261,65 +261,89 @@ backup_status_begin() {
 	backup_status_publish '{"basis":"file_list_entries","entries_done":null,"entries_total":null,"sampled_at":null,"files_known":false}'
 }
 
-# Keep only a complete, monotonic parser record and publish it at most every 2s.
-# Args: none. Returns zero; a failed status write becomes task-local sticky state.
-backup_status_progress() {
-	local progress_json files_done files_observed bytes_done speed entries_done entries_total entries_valid sampled_at live_json record_tuple
-	[ "$BACKUP_STATUS_WRITE_FAILED" -eq 0 ] || return 0
-	BACKUP_STATUS_SAMPLE_COUNT=$((BACKUP_STATUS_SAMPLE_COUNT + 1))
-	[ $((BACKUP_STATUS_SAMPLE_COUNT % 2)) -eq 0 ] || return 0
-	progress_json=$(backup_progress_read "$BACKUP_TRANSFER_TMP_STDOUT") || return 0
-	files_done=$(printf '%s\n' "$progress_json" | jq -r '.files_done // empty')
-	bytes_done=$(printf '%s\n' "$progress_json" | jq -r '.bytes_done // empty')
-	speed=$(printf '%s\n' "$progress_json" | jq -r '.speed_bytes_per_sec // empty')
-	entries_done=$(printf '%s\n' "$progress_json" | jq -r '.entries_done // empty')
-	entries_total=$(printf '%s\n' "$progress_json" | jq -r '.entries_total // empty')
-	case "$bytes_done:$speed" in *[!0-9:]*|:*|*:) return 0 ;; esac
-	files_observed=0
+# Extract exactly five numeric-or-null parser fields as fixed tab-separated slots.
+# Parameters: none. Returns nonzero for unavailable or structurally invalid input.
+backup_status_progress_fields() {
+	local progress_json
+
+	progress_json=$(backup_progress_read "$BACKUP_TRANSFER_TMP_STDOUT") || return 1
+	printf '%s\n' "$progress_json" | jq -er '
+		[.files_done, .bytes_done, .speed_bytes_per_sec, .entries_done, .entries_total] as $fields
+		| if ($fields | all(.[]; . == null or (type == "number" and . >= 0 and floor == .)))
+		  then $fields | map(if . == null then "null" else tostring end) | @tsv
+		  else error("invalid live progress fields")
+		  end'
+}
+
+# Merge one parser tuple into the task-local monotonic live-progress state.
+# Parameters: $1 files, $2 bytes, $3 speed, $4 entries done, $5 entries total.
+# Returns: zero when a new tuple is ready to publish; nonzero when ignored.
+backup_status_merge_progress() {
+	local files_done=$1 bytes_done=$2 speed=$3 entries_done=$4 entries_total=$5 files_observed=0
+
+	case "$bytes_done:$speed" in *[!0-9:]*|:*|*:) return 1 ;; esac
 	case "$files_done" in
-		''|*[!0-9]*) files_done=$BACKUP_STATUS_FILES_DONE ;;
+		null) files_done=$BACKUP_STATUS_FILES_DONE ;;
+		*[!0-9]*) return 1 ;;
 		*) files_observed=1 ;;
 	esac
-	[ "$bytes_done" -ge "$BACKUP_STATUS_BYTES_DONE" ] || return 0
-	[ "$files_done" -ge "$BACKUP_STATUS_FILES_DONE" ] || return 0
-	entries_valid=0
-	if [ -n "$entries_done$entries_total" ]; then
+	[ "$bytes_done" -ge "$BACKUP_STATUS_BYTES_DONE" ] || return 1
+	[ "$files_done" -ge "$BACKUP_STATUS_FILES_DONE" ] || return 1
+	if [ "$entries_done" != null ] || [ "$entries_total" != null ]; then
 		case "$entries_done:$entries_total" in *[!0-9:]*|:*|*:) ;; *)
 			if [ "$entries_total" -gt 0 ] && [ "$entries_done" -le "$entries_total" ] && \
 				{ [ -z "$BACKUP_STATUS_ENTRIES_TOTAL" ] || [ "$entries_total" -eq "$BACKUP_STATUS_ENTRIES_TOTAL" ]; } && \
 				{ [ -z "$BACKUP_STATUS_ENTRIES_DONE" ] || [ "$entries_done" -ge "$BACKUP_STATUS_ENTRIES_DONE" ]; }; then
-				entries_valid=1
+				BACKUP_STATUS_ENTRIES_DONE=$entries_done
+				BACKUP_STATUS_ENTRIES_TOTAL=$entries_total
 			fi
 			;;
 		esac
 	fi
-	if [ "$entries_valid" -eq 1 ]; then
-		BACKUP_STATUS_ENTRIES_DONE=$entries_done
-		BACKUP_STATUS_ENTRIES_TOTAL=$entries_total
-	else
-		entries_done=
-		entries_total=
-	fi
-	record_tuple="$bytes_done|$speed|$files_done|${entries_done:-null}|${entries_total:-null}"
-	[ "$record_tuple" = "$BACKUP_STATUS_LAST_RECORD" ] && return 0
+	BACKUP_STATUS_CURRENT_RECORD="$bytes_done|$speed|$files_done|${BACKUP_STATUS_ENTRIES_DONE:-null}|${BACKUP_STATUS_ENTRIES_TOTAL:-null}"
+	[ "$BACKUP_STATUS_CURRENT_RECORD" != "$BACKUP_STATUS_LAST_RECORD" ] || return 1
 	BACKUP_STATUS_FILES_DONE=$files_done
 	[ "$files_observed" -eq 0 ] || BACKUP_STATUS_FILES_KNOWN=1
 	BACKUP_STATUS_BYTES_DONE=$bytes_done
 	BACKUP_STATUS_SPEED=$speed
-	sampled_at=$(date +%s) || return 0
+	return 0
+}
+
+# Publish the merged state with an observation timestamp and the running cap.
+# Parameters: none. Returns nonzero only when the atomic status publication fails.
+backup_status_publish_progress() {
+	local sampled_at live_json files_known
+
+	sampled_at=$(date +%s) || return 1
+	if [ "$BACKUP_STATUS_FILES_KNOWN" -eq 1 ]; then files_known=true; else files_known=false; fi
 	if [ -n "$BACKUP_STATUS_ENTRIES_TOTAL" ]; then
 		BACKUP_STATUS_PERCENT=$((BACKUP_STATUS_ENTRIES_DONE * 100 / BACKUP_STATUS_ENTRIES_TOTAL))
 		[ "$BACKUP_STATUS_PERCENT" -lt 100 ] || BACKUP_STATUS_PERCENT=99
 		live_json=$(printf '{"basis":"file_list_entries","entries_done":%s,"entries_total":%s,"sampled_at":%s,"files_known":%s}' \
-			"$BACKUP_STATUS_ENTRIES_DONE" "$BACKUP_STATUS_ENTRIES_TOTAL" "$sampled_at" \
-			"$([ "$BACKUP_STATUS_FILES_KNOWN" -eq 1 ] && printf true || printf false)")
+			"$BACKUP_STATUS_ENTRIES_DONE" "$BACKUP_STATUS_ENTRIES_TOTAL" "$sampled_at" "$files_known")
 	else
 		live_json=$(printf '{"basis":"file_list_entries","entries_done":null,"entries_total":null,"sampled_at":%s,"files_known":%s}' \
-			"$sampled_at" "$([ "$BACKUP_STATUS_FILES_KNOWN" -eq 1 ] && printf true || printf false)")
+			"$sampled_at" "$files_known")
 	fi
-	if backup_status_publish "$live_json"; then
-		BACKUP_STATUS_LAST_RECORD=$record_tuple
-	else
+	backup_status_publish "$live_json" || return 1
+	BACKUP_STATUS_LAST_RECORD=$BACKUP_STATUS_CURRENT_RECORD
+	return 0
+}
+
+# Keep only a complete, monotonic parser record and publish it at most every 2s.
+# Args: none. Returns zero; a failed status write becomes task-local sticky state.
+backup_status_progress() {
+	local fields files_done bytes_done speed entries_done entries_total
+
+	[ "$BACKUP_STATUS_WRITE_FAILED" -eq 0 ] || return 0
+	BACKUP_STATUS_SAMPLE_COUNT=$((BACKUP_STATUS_SAMPLE_COUNT + 1))
+	[ $((BACKUP_STATUS_SAMPLE_COUNT % 2)) -eq 0 ] || return 0
+	fields=$(backup_status_progress_fields) || return 0
+	IFS='	' read -r files_done bytes_done speed entries_done entries_total <<EOF
+$fields
+EOF
+	backup_status_merge_progress "$files_done" "$bytes_done" "$speed" "$entries_done" "$entries_total" || return 0
+	if ! backup_status_publish_progress; then
 		BACKUP_STATUS_WRITE_FAILED=1
 		if [ "$BACKUP_STATUS_WRITE_NOTICE_SENT" -eq 0 ]; then
 			log_error 'Failed to persist live backup progress'

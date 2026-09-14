@@ -439,6 +439,7 @@ function updateCurrentBackup(backup) {
         formatBytes(speed) + '/s' : '— (waiting for sample)';
 
     percent = Math.min(percent, maxPercent);
+    var progressText = hasLiveProgress && !hasEntryCounts ? '' : percent.toFixed(1) + '%';
 
     var html = '<div>';
     html += '<div class="info-box">';
@@ -449,7 +450,7 @@ function updateCurrentBackup(backup) {
     html += '</div>';
 
     html += '<div class="progress-bar" style="margin: 15px 0;">';
-    html += '<div class="progress-bar-fill" style="width: ' + percent + '%;">' + percent.toFixed(1) + '%</div>';
+    html += '<div class="progress-bar-fill" style="width: ' + percent + '%;">' + progressText + '</div>';
     html += '</div>';
 
     html += '<div class="info-box">';

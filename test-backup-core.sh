@@ -12,9 +12,10 @@ IMAGE_DIGEST="sha256:9972a4b4747cd136abd597475d7b88c51a49fd849d0d53f069a2f4bf446
 
 if [ "${1:-}" != "--inside" ]; then
 	REPO_ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-	exec docker run --rm --platform linux/amd64 --network bridge \
-		--cap-add SYS_ADMIN --security-opt seccomp=unconfined --tmpfs /tmp:rw,exec \
-		-v "$REPO_ROOT:/src:ro" \
+	exec docker run --rm --pull=never --platform linux/amd64 --network bridge \
+		--memory 512m --pids-limit 128 --log-driver local --log-opt max-size=2m \
+		--log-opt max-file=1 --log-opt compress=false --cap-add SYS_ADMIN \
+		--security-opt seccomp=unconfined --tmpfs /tmp:rw,exec -v "$REPO_ROOT:/src:ro" \
 		"$IMAGE@$IMAGE_DIGEST" /bin/ash /src/test-backup-core.sh --inside
 fi
 
@@ -29,6 +30,7 @@ opkg install rsync >/dev/null || { printf '%s\n' 'FAIL: cannot install rsync in 
 
 REPO_ROOT=/src
 TRANSFER_SCRIPT="$REPO_ROOT/files/opt/outdoor-backup/scripts/backup-transfer.sh"
+PROGRESS_SCRIPT="$REPO_ROOT/files/opt/outdoor-backup/scripts/backup-progress.sh"
 PROCESS_SCRIPT="$REPO_ROOT/files/opt/outdoor-backup/scripts/transfer-process.sh"
 TEST_ROOT="/tmp/outdoor-backup-transfer.$$"
 BASE_DIR="$TEST_ROOT/runtime/opt/outdoor-backup"
@@ -137,6 +139,25 @@ wait_for_path() {
 	[ -e "$path" ]
 }
 
+# Wait for the real transfer's private stdout to hold a complete progress2 sample.
+# Parameters: none. Returns zero with REAL_PROGRESS_JSON after bytes and speed parse.
+wait_for_real_progress() {
+	attempts=0
+	while [ "$attempts" -lt 15 ]; do
+		set -- "$BASE_DIR/var/.backup-transfer.stdout."*
+		if [ -f "$1" ] && REAL_PROGRESS_JSON=$(backup_progress_read "$1" 2>/dev/null) && \
+			printf '%s\n' "$REAL_PROGRESS_JSON" | awk '
+				/"bytes_done":[1-9][0-9]*,"speed_bytes_per_sec":[1-9][0-9]*/ { found = 1 }
+				END { exit found ? 0 : 1 }'; then
+			REAL_PROGRESS_STDOUT=$1
+			return 0
+		fi
+		/bin/sleep 1
+		attempts=$((attempts + 1))
+	done
+	return 1
+}
+
 cleanup_test_data() {
 	if mountpoint -q "$FULL_TARGET" 2>/dev/null; then
 		umount "$FULL_TARGET" || :
@@ -152,6 +173,8 @@ setup_fixture() {
 	. "$PROCESS_SCRIPT"
 	# shellcheck disable=SC1090
 	. "$TRANSFER_SCRIPT"
+	# shellcheck disable=SC1090
+	. "$PROGRESS_SCRIPT"
 }
 
 run_transfer() {
@@ -385,6 +408,42 @@ case_partial_target_recovery() {
 	assert_success 'T10 partial target transfer succeeds' run_transfer "$SOURCE_DIR/" "$TARGET_ROOT/" "$LOG_DIR/partial.log"
 	assert_file_hash_equal "$SOURCE_DIR/payload.bin" "$TARGET_ROOT/payload.bin" 'T10 partial file recovers fully'
 	assert_equal "$(snapshot_source)" "$before" 'T10 source snapshot remains unchanged'
+	assert_no_runtime_temp_files
+}
+
+
+case_real_live_progress_observation() {
+	begin_case T13 'real rsync progress2 output is parseable before transfer completion'
+	setup_fixture
+	dd if=/dev/zero of="$SOURCE_DIR/payload.bin" bs=1024 count=3072 >/dev/null 2>&1
+	cat > "$BIN_DIR/rsync" <<'EOF'
+#!/bin/ash
+printf '%s\n' "$$" > "$TEST_REAL_RSYNC_PID"
+exec /usr/bin/rsync --bwlimit=128 "$@"
+EOF
+	chmod 755 "$BIN_DIR/rsync"
+	TEST_REAL_RSYNC_PID="$TEST_ROOT/real-rsync.pid"
+	export TEST_REAL_RSYNC_PID
+	old_path=$PATH
+	PATH="$BIN_DIR:$PATH"
+	( backup_transfer "$SOURCE_DIR/" "$TARGET_ROOT/" "$LOG_DIR/live.log"; transfer_rc=$?; \
+		printf '%s:%s:%s\n' "$transfer_rc" "$BACKUP_TRANSFER_FILES" "$BACKUP_TRANSFER_BYTES" > "$TEST_ROOT/live-result" ) &
+	transfer_pid=$!
+	assert_success 'T13 real rsync starts before progress observation' wait_for_path "$TEST_REAL_RSYNC_PID"
+	assert_success 'T13 delivery parser reads real in-flight bytes and speed' wait_for_real_progress
+	assert_success 'T13 observed rsync process remains alive during parser read' kill -0 "$(cat "$TEST_REAL_RSYNC_PID")"
+	stdout_evidence=$(awk '{ gsub(/\r/, "<CR>"); printf "%s", substr($0, 1, 160) }' \
+		"${REAL_PROGRESS_STDOUT:-/dev/null}")
+	printf 'EVIDENCE T13 real stdout: %s\n' "$stdout_evidence"
+	wait "$transfer_pid" 2>/dev/null || live_rc=$?
+	live_rc=${live_rc:-0}
+	PATH=$old_path
+	assert_equal "$live_rc" 0 'T13 real rsync completes naturally after in-flight observation'
+	assert_file_hash_equal "$SOURCE_DIR/payload.bin" "$TARGET_ROOT/payload.bin" 'T13 real transfer preserves payload hash'
+	IFS=: read -r result_rc result_files result_bytes < "$TEST_ROOT/live-result"
+	assert_equal "$result_rc" 0 'T13 transfer helper preserves real rsync success'
+	assert_equal "$result_files" 1 'T13 transfer stats report the one copied file'
+	assert_equal "$result_bytes" 3145728 'T13 transfer stats report actual payload bytes'
 	assert_no_runtime_temp_files
 }
 
@@ -680,6 +739,7 @@ main() {
 	case_incremental_update_and_preservation
 	case_incremental_mutation_probes
 	case_partial_target_recovery
+	case_real_live_progress_observation
 	case_failure_exit_and_classification
 	case_argv_contract
 	case_missing_rsync_and_runtime_failure_reset_state
@@ -688,8 +748,8 @@ main() {
 	case_early_leader_exit_keeps_temp_until_child_drain
 	case_cancellation_notice_bypasses_transfer_output_redirect
 	printf 'RESULT: cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"
-	[ "$CASES" -eq 12 ] || fail "expected 12 cases, ran $CASES"
-	[ "$ASSERTIONS" -eq 134 ] || fail "expected 134 assertions, ran $ASSERTIONS"
+	[ "$CASES" -eq 13 ] || fail "expected 13 cases, ran $CASES"
+	[ "$ASSERTIONS" -eq 143 ] || fail "expected 143 assertions, ran $ASSERTIONS"
 	[ "$FAILED" -eq 0 ]
 }
 

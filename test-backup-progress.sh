@@ -177,44 +177,44 @@ case_speed_units_and_rejection() {
 	for unit_case in kB MB GB; do
 		fixture="$TEST_ROOT/speed-$unit_case"
 		write_record "$fixture" "\\r 1 1% 1.50${unit_case}/s 0:00:01\\n"
-		output=$(read_progress "$fixture") || fail "P08 parses $unit_case"
+		output=$(read_progress "$fixture") || fail "P09 parses $unit_case"
 		case $unit_case in
 			kB) expected=1536 ;;
 			MB) expected=1572864 ;;
 			GB) expected=1610612736 ;;
 		esac
-		assert_json "$output" ".speed_bytes_per_sec == $expected" "P08 converts $unit_case using binary multipliers"
+		assert_json "$output" ".speed_bytes_per_sec == $expected" "P09 converts $unit_case using binary multipliers"
 	done
 	unknown_fixture="$TEST_ROOT/speed-unknown"
 	write_record "$unknown_fixture" '\r 1 1% 1.50TB/s 0:00:01\n'
-	assert_parse_failure "$unknown_fixture" 'P08 rejects unsupported units'
+	assert_parse_failure "$unknown_fixture" 'P09 rejects unsupported units'
 }
 
 case_invalid_and_incomplete_input() {
 	begin_case P10 'missing, non-progress, malicious, invalid-number, invalid-counter, and half records emit nothing'
 	setup_fixture
-	assert_parse_failure "$TEST_ROOT/missing" 'P09 missing file'
+	assert_parse_failure "$TEST_ROOT/missing" 'P10 missing file'
 	no_progress="$TEST_ROOT/no-progress"
 	write_record "$no_progress" 'filename\nNumber of files: 2\n'
-	assert_parse_failure "$no_progress" 'P09 diagnostics and stats'
+	assert_parse_failure "$no_progress" 'P10 diagnostics and stats'
 	malicious="$TEST_ROOT/malicious"
 	malicious_side_effect="$TEST_ROOT/pwn"
 	# shellcheck disable=SC2016 # The literal shell syntax is hostile fixture data.
 	write_record "$malicious" '\r 1;touch${IFS}$TEST_ROOT/pwn 1% 1.00kB/s 0:00:01\n'
-	assert_parse_failure "$malicious" 'P09 shell-shaped byte field'
-	assert_success 'P09 malicious text was not evaluated' test ! -e "$malicious_side_effect"
+	assert_parse_failure "$malicious" 'P10 shell-shaped byte field'
+	assert_success 'P10 malicious text was not evaluated' test ! -e "$malicious_side_effect"
 	bad_number="$TEST_ROOT/bad-number"
 	write_record "$bad_number" '\r 1,23 1% 1.00kB/s 0:00:01\n'
-	assert_parse_failure "$bad_number" 'P09 invalid thousands grouping'
+	assert_parse_failure "$bad_number" 'P10 invalid thousands grouping'
 	bad_counter="$TEST_ROOT/bad-counter"
 	write_record "$bad_counter" '\r 1 1% 1.00kB/s 0:00:01 (xfr#1, to-chk=9/8)\n'
-	assert_parse_failure "$bad_counter" 'P09 remaining counter exceeds total'
+	assert_parse_failure "$bad_counter" 'P10 remaining counter exceeds total'
 	half_record="$TEST_ROOT/half"
 	write_record "$half_record" '\r 1 1% 1.00kB/s 0:00:01 (xfr#1, to-chk=0/8)'
-	assert_parse_failure "$half_record" 'P09 unterminated record'
+	assert_parse_failure "$half_record" 'P10 unterminated record'
 	partial_suffix="$TEST_ROOT/partial-suffix"
 	write_record "$partial_suffix" '\r 1 1% 1.00kB/s 0:00:01 (xfr#1, to-chk=0/8\n'
-	assert_parse_failure "$partial_suffix" 'P09 incomplete suffix'
+	assert_parse_failure "$partial_suffix" 'P10 incomplete suffix'
 }
 
 main() {

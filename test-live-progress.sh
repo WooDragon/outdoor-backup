@@ -159,9 +159,11 @@ malformed)
 	;;
 known-then-suffix-free)
 	printf '\r 100 11%% 1.00kB/s 0:00:01 (xfr#1, to-chk=9/10)\n'
-	/bin/sleep 2
+	while [ ! -e "$TEST_KNOWN_SUFFIX_FIRST_MARKER" ]; do /bin/sleep 1; done
+	# Move the previous suffix outside the parser's 8192-byte tail window.
+	awk 'BEGIN { for (padding_index = 0; padding_index < 8200; padding_index++) printf "diagnostic padding\n" }'
 	printf '\r 300 11%% 3.00kB/s 0:00:03\n'
-	/bin/sleep 2
+	while [ ! -e "$TEST_KNOWN_SUFFIX_SECOND_MARKER" ]; do /bin/sleep 1; done
 	;;
 long)
 	progress=1
@@ -272,14 +274,25 @@ case_unknown_and_malformed_retain_last_snapshot() {
 
 	live_reset || { fail 'L02 known-then-suffix-free fixture setup failed'; return; }
 	printf '%s\n' known-then-suffix-free > "$BIN/progress-mode"
+	TEST_KNOWN_SUFFIX_FIRST_MARKER="$BIN/known-suffix-first-release"
+	TEST_KNOWN_SUFFIX_SECOND_MARKER="$BIN/known-suffix-second-release"
+	export TEST_KNOWN_SUFFIX_FIRST_MARKER TEST_KNOWN_SUFFIX_SECOND_MARKER
 	start_manager
 	assert_success 'L02 a valid xfr sample establishes a known file count before a suffix-free tail' \
 		wait_for_jq '.current_backup.files_done == 1 and .current_backup.live_progress.files_known == true and .current_backup.live_progress.entries_done == 1'
+	known_suffix_writes=$(cat "$TEST_ROOT/status-mv-count")
+	# Always release this marker after the assertion so a failed check cannot strand rsync.
+	: > "$TEST_KNOWN_SUFFIX_FIRST_MARKER"
 	assert_success 'L02 a suffix-free tail keeps the last observed file count and entry progress' \
 		wait_for_jq '.current_backup.bytes_done == 300 and .current_backup.files_done == 1 and .current_backup.live_progress.files_known == true and .current_backup.live_progress.entries_done == 1 and .current_backup.live_progress.entries_total == 10'
+	assert_success 'L02 suffix-free tail publishes the retained state as a new status snapshot' \
+		test "$(cat "$TEST_ROOT/status-mv-count")" -gt "$known_suffix_writes"
+	# Always release this marker after observing the retained state, including on failure.
+	: > "$TEST_KNOWN_SUFFIX_SECOND_MARKER"
 	assert_success 'L02 known-then-suffix-free manager completes' wait_for_exit "$MANAGER_PID"
 	wait "$MANAGER_PID" 2>/dev/null || known_suffix_rc=$?
 	known_suffix_rc=${known_suffix_rc:-0}
+	unset TEST_KNOWN_SUFFIX_FIRST_MARKER TEST_KNOWN_SUFFIX_SECOND_MARKER
 	assert_equal "$known_suffix_rc" 0 'L02 suffix-free tail preserves rsync success after a known file count'
 }
 
@@ -351,7 +364,7 @@ main() {
 	case_legacy_status_call_keeps_shape_and_history_reader
 	printf 'RESULT cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"
 	[ "$CASES" -eq 4 ] || fail "expected 4 cases, ran $CASES"
-	[ "$ASSERTIONS" -eq 49 ] || fail "expected 49 assertions, ran $ASSERTIONS"
+	[ "$ASSERTIONS" -eq 50 ] || fail "expected 50 assertions, ran $ASSERTIONS"
 	[ "$FAILED" -eq 0 ]
 }
 

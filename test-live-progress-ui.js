@@ -122,6 +122,7 @@ function caseUnknownProgress() {
     var page = createPage();
     beginCase('P01', 'a suffix-free sample shows bytes and speed without fabricating a file count');
     page.update(liveBackup({
+        progress_percent: 0,
         files_done: 0,
         bytes_done: 1024,
         speed_bytes_per_sec: 512,
@@ -139,6 +140,8 @@ function caseUnknownProgress() {
         'unknown entries display an explicit waiting state');
     assertIncludes(page.container.innerHTML, 'Waiting for file count',
         'a compatible outer zero is not rendered as an observed file count');
+    assertExcludes(page.container.innerHTML, '0.0%',
+        'unknown live progress does not render a fabricated numeric percentage');
     assertIncludes(page.container.innerHTML, '<strong>Bytes transferred:</strong> <span>1.00 KB</span>',
         'a suffix-free sample still exposes observed transferred bytes');
     assertIncludes(page.container.innerHTML, '512.00 B/s',
@@ -246,7 +249,7 @@ if (cases !== 4) {
     console.error('FAIL: expected 4 cases, ran ' + cases);
     process.exitCode = 1;
 }
-if (assertions !== 21) {
+if (assertions !== 22) {
     console.error('FAIL: expected 21 assertions, ran ' + assertions);
     process.exitCode = 1;
 }
