@@ -35,6 +35,16 @@ SOURCE_IDENTITY_SNAPSHOT=""
 BACKUP_TRANSFER_SUCCEEDED=0
 BACKUP_TRANSFER_FINISHED_AT=""
 BACKUP_TRANSFER_FINISHED_TEXT=""
+BACKUP_STATUS_FILES_DONE=0
+BACKUP_STATUS_FILES_KNOWN=0
+BACKUP_STATUS_BYTES_DONE=0
+BACKUP_STATUS_SPEED=0
+BACKUP_STATUS_ENTRIES_DONE=""
+BACKUP_STATUS_ENTRIES_TOTAL=""
+BACKUP_STATUS_SAMPLE_COUNT=0
+BACKUP_STATUS_LAST_RECORD=""
+BACKUP_STATUS_WRITE_FAILED=0
+BACKUP_STATUS_WRITE_NOTICE_SENT=0
 # Signal handlers only record the first cancellation. They never exit, clean up,
 # or kill children: the active runner must first prove its writers have stopped.
 BACKUP_CANCEL_CODE=0
@@ -183,6 +193,7 @@ if [ "$ACTION" = add ]; then
 	. "$SCRIPT_DIR/status.sh"
 	. "$SCRIPT_DIR/transfer-process.sh"
 	. "$SCRIPT_DIR/backup-transfer.sh"
+	. "$SCRIPT_DIR/backup-progress.sh"
 	. "$SCRIPT_DIR/card-identity.sh"
 	. "$SCRIPT_DIR/source-identity.sh"
 fi
@@ -224,11 +235,109 @@ is_safe_mb_value() {
 	[ "${#1}" -eq 10 ] && [ "$1" -le 2147483647 ]
 }
 
-# Write a running snapshot. Args: none. Returns nonzero when atomic status fails.
-write_running_status() {
+# Publish the current task-local running snapshot. Args: $1 fixed live-progress JSON.
+# Returns: nonzero only when atomic status publication fails.
+backup_status_publish() {
 	write_status running "$SD_UUID" "$BACKUP_DISPLAY_NAME" "$DEVNAME" \
-		"$BACKUP_STARTED_AT" 0 0 0 0 0 0 "$TARGET_FD_ROOT" \
-		"$TARGET_BACKUP_PATH/$SD_UUID" '' "$TARGET_BACKUP_PATH"
+		"$BACKUP_STARTED_AT" "$BACKUP_STATUS_PERCENT" 0 "$BACKUP_STATUS_FILES_DONE" \
+		0 "$BACKUP_STATUS_BYTES_DONE" "$BACKUP_STATUS_SPEED" "$TARGET_FD_ROOT" \
+		"$TARGET_BACKUP_PATH/$SD_UUID" '' "$TARGET_BACKUP_PATH" "$1"
+}
+
+# Reset one task's observation state and publish its explicit unknown snapshot.
+# Args: none. Returns nonzero when the initial atomic status publication fails.
+backup_status_begin() {
+	BACKUP_STATUS_FILES_DONE=0
+	BACKUP_STATUS_FILES_KNOWN=0
+	BACKUP_STATUS_BYTES_DONE=0
+	BACKUP_STATUS_SPEED=0
+	BACKUP_STATUS_ENTRIES_DONE=""
+	BACKUP_STATUS_ENTRIES_TOTAL=""
+	BACKUP_STATUS_PERCENT=0
+	BACKUP_STATUS_SAMPLE_COUNT=0
+	BACKUP_STATUS_LAST_RECORD=""
+	BACKUP_STATUS_WRITE_FAILED=0
+	BACKUP_STATUS_WRITE_NOTICE_SENT=0
+	backup_status_publish '{"basis":"file_list_entries","entries_done":null,"entries_total":null,"sampled_at":null,"files_known":false}'
+}
+
+# Keep only a complete, monotonic parser record and publish it at most every 2s.
+# Args: none. Returns zero; a failed status write becomes task-local sticky state.
+backup_status_progress() {
+	local progress_json files_done files_observed bytes_done speed entries_done entries_total entries_valid sampled_at live_json record_tuple
+	[ "$BACKUP_STATUS_WRITE_FAILED" -eq 0 ] || return 0
+	BACKUP_STATUS_SAMPLE_COUNT=$((BACKUP_STATUS_SAMPLE_COUNT + 1))
+	[ $((BACKUP_STATUS_SAMPLE_COUNT % 2)) -eq 0 ] || return 0
+	progress_json=$(backup_progress_read "$BACKUP_TRANSFER_TMP_STDOUT") || return 0
+	files_done=$(printf '%s\n' "$progress_json" | jq -r '.files_done // empty')
+	bytes_done=$(printf '%s\n' "$progress_json" | jq -r '.bytes_done // empty')
+	speed=$(printf '%s\n' "$progress_json" | jq -r '.speed_bytes_per_sec // empty')
+	entries_done=$(printf '%s\n' "$progress_json" | jq -r '.entries_done // empty')
+	entries_total=$(printf '%s\n' "$progress_json" | jq -r '.entries_total // empty')
+	case "$bytes_done:$speed" in *[!0-9:]*|:*|*:) return 0 ;; esac
+	files_observed=0
+	case "$files_done" in
+		''|*[!0-9]*) files_done=$BACKUP_STATUS_FILES_DONE ;;
+		*) files_observed=1 ;;
+	esac
+	[ "$bytes_done" -ge "$BACKUP_STATUS_BYTES_DONE" ] || return 0
+	[ "$files_done" -ge "$BACKUP_STATUS_FILES_DONE" ] || return 0
+	entries_valid=0
+	if [ -n "$entries_done$entries_total" ]; then
+		case "$entries_done:$entries_total" in *[!0-9:]*|:*|*:) ;; *)
+			if [ "$entries_total" -gt 0 ] && [ "$entries_done" -le "$entries_total" ] && \
+				{ [ -z "$BACKUP_STATUS_ENTRIES_TOTAL" ] || [ "$entries_total" -eq "$BACKUP_STATUS_ENTRIES_TOTAL" ]; } && \
+				{ [ -z "$BACKUP_STATUS_ENTRIES_DONE" ] || [ "$entries_done" -ge "$BACKUP_STATUS_ENTRIES_DONE" ]; }; then
+				entries_valid=1
+			fi
+			;;
+		esac
+	fi
+	if [ "$entries_valid" -eq 1 ]; then
+		BACKUP_STATUS_ENTRIES_DONE=$entries_done
+		BACKUP_STATUS_ENTRIES_TOTAL=$entries_total
+	else
+		entries_done=
+		entries_total=
+	fi
+	record_tuple="$bytes_done|$speed|$files_done|${entries_done:-null}|${entries_total:-null}"
+	[ "$record_tuple" = "$BACKUP_STATUS_LAST_RECORD" ] && return 0
+	BACKUP_STATUS_FILES_DONE=$files_done
+	[ "$files_observed" -eq 0 ] || BACKUP_STATUS_FILES_KNOWN=1
+	BACKUP_STATUS_BYTES_DONE=$bytes_done
+	BACKUP_STATUS_SPEED=$speed
+	sampled_at=$(date +%s) || return 0
+	if [ -n "$BACKUP_STATUS_ENTRIES_TOTAL" ]; then
+		BACKUP_STATUS_PERCENT=$((BACKUP_STATUS_ENTRIES_DONE * 100 / BACKUP_STATUS_ENTRIES_TOTAL))
+		[ "$BACKUP_STATUS_PERCENT" -lt 100 ] || BACKUP_STATUS_PERCENT=99
+		live_json=$(printf '{"basis":"file_list_entries","entries_done":%s,"entries_total":%s,"sampled_at":%s,"files_known":%s}' \
+			"$BACKUP_STATUS_ENTRIES_DONE" "$BACKUP_STATUS_ENTRIES_TOTAL" "$sampled_at" \
+			"$([ "$BACKUP_STATUS_FILES_KNOWN" -eq 1 ] && printf true || printf false)")
+	else
+		live_json=$(printf '{"basis":"file_list_entries","entries_done":null,"entries_total":null,"sampled_at":%s,"files_known":%s}' \
+			"$sampled_at" "$([ "$BACKUP_STATUS_FILES_KNOWN" -eq 1 ] && printf true || printf false)")
+	fi
+	if backup_status_publish "$live_json"; then
+		BACKUP_STATUS_LAST_RECORD=$record_tuple
+	else
+		BACKUP_STATUS_WRITE_FAILED=1
+		if [ "$BACKUP_STATUS_WRITE_NOTICE_SENT" -eq 0 ]; then
+			log_error 'Failed to persist live backup progress'
+			BACKUP_STATUS_WRITE_NOTICE_SENT=1
+		fi
+	fi
+	return 0
+}
+
+# Transfer-process callback. It deliberately cannot alter runner cancellation or exit.
+transfer_process_observe() {
+	backup_status_progress
+	return 0
+}
+
+# Write the initial running snapshot. Args: none. Returns nonzero on publication failure.
+write_running_status() {
+	backup_status_begin
 }
 
 # Record one failed terminal state while the anchored target is still writable.
@@ -684,6 +793,10 @@ perform_backup() {
 	check_cancel_request || return "$?"
 	log_info "Starting PRIMARY backup: SD → SSD ($BACKUP_DISPLAY_NAME)"
 	if backup_transfer "$MOUNT_POINT/" "$TARGET_BACKUP_ROOT/$SD_UUID/" "$BACKUP_LOG_FILE"; then
+		if [ "$BACKUP_STATUS_WRITE_FAILED" -ne 0 ]; then
+			ERROR_TYPE=rsync
+			return 1
+		fi
 		BACKUP_TRANSFER_FINISHED_AT=$(date +%s) || {
 			ERROR_TYPE=rsync
 			log_error 'Failed to record transfer completion time'

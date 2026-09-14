@@ -200,7 +200,9 @@ A hotplug `remove` event does not cancel a lock waiter. That waiter can remain b
 
 `status.sh` requires `jq` and atomically replaces the single snapshot at `/opt/outdoor-backup/var/status.json`. The snapshot contains `current_backup`, `storage`, and `history`; no `history.jsonl` state file exists. Each terminal event replaces any older event for the same UUID. The history is newest first and contains at most 20 entries. The storage counters come from `df` through the active target FD, while `storage.root` and each history `backup_path` are stable canonical display paths.
 
-While the manager transfers data, `current_backup.active` is true and all progress, file-count, byte-count, and speed fields are `0` because the runtime does not measure live progress. On completion, the manager records the actual `rsync --stats` file and byte counters. It writes `completed` only after rsync succeeds, the summary write succeeds, and the final target-health and device-identity checks succeed. A failed terminal-status write or any failed prerequisite prevents a completed state.
+While the manager transfers data, it publishes one initial unknown snapshot, then samples the existing synchronous rsync wait loop about every two seconds. `rsync --info=progress2 --outbuf=L` writes the observed progress to the transfer stdout file; the manager reads at most its final 8192 bytes and starts no background writer or pre-scan. The optional `live_progress` object uses `basis="file_list_entries"`. Its `to-chk` counts are checked file-list entries, including directories, rather than byte work or a complete-file count. `xfr#` is the count of ordinary transferred files. A sample can remain unknown while rsync scans or emits no complete parseable record. The running percentage is capped at 99, because an incremental rsync percentage can finish at 11% and is not an overall completion percentage. The observed speed uses 1024-based units. The progress line's `H:M:S` field can be elapsed time, so the UI does not derive an ETA; it shows that incremental-backup ETA is unavailable. Live status is an observation feature, not a data-integrity verification.
+
+The snapshot keeps `version: "1.0"` and accepts the legacy 15-argument `write_status` call. A running snapshot may additionally contain `live_progress` with `basis`, `entries_done`, `entries_total`, and `sampled_at`; each value may remain unknown as defined by the schema. On completion, the manager records the actual `rsync --stats` file and byte counters. It writes `completed` only after rsync succeeds, cleanup `sync`, the summary write, and the final target-health and device-identity checks succeed. A failed status write or any failed prerequisite prevents a completed state. Real-device LuCI end-to-end verification remains unexecuted.
 
 The LuCI form exposes `target_mount`, `target_uuid`, and the `backup_root` boundary. It requires a valid UUID when `enabled=1`. It permits an empty UUID when `enabled=0`. Field validation only checks submitted values and paths. It does not mount or format a disk. Use the fstab procedure above to mount the real target UUID.
 
@@ -564,7 +566,7 @@ Expected performance on NanoPi R5S (4-core ARM, SATA SSD):
 A LuCI-based web interface for visual monitoring and management of the backup system.
 
 **Features**:
-- Snapshot-backed running status and completed rsync statistics; no live progress, speed, or ETA writer
+- Snapshot-backed running status: an initial unknown state and sampled rsync file-list entries, ordinary transferred-file count, bytes, and speed; incremental-backup ETA is unavailable
 - Storage space visualization (pie chart, usage percentage)
 - Backup history viewer
 - SD card alias management (solve UUID readability issue)
@@ -591,7 +593,8 @@ http://192.168.1.1/cgi-bin/luci/admin/services/outdoor-backup
 ### Key Features
 
 #### 1. Status Monitoring
-- Current backup running state from the atomic status snapshot; it does not report live progress or transfer rate
+- Current backup running state from the atomic status snapshot, including sampled file-list entries, ordinary transferred-file count, bytes, and speed when a complete rsync record is available
+- Unknown samples display as waiting; the UI does not turn unknown counters into a zero-based ETA, and incremental-backup ETA is unavailable
 - Storage counters obtained through the anchored target FD
 - UUID-unique backup history from the same snapshot
 

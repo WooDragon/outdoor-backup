@@ -444,6 +444,13 @@ case_argv_contract() {
 	assert_contains --prune-empty-dirs "$RSYNC_ARGS_FILE" 'T05 prune-empty-dirs retained'
 	assert_contains --partial "$RSYNC_ARGS_FILE" 'T05 partial retained'
 	assert_contains --stats "$RSYNC_ARGS_FILE" 'T05 stats retained'
+	assert_contains --info=progress2 "$RSYNC_ARGS_FILE" 'T06 progress2 output retained'
+	assert_contains --outbuf=L "$RSYNC_ARGS_FILE" 'T06 line-buffered output retained'
+	assert_equal "$(grep -F -x -c -- --info=progress2 "$RSYNC_ARGS_FILE")" 1 \
+		'T06 progress2 appears exactly once'
+	assert_equal "$(grep -F -x -c -- --outbuf=L "$RSYNC_ARGS_FILE")" 1 \
+		'T06 line buffering appears exactly once'
+	assert_equal "$(wc -l < "$RSYNC_ARGS_FILE")" 17 'T06 rsync argv has exact upgraded count'
 	assert_contains "--log-file=$transfer_log" "$RSYNC_ARGS_FILE" 'T06 actual spaced log-file argument retained'
 	assert_contains '--exclude=FieldBackup.conf' "$RSYNC_ARGS_FILE" 'T05 config exclude retained'
 	assert_contains '--exclude=.Trash*' "$RSYNC_ARGS_FILE" 'T05 Trash exclude retained'
@@ -451,7 +458,7 @@ case_argv_contract() {
 	assert_contains '--exclude=.fseventsd' "$RSYNC_ARGS_FILE" 'T05 fseventsd exclude retained'
 	assert_contains '--exclude=System Volume Information' "$RSYNC_ARGS_FILE" 'T05 Windows metadata exclude retained'
 	assert_contains '--exclude=$RECYCLE.BIN' "$RSYNC_ARGS_FILE" 'T05 recycle exclude retained'
-	for forbidden_flag in --ignore-existing --append --append-verify --human-readable --progress --info=progress2 --delete; do
+	for forbidden_flag in --ignore-existing --append --append-verify --human-readable --progress --delete; do
 		assert_not_contains "$forbidden_flag" "$RSYNC_ARGS_FILE" "T05 forbidden $forbidden_flag is absent"
 	done
 	last_two=$(awk '{ previous=current; current=$0 } END { printf "%s|%s|", previous, current }' "$RSYNC_ARGS_FILE")
@@ -682,7 +689,7 @@ main() {
 	case_cancellation_notice_bypasses_transfer_output_redirect
 	printf 'RESULT: cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"
 	[ "$CASES" -eq 12 ] || fail "expected 12 cases, ran $CASES"
-	[ "$ASSERTIONS" -eq 130 ] || fail "expected 130 assertions, ran $ASSERTIONS"
+	[ "$ASSERTIONS" -eq 134 ] || fail "expected 134 assertions, ran $ASSERTIONS"
 	[ "$FAILED" -eq 0 ]
 }
 
