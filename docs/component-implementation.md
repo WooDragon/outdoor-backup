@@ -52,7 +52,11 @@ LuCI 表单提供 `target_mount`、`target_uuid` 和 `backup_root` 说明。表�
 
 `check_minimum_free_space` 在创建备份叶目录后，经 FD 9 的目标路径调用 `df`。它不对整张卡或备份树执行 `du` 扫描。`MIN_FREE_SPACE` 默认为 1024 MB；非负十进制整数合法，`0` 禁用余量。无法取得可信 `df` 值时，守卫失败关闭。
 
-`status.sh` 依赖 `jq`。它把 `current_backup`、经活 FD 获取的 `storage` 和 `history` 原子写入唯一的 `status.json` 快照。它不维护 `history.jsonl`。history 以 UUID 去重，最新终态在前，最多 20 条。运行期间 `current_backup` 仅表达 active/running，未知进度和速率字段均为 0。成功终态的文件数和字节数来自 `rsync --stats`。管理器仅在 rsync、cleanup `sync`、汇总写入和最后的锚点健康及身份复验均成功后才写 `completed`。
+`backup-transfer.sh` 以 `--info=progress2 --outbuf=L` 把 rsync 进度写入既有 transfer stdout 文件。生产 `--prune-empty-dirs` 已禁用 rsync 的增量递归，因而本批不新增预扫描。`transfer_process_run` 的既有同步 wait loop 约每 2 秒调用一次观测 callback；callback 只读取 stdout 尾部最多 8192 bytes，不启动后台 writer。`backup-progress.sh` 只接受完整、单调的进度记录。它将 `to-chk` 解析为包含目录的文件列表条目，故其 `entries_done/entries_total` 不是字节任务完成率或完整文件数量。`xfr#` 是普通传输文件数。速率按 1024 倍换算；进度行的 `H:M:S` 可表示 elapsed，不能作为 ETA。
+
+`status.sh` 依赖 `jq`。它把 `current_backup`、经活 FD 获取的 `storage` 和 `history` 原子写入唯一的 `status.json` 快照。它不维护 `history.jsonl`。history 以 UUID 去重，最新终态在前，最多 20 条。新任务先发布 `live_progress={basis:"file_list_entries",entries_done:null,entries_total:null,sampled_at:null,files_known:false}`，以明确未知阶段。旧 schema `version: "1.0"` 与 15 参数 `write_status` 保持兼容；第 16 参数可选写入该 `live_progress` 对象。为兼容本批旧四字段对象，缺少 `files_known` 时规范化为 `false`。`sampled_at` 只证明 bytes 和 speed 已采样。LuCI 只有在 `files_known=true` 时才显示文件数，因此真实 `xfr#0` 显示 `0`，未知文件数显示 `Waiting for file count`。只有 `to-chk` 的完整采样才填充条目字段并计算运行百分比，且该百分比最大为 99。尾窗口没有新 suffix 时，管理器保留此前已知的条目和文件数。畸形记录同样不覆盖此前已知的值。增量 rsync 即使以 11% 结束也不表示整体完成率。LuCI 将条目标签显示为 `Last observed file-list entries checked (including directories)`，不以未知值计算 ETA，并明确增量任务 ETA 不可用。状态观察不证明数据完整性。
+
+成功终态的文件数和字节数来自 `rsync --stats`。管理器仅在 rsync、cleanup `sync`、汇总写入和最后的锚点健康及身份复验均成功后才写 `completed`。初始、采样或终态 status 写入失败均不能产生 `completed`。真实 rsync exit 与取消协议不因观测路径改变。真机 LuCI E2E 和本批新最终 CI 均未执行。
 
 持锁 `cleanup` 先清理传输临时文件和本进程拥有的来源挂载。它随后执行 `sync`。cleanup `sync` 失败时，管理器将此前成功的 transfer 转为 `rsync`/exit 1。cleanup `sync` 失败时，管理器保留既有业务失败码。cleanup `sync` 成功后，管理器才可写 `completed`。finalization 判定失败后，管理器在关闭目标 FD 前写入 failed 状态。管理器随后写 LED 终态和日志。管理器最后释放锁。`ERROR_TYPE` 的现有调用映射为 `device_unknown`、`lock_timeout`、`no_space`、`card_config`（红灯 4 闪，SD 卡配置被策略拒绝，例如既有 `REPLICA` 卡）、`rsync` 和 `verify_failed`。本文档不把未覆盖的 LED 类型表述为端到端验证。
 

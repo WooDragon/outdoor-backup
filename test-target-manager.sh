@@ -365,6 +365,7 @@ prepare_runtime() {
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/status.sh" "$SCRIPTS/status.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/transfer-process.sh" "$SCRIPTS/transfer-process.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/backup-transfer.sh" "$SCRIPTS/backup-transfer.sh"
+    ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/backup-progress.sh" "$SCRIPTS/backup-progress.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/card-config.sh" "$SCRIPTS/card-config.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/card-identity.sh" "$SCRIPTS/card-identity.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/source-identity.sh" "$SCRIPTS/source-identity.sh"
@@ -1103,7 +1104,7 @@ case_m03_healthy_path_uses_only_fd_anchored_target() {
     unset TEST_MOUNT_AUTO_CARD
     target_root=$(cat "$TEST_ROOT/target-mm")
     assert_contains "mount mode=ro target=[$SOURCE_MOUNT]" "$EFFECTS" 'M03 source mount stayed read-only'
-    assert_equal "$(cat "$RSYNC_ARGC")" 15 'M03 rsync received the transfer helper option and operand count'
+    assert_equal "$(cat "$RSYNC_ARGC")" 17 'M03 rsync received the upgraded transfer helper option and operand count'
     assert_equal "$(cat "$RSYNC_SOURCE")" "$SOURCE_MOUNT/" \
         'M03 rsync penultimate argv is the complete source-card path'
     assert_matches "^/proc/[0-9]+/fd/9/backups/$CARD_UUID/$" "$RSYNC_TARGET" \

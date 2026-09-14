@@ -51,7 +51,19 @@ status_read_history() {
              ([.uuid, .name, .device] | all(type == "string")) and
              ([.started_at, .progress_percent, .files_total, .files_done,
                .bytes_total, .bytes_done, .speed_bytes_per_sec]
-              | all(type == "number" and . >= 0)))) and
+              | all(type == "number" and . >= 0)) and
+             ((has("live_progress") | not) or
+              (.live_progress | type == "object" and
+               ((keys | sort) == ["basis", "entries_done", "entries_total", "sampled_at"] or
+                (keys | sort) == ["basis", "entries_done", "entries_total", "files_known", "sampled_at"]) and
+               .basis == "file_list_entries" and
+               ((has("files_known") | not) or (.files_known | type == "boolean")) and
+               ((.entries_done == null and .entries_total == null) or
+                ((.entries_done | type == "number" and floor == . and . >= 0) and
+                 (.entries_total | type == "number" and floor == . and . > 0) and
+                 .entries_done <= .entries_total)) and
+               (.sampled_at == null or
+                (.sampled_at | type == "number" and floor == . and . >= 0)))))) and
            (.history | type == "array") and
            all(.history[];
                type == "object" and
@@ -81,12 +93,37 @@ status_storage_kib() {
     printf '%s %s %s\n' "$total" "$used" "$free"
 }
 
+# Validate a fixed live-progress object and always emit its five-field form.
+# Args: $1=JSON object or null. Output: compact fixed object or null. Return: 0/1.
+status_live_progress() {
+    "$STATUS_JQ" -ce '
+        if . == null then null
+        elif type == "object" and
+             ((keys | sort) == ["basis", "entries_done", "entries_total", "sampled_at"] or
+              (keys | sort) == ["basis", "entries_done", "entries_total", "files_known", "sampled_at"]) and
+             .basis == "file_list_entries" and
+             ((has("files_known") | not) or (.files_known | type == "boolean")) and
+             ((.entries_done == null and .entries_total == null) or
+              (.entries_done | type == "number" and floor == . and . >= 0) and
+              (.entries_total | type == "number" and floor == . and . > 0) and
+              .entries_done <= .entries_total) and
+             (.sampled_at == null or (.sampled_at | type == "number" and floor == . and . >= 0))
+        then {basis: .basis, entries_done: .entries_done, entries_total: .entries_total,
+              sampled_at: .sampled_at, files_known: (.files_known // false)}
+        else error("invalid live progress")
+        end
+    ' <<EOF
+$1
+EOF
+}
+
 # Produce a current_backup object only for a running backup.
-# Args: normalized status values passed by write_status. Output: compact JSON.
+# Args: normalized status values plus optional validated live progress. Output: compact JSON.
 status_current_backup() {
-    local phase
+    local phase live_progress
     phase=$1
     shift
+    live_progress=${11:-null}
     [ "$phase" = running ] || {
         printf '%s\n' null
         return 0
@@ -95,11 +132,13 @@ status_current_backup() {
         --argjson started_at "$4" --argjson progress "$5" \
         --argjson files_total "$6" --argjson files_done "$7" \
         --argjson bytes_total "$8" --argjson bytes_done "$9" --argjson speed "${10}" \
-        '{active: true, uuid: $uuid, name: $name, device: $device,
-          started_at: $started_at, progress_percent: $progress,
-          files_total: $files_total, files_done: $files_done,
-          bytes_total: $bytes_total, bytes_done: $bytes_done,
-          speed_bytes_per_sec: $speed}'
+        --argjson live "$live_progress" '
+        {active: true, uuid: $uuid, name: $name, device: $device,
+         started_at: $started_at, progress_percent: $progress,
+         files_total: $files_total, files_done: $files_done,
+         bytes_total: $bytes_total, bytes_done: $bytes_done,
+         speed_bytes_per_sec: $speed}
+        + (if $live == null then {} else {live_progress: $live} end)'
 }
 
 # Merge one terminal event into a history array, newest first and UUID-unique.
@@ -142,10 +181,10 @@ EOF
 # Write the one-file status snapshot atomically.
 # Args: phase, uuid, name, device, started_at, progress, files_total, files_done,
 # bytes_total, bytes_done, speed, storage probe path, backup path, error message,
-# optional display root. Return: 0 only after same-directory rename succeeds.
+# optional display root, optional fixed live-progress JSON. Return: 0 after rename.
 write_status() {
     local phase uuid name device now started_at progress files_total files_done
-    local bytes_total bytes_done speed storage_probe backup_path error_message display_root
+    local bytes_total bytes_done speed storage_probe backup_path error_message display_root live_progress
     local prior_history history current_backup storage_kib storage_total storage_used storage_free
     local status_dir temp_file
     phase=$1
@@ -164,14 +203,20 @@ write_status() {
     backup_path=${13:-}
     error_message=${14:-}
     display_root=${15:-$storage_probe}
+    live_progress=${16:-null}
     case "$phase" in running|completed|failed|idle) ;; *) return 1 ;; esac
+    if [ "$phase" = running ] && [ "$live_progress" != null ]; then
+        live_progress=$(status_live_progress "$live_progress") || return 1
+    else
+        live_progress=null
+    fi
 
     prior_history=$(status_read_history) || return 1
     history=$(status_merge_history "$phase" "$uuid" "$name" "$files_done" \
         "$bytes_total" "$backup_path" "$error_message" "$now" "$prior_history") || return 1
     current_backup=$(status_current_backup "$phase" "$uuid" "$name" "$device" \
         "$started_at" "$progress" "$files_total" "$files_done" "$bytes_total" \
-        "$bytes_done" "$speed") || return 1
+        "$bytes_done" "$speed" "$live_progress") || return 1
     storage_kib=$(status_storage_kib "$storage_probe")
     set -- $storage_kib
     storage_total=$(( $1 * 1024 ))

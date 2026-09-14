@@ -95,6 +95,8 @@ backup_transfer() {
 		--prune-empty-dirs \
 		--partial \
 		--stats \
+		--info=progress2 \
+		--outbuf=L \
 		--log-file="$log_file" \
 		--exclude="${CONFIG_FILE:-FieldBackup.conf}" \
 		--exclude=".Trash*" \

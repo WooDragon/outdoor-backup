@@ -289,7 +289,7 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 **luci-app-outdoor-backup** - LuCI 网页管理界面
 
 ### 核心功能
-- ✅ **状态快照监控**：运行状态、已锚定目标的空间计数和完成后的 rsync 统计；不提供实时进度、速度或 ETA
+- ✅ **状态快照监控**：运行状态先发布未知值，再从既有同步 rsync wait loop 约每 2 秒采样条目、普通传输文件、字节和速度；增量任务不显示 ETA。状态观察不构成数据完整性验证。实现契约见 [docs/component-implementation.md](docs/component-implementation.md)。真机 LuCI E2E 尚未执行。
 - ✅ **别名管理系统**：解决 UUID 可读性问题
 - ✅ **批量清理功能**：多重确认机制，防止误删
 - ✅ **日志查看**：过滤、高亮、下载

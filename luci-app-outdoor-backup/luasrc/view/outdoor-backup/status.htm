@@ -405,6 +405,10 @@ window.onclick = function(event) {
 }
 
 // Status Update Functions
+function isNonNegativeFinite(value) {
+    return typeof value === 'number' && isFinite(value) && value >= 0;
+}
+
 function updateCurrentBackup(backup) {
     var container = document.getElementById('current-backup');
 
@@ -413,14 +417,29 @@ function updateCurrentBackup(backup) {
         return;
     }
 
-    var percent = backup.progress_percent || 0;
-    var filesDone = backup.files_done || 0;
-    var filesTotal = backup.files_total || 0;
-    var bytesDone = backup.bytes_done || 0;
-    var bytesTotal = backup.bytes_total || 0;
-    var speed = backup.speed_bytes_per_sec || 0;
+    var liveProgress = backup.live_progress;
+    var hasLiveProgress = liveProgress && liveProgress.basis === 'file_list_entries';
+    var percent = isNonNegativeFinite(backup.progress_percent) ? backup.progress_percent : 0;
+    var maxPercent = hasLiveProgress ? 99 : 100;
+    var filesDone = isNonNegativeFinite(backup.files_done) ? backup.files_done : 0;
+    var filesTotal = isNonNegativeFinite(backup.files_total) ? backup.files_total : 0;
+    var bytesDone = isNonNegativeFinite(backup.bytes_done) ? backup.bytes_done : 0;
+    var bytesTotal = isNonNegativeFinite(backup.bytes_total) ? backup.bytes_total : 0;
+    var speed = isNonNegativeFinite(backup.speed_bytes_per_sec) ? backup.speed_bytes_per_sec : 0;
     var bytesRemaining = bytesTotal - bytesDone;
     var eta = formatETA(bytesRemaining, speed);
+    var hasSample = hasLiveProgress && isNonNegativeFinite(liveProgress.sampled_at);
+    var hasEntryCounts = hasSample && isNonNegativeFinite(liveProgress.entries_done) &&
+        isNonNegativeFinite(liveProgress.entries_total) && liveProgress.entries_total > 0 &&
+        liveProgress.entries_done <= liveProgress.entries_total;
+    var filesKnown = hasLiveProgress && liveProgress.files_known === true;
+    var observedFiles = filesKnown && isNonNegativeFinite(backup.files_done) ? filesDone : 'Waiting for file count';
+    var observedBytes = hasSample && isNonNegativeFinite(backup.bytes_done) ? formatBytes(bytesDone) : '— (waiting for sample)';
+    var observedSpeed = hasSample && isNonNegativeFinite(backup.speed_bytes_per_sec) ?
+        formatBytes(speed) + '/s' : '— (waiting for sample)';
+
+    percent = Math.min(percent, maxPercent);
+    var progressText = hasLiveProgress && !hasEntryCounts ? '' : percent.toFixed(1) + '%';
 
     var html = '<div>';
     html += '<div class="info-box">';
@@ -431,14 +450,27 @@ function updateCurrentBackup(backup) {
     html += '</div>';
 
     html += '<div class="progress-bar" style="margin: 15px 0;">';
-    html += '<div class="progress-bar-fill" style="width: ' + percent + '%;">' + percent.toFixed(1) + '%</div>';
+    html += '<div class="progress-bar-fill" style="width: ' + percent + '%;">' + progressText + '</div>';
     html += '</div>';
 
     html += '<div class="info-box">';
-    html += '<div class="info-box-row"><strong>Files:</strong> <span>' + filesDone + ' / ' + filesTotal + '</span></div>';
-    html += '<div class="info-box-row"><strong>Size:</strong> <span>' + formatBytes(bytesDone) + ' / ' + formatBytes(bytesTotal) + '</span></div>';
-    html += '<div class="info-box-row"><strong>Speed:</strong> <span>' + formatBytes(speed) + '/s</span></div>';
-    html += '<div class="info-box-row"><strong>ETA:</strong> <span>' + eta + '</span></div>';
+    if (hasLiveProgress) {
+        html += '<div class="info-box-row"><strong>Progress basis:</strong> <span>Last observed file-list entries checked (including directories)</span></div>';
+        if (hasEntryCounts) {
+            html += '<div class="info-box-row"><strong>Progress:</strong> <span>' + liveProgress.entries_done + ' / ' + liveProgress.entries_total + ' (' + percent.toFixed(1) + '%)</span></div>';
+        } else {
+            html += '<div class="info-box-row"><strong>Progress:</strong> <span>Scanning / waiting for progress</span></div>';
+        }
+        html += '<div class="info-box-row"><strong>Files transferred:</strong> <span>' + observedFiles + '</span></div>';
+        html += '<div class="info-box-row"><strong>Bytes transferred:</strong> <span>' + observedBytes + '</span></div>';
+        html += '<div class="info-box-row"><strong>Speed:</strong> <span>' + observedSpeed + '</span></div>';
+        html += '<div class="info-box-row"><strong>ETA:</strong> <span>Unavailable for incremental backups</span></div>';
+    } else {
+        html += '<div class="info-box-row"><strong>Files:</strong> <span>' + filesDone + ' / ' + filesTotal + '</span></div>';
+        html += '<div class="info-box-row"><strong>Size:</strong> <span>' + formatBytes(bytesDone) + ' / ' + formatBytes(bytesTotal) + '</span></div>';
+        html += '<div class="info-box-row"><strong>Speed:</strong> <span>' + formatBytes(speed) + '/s</span></div>';
+        html += '<div class="info-box-row"><strong>ETA:</strong> <span>' + eta + '</span></div>';
+    }
     html += '</div>';
 
     html += '</div>';

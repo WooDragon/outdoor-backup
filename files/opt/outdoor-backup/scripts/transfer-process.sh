@@ -25,6 +25,12 @@ transfer_process_notice() {
 	return 0
 }
 
+# Synchronous observation seam for callers that own transfer progress state.
+# Parameters: none. Returns: zero by default; callers may override after source.
+transfer_process_observe() {
+	return 0
+}
+
 # Read selected fields from /proc/<pid>/stat. The comm field may contain spaces
 # and closing parentheses, therefore discard through its final ") " delimiter.
 # Parameters: $1 PID. Returns 0 with TP_* globals, 1 when the process vanished,
@@ -230,6 +236,8 @@ transfer_process_wait_leader() {
 		if [ "${BACKUP_CANCEL_CODE:-0}" -ne 0 ]; then
 			transfer_process_request_term || :
 			transfer_process_note_waiting
+		else
+			transfer_process_observe || :
 		fi
 		/bin/sleep 1
 	done
