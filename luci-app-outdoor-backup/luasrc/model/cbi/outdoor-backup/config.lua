@@ -107,16 +107,28 @@ o = s:option(DummyValue, "_led_separator", translate("LED Indicators"))
 o.rawhtml = true
 o.value = "<hr style='margin: 15px 0; border: none; border-top: 1px solid #ccc;'>"
 
-o = s:option(Value, "led_green", translate("Green LED Path"),
-             translate("Sysfs path for success indicator (e.g., /sys/class/leds/green:lan)"))
-o.default = "/sys/class/leds/green:lan"
-o.placeholder = "/sys/class/leds/green:lan"
+o = s:option(Value, "led_green", translate("Green LED 1 Path"),
+             translate("Sysfs path for the first progress/status indicator (e.g., /sys/class/leds/green:wan)"))
+o.default = "/sys/class/leds/green:wan"
+o.placeholder = "/sys/class/leds/green:wan"
+o.rmempty = true  -- LED 是可选的
+
+o = s:option(Value, "led_green2", translate("Green LED 2 Path"),
+             translate("Sysfs path for the second progress/status indicator (e.g., /sys/class/leds/green:lan-1)"))
+o.default = "/sys/class/leds/green:lan-1"
+o.placeholder = "/sys/class/leds/green:lan-1"
+o.rmempty = true  -- LED 是可选的
+
+o = s:option(Value, "led_green3", translate("Green LED 3 Path"),
+             translate("Sysfs path for the third progress/status indicator (e.g., /sys/class/leds/green:lan-2)"))
+o.default = "/sys/class/leds/green:lan-2"
+o.placeholder = "/sys/class/leds/green:lan-2"
 o.rmempty = true  -- LED 是可选的
 
 o = s:option(Value, "led_red", translate("Red LED Path"),
-             translate("Sysfs path for error indicator (e.g., /sys/class/leds/red:sys)"))
-o.default = "/sys/class/leds/red:sys"
-o.placeholder = "/sys/class/leds/red:sys"
+             translate("Sysfs path for error indicator (e.g., /sys/class/leds/red:power)"))
+o.default = "/sys/class/leds/red:power"
+o.placeholder = "/sys/class/leds/red:power"
 o.rmempty = true  -- LED 是可选的
 
 return m

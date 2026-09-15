@@ -55,6 +55,24 @@ config_normalize_path() {
     printf '%s\n' "$path"
 }
 
+# Normalize an optional path (LED sysfs paths): an explicitly empty value is
+# a legal "unconfigured" state (see luci-app-outdoor-backup config.lua
+# rmempty on led_green/led_red/led_green2/led_green3) and must pass through
+# untouched, silently -- config_normalize_path's own empty-is-error rule
+# only applies to the mandatory paths (backup_root/mount_point/target_mount).
+# Arguments: $1 path value, $2 human-readable option name.
+config_normalize_optional_path() {
+    local path="$1"
+    local option_name="$2"
+
+    [ -n "$path" ] || {
+        printf '%s\n' ""
+        return 0
+    }
+
+    config_normalize_path "$path" "$option_name"
+}
+
 # Reject equal paths and either direction of ancestry before manager operations.
 # Arguments: $1 backup root, $2 temporary mount point.
 config_paths_are_disjoint() {
@@ -111,6 +129,12 @@ config_apply_uci_option() {
         led_green)
             LED_GREEN="$option_value"
             ;;
+        led_green2)
+            LED_GREEN2="$option_value"
+            ;;
+        led_green3)
+            LED_GREEN3="$option_value"
+            ;;
         led_red)
             LED_RED="$option_value"
             ;;
@@ -140,8 +164,10 @@ config_load() {
     TARGET_MOUNT="/mnt/ssd"
     TARGET_UUID=""
     DEBUG=0
-    LED_GREEN="/sys/class/leds/green:lan"
-    LED_RED="/sys/class/leds/red:sys"
+    LED_GREEN="/sys/class/leds/green:wan"
+    LED_GREEN2="/sys/class/leds/green:lan-1"
+    LED_GREEN3="/sys/class/leds/green:lan-2"
+    LED_RED="/sys/class/leds/red:power"
     CARD_READER_USB_IDS=""
     CARD_READER_PATH_PREFIXES=""
     CARD_READER_HEURISTIC_FALLBACK="yes"
@@ -181,6 +207,8 @@ config_load() {
             config_apply_uci_option "$uci_dir" target_uuid
             config_apply_uci_option "$uci_dir" debug
             config_apply_uci_option "$uci_dir" led_green
+            config_apply_uci_option "$uci_dir" led_green2
+            config_apply_uci_option "$uci_dir" led_green3
             config_apply_uci_option "$uci_dir" led_red
             config_apply_uci_option "$uci_dir" card_reader_usb_ids
             config_apply_uci_option "$uci_dir" card_reader_path_prefixes
@@ -208,6 +236,10 @@ config_load() {
     BACKUP_ROOT=$(config_normalize_path "$BACKUP_ROOT" backup_root) || return 1
     MOUNT_POINT=$(config_normalize_path "$MOUNT_POINT" mount_point) || return 1
     TARGET_MOUNT=$(config_normalize_path "$TARGET_MOUNT" target_mount) || return 1
+    LED_GREEN=$(config_normalize_optional_path "$LED_GREEN" led_green) || return 1
+    LED_GREEN2=$(config_normalize_optional_path "$LED_GREEN2" led_green2) || return 1
+    LED_GREEN3=$(config_normalize_optional_path "$LED_GREEN3" led_green3) || return 1
+    LED_RED=$(config_normalize_optional_path "$LED_RED" led_red) || return 1
     case "$TARGET_UUID" in
         ''|*[!A-Za-z0-9-]*)
             [ -z "$TARGET_UUID" ] || {

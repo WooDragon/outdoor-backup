@@ -45,6 +45,7 @@ BACKUP_STATUS_SAMPLE_COUNT=0
 BACKUP_STATUS_LAST_RECORD=""
 BACKUP_STATUS_WRITE_FAILED=0
 BACKUP_STATUS_WRITE_NOTICE_SENT=0
+BACKUP_STATUS_LED_SEGMENT=""
 # Signal handlers only record the first cancellation. They never exit, clean up,
 # or kill children: the active runner must first prove its writers have stopped.
 BACKUP_CANCEL_CODE=0
@@ -258,7 +259,30 @@ backup_status_begin() {
 	BACKUP_STATUS_LAST_RECORD=""
 	BACKUP_STATUS_WRITE_FAILED=0
 	BACKUP_STATUS_WRITE_NOTICE_SENT=0
+	BACKUP_STATUS_LED_SEGMENT=""
+	backup_led_update_progress
 	backup_status_publish '{"basis":"file_list_entries","entries_done":null,"entries_total":null,"sampled_at":null,"files_known":false}'
+}
+
+# Map BACKUP_STATUS_PERCENT (0-99, already capped) to a walking-lamp segment
+# and write it to the LED only when the segment actually changed since the
+# last call in this process -- the required cross-segment debounce. Args:
+# none. Always returns zero; an LED write failure is reported by led_set via
+# logger and must never affect the backup exit code.
+backup_led_update_progress() {
+	local segment
+
+	if [ "$BACKUP_STATUS_PERCENT" -le 33 ]; then
+		segment=1
+	elif [ "$BACKUP_STATUS_PERCENT" -le 66 ]; then
+		segment=2
+	else
+		segment=3
+	fi
+	[ "$segment" != "${BACKUP_STATUS_LED_SEGMENT:-}" ] || return 0
+	BACKUP_STATUS_LED_SEGMENT=$segment
+	led_state_progress "$segment"
+	return 0
 }
 
 # Extract exactly five numeric-or-null parser fields as fixed tab-separated slots.
@@ -325,6 +349,7 @@ backup_status_publish_progress() {
 		live_json=$(printf '{"basis":"file_list_entries","entries_done":null,"entries_total":null,"sampled_at":%s,"files_known":%s}' \
 			"$sampled_at" "$files_known")
 	fi
+	backup_led_update_progress
 	backup_status_publish "$live_json" || return 1
 	BACKUP_STATUS_LAST_RECORD=$BACKUP_STATUS_CURRENT_RECORD
 	return 0
@@ -379,16 +404,20 @@ write_failed_status() {
 	return 1
 }
 
-# Choose the existing, operator-visible LED error pattern for an evidence-based
-# failure type. Args: none. Always returns zero to preserve the real exit code.
+# Choose the operator-visible LED error state for an evidence-based failure
+# type, per the four-lamp state machine (issue #40). R always slow-blinks;
+# the green slot distinguishes the class. verify_failed is a target
+# anchor/UUID failure (see verify_final_target), not a data-integrity check,
+# so it shares device_unknown's class (G3). lock_timeout has no dedicated
+# mapping in this PR and falls through to the unclassified slot (G0/none).
+# Args: none. Always returns zero to preserve the real exit code.
 signal_failure_led() {
 	case "$ERROR_TYPE" in
-		device_unknown) led_err_device_unknown ;;
-		lock_timeout) led_err_lock_timeout ;;
-		no_space) led_err_no_space ;;
-		card_config) led_err_card_config ;;
-		verify_failed) led_err_verify_failed ;;
-		*) led_err_rsync ;;
+		no_space) led_state_error 1 ;;
+		card_config) led_state_error 2 ;;
+		device_unknown) led_state_error 3 ;;
+		verify_failed) led_state_error 3 ;;
+		*) led_state_error 0 ;;
 	esac
 	return 0
 }
@@ -456,7 +485,6 @@ cleanup() {
 		write_failed_status "${ERROR_TYPE:-rsync}" || :
 	fi
 	target_close
-	led_backup_stop
 
 	if [ "$cleanup_exit_code" -eq 0 ]; then
 		led_backup_done
