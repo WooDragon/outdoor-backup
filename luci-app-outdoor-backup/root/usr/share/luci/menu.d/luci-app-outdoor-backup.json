@@ -1,0 +1,15 @@
+{
+  "admin/services/outdoor-backup": {
+    "title": "Outdoor Backup",
+    "order": 60,
+    "action": {
+      "type": "alias",
+      "path": "admin/services/outdoor-backup/status"
+    },
+    "depends": {
+      "acl": [
+        "luci-app-outdoor-backup"
+      ]
+    }
+  }
+}

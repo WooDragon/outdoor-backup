@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-outdoor-backup
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 
 PKG_MAINTAINER:=Your Name <your.email@example.com>
 PKG_LICENSE:=GPL-2.0-only
@@ -54,11 +54,24 @@ define Package/luci-app-outdoor-backup/install
 
 	# Install menu entry
 	$(INSTALL_DIR) $(1)/usr/share/luci/menu.d
-	echo '{ "admin/services/outdoor-backup": { "title": "Outdoor Backup", "order": 60, "action": { "type": "alias", "path": "admin/services/outdoor-backup/status" }, "depends": { "acl": [ "luci-app-outdoor-backup" ] } } }' > $(1)/usr/share/luci/menu.d/luci-app-outdoor-backup.json
+	$(INSTALL_DATA) ./root/usr/share/luci/menu.d/luci-app-outdoor-backup.json $(1)/usr/share/luci/menu.d/
 
 	# Install uHTTPd ACL
 	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
 	$(INSTALL_DATA) ./root/usr/share/rpcd/acl.d/outdoor-backup.json $(1)/usr/share/rpcd/acl.d/
+endef
+
+define Package/luci-app-outdoor-backup/postinst
+#!/bin/sh
+# This package includes package.mk rather than luci.mk, so luci.mk's default
+# cache-flush postinst does not apply. Without this, an opkg install leaves a
+# stale menu index and the new menu entry stays invisible.
+[ -n "$${IPKG_INSTROOT}" ] || {
+	rm -f /tmp/luci-indexcache.* 2>/dev/null
+	rm -rf /tmp/luci-modulecache/ 2>/dev/null
+	/etc/init.d/rpcd reload >/dev/null 2>&1
+}
+exit 0
 endef
 
 $(eval $(call BuildPackage,luci-app-outdoor-backup))
