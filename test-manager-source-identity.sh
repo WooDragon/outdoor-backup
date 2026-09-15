@@ -194,8 +194,13 @@ EOF
     ms_equal "$B_RC" 1 'B source replacement has the ordinary device rejection exit'
     ms_success 'B stderr contains the source-identity mismatch classification' \
         grep -F -q 'outdoor-backup: source identity error:' "$B_STDERR"
-    ms_failure 'B rejection never starts the backup LED after its source mismatch' \
-        grep -F -q 'LED set to fast blink' "$B_LOGGER_TRACE"
+    if [ "${1:-0}" -eq 1 ]; then
+        ms_success 'B source replacement reaches the expected segment-1 LED signal' \
+            test -e "$TEST_ROOT/b-led-segment1"
+    else
+        ms_absent "$TEST_ROOT/s06-led-segment1" \
+            'B rejection never starts the backup LED after its source mismatch'
+    fi
     ms_absent "$RUNTIME/var/lock/backup.lock" 'B cleanup removes only B lock after it owned it'
     unset LOCK_IDENTITY
 }
@@ -247,13 +252,11 @@ run_cancelled_probe() {
     SIGNAL_FILE="$TEST_ROOT/$phase-manager-pid"
     STAGE_FILE="$TEST_ROOT/$phase-stage"
     SIGNAL_TRACE="$TEST_ROOT/$phase-signal-trace"
-    CANCEL_LED_START="$TEST_ROOT/$phase-led-start"
     CANCEL_LOCK_ACQUIRED="$TEST_ROOT/$phase-lock-acquired"
     make_probe_manager "$phase" || return 1
     TEST_SOURCE_PROBE_STAGE_FILE="$STAGE_FILE" TEST_SOURCE_PROBE_SIGNAL_PID_FILE="$SIGNAL_FILE" \
         TEST_SOURCE_PROBE_SIGNAL_TRACE="$SIGNAL_TRACE" TEST_RUN_MANAGER_EXEC=1 DEBUG=1 \
         TEST_LOCK_ACQUIRED_MARKER="$CANCEL_LOCK_ACQUIRED" \
-        TEST_LOGGER_STAGE_MATCH='LED set to fast blink' TEST_LOGGER_STAGE_FILE="$CANCEL_LED_START" \
         MANAGER_SCRIPT="$PROBE_MANAGER" run_manager add sda1 /devices/mock/sda/sda1 30 &
     CANCEL_PID=$!
     printf '%s\n' "$CANCEL_PID" > "$SIGNAL_FILE"
@@ -265,10 +268,23 @@ run_cancelled_probe() {
     ms_success "$phase fixture signal succeeded" grep -F -q 'signal-rc=0' "$SIGNAL_TRACE"
 }
 
+make_led_progress_observer() {
+    observer_common="$SCRIPTS/common-observed.sh"
+    cp "$REPO_ROOT/files/opt/outdoor-backup/scripts/common.sh" "$observer_common" || return 1
+    awk -v marker="$TEST_ROOT/s06-led-segment1" '
+        /if \[ -n "\$trigger" \]; then/ {
+            print sprintf("\t\tif [ \"\$trigger\" = timer ] && [ \"\$led_path\" = \"\$LED_GREEN\" ]; then : > %s; fi", marker)
+        }
+        { print }
+    ' "$observer_common" > "$observer_common.tmp" || return 1
+    mv "$observer_common.tmp" "$SCRIPTS/common.sh" || return 1
+    chmod 700 "$SCRIPTS/common.sh"
+}
+
 make_afterlock_gate_mutant() {
     MUTANT_MANAGER="$SCRIPTS/backup-manager-afterlock-mutant.sh"
     awk '
-        /if ! source_identity_matches "\$DEVNAME" "\$SOURCE_IDENTITY_SNAPSHOT"; then/ {
+        /if ! source_identity_matches "\$DEVNAME" "\$SOURCE_IDENTITY_SNAPSHOT"/ {
             gates++
             if (gates == 2) deleting=1
         }
@@ -396,9 +412,10 @@ case_s05_capture_failure_disabled_and_remove_do_not_touch_source() {
 }
 
 case_s06_afterlock_gate_rejects_before_led_and_afterlock_mutant_is_red() {
-    ms_case S06 'after-lock gate rejects before LED; deleting only that gate starts LED before mount gate rejects'
+    ms_case S06 'after-lock gate rejects before LED; deleting only that gate writes G1 fast-blink before the later mount gate rejects'
     reset_case || { ms_fail 'S06 production fixture setup failed'; return; }
     prepare_existing_card
+    make_led_progress_observer || { ms_fail 'S06 could not create production LED observer fixture'; return; }
     start_lock_holder
     start_waiting_b || {
         ms_fail 'S06 production B waiter setup failed'
@@ -412,6 +429,7 @@ case_s06_afterlock_gate_rejects_before_led_and_afterlock_mutant_is_red() {
     reset_case || { ms_fail 'S06 mutant fixture setup failed'; return; }
     prepare_existing_card
     make_afterlock_gate_mutant || { ms_fail 'S06 could not create after-lock-only mutant'; return; }
+    make_led_progress_observer || { ms_fail 'S06 could not create LED observer fixture'; return; }
     WAITING_SOURCE_MANAGER="$MUTANT_MANAGER"
     export WAITING_SOURCE_MANAGER
     start_lock_holder
@@ -426,8 +444,8 @@ case_s06_afterlock_gate_rejects_before_led_and_afterlock_mutant_is_red() {
     : > "$B_AFTER_LOCK_RELEASE"
     ms_success 'S06 after-lock mutant exits after later mount gate rejection' ms_wait_exit "$B_PID"
     wait "$B_PID" 2>/dev/null || :
-    ms_success 'S06 deleting only after-lock gate starts LED before the later mount gate' \
-        grep -F -q 'LED set to fast blink' "$B_LOGGER_TRACE"
+    ms_success 'S06 deleting only after-lock gate writes G1 fast-blink before the later mount gate' \
+        test -e "$TEST_ROOT/s06-led-segment1"
     unset WAITING_SOURCE_MANAGER
     ms_absent "$SOURCE_MOUNT_STATE" 'S06 remaining per-mount gate still rejects before a source mount'
 }
@@ -443,7 +461,12 @@ case_s07_prerw_gate_rejects_and_single_gate_mutant_opens_rw() {
     ms_success 'S07 initial read-only mount occurred' grep -F -q 'mount mode=ro' "$EFFECTS"
     ms_failure 'S07 pre-RW gate prevents the writable mount' grep -F -q 'mount mode=rw' "$EFFECTS"
     ms_absent "$SOURCE_MOUNT/FieldBackup.conf" 'S07 pre-RW rejection has no config write'
-    ms_equal "$(cat "$TEST_ROOT/red/trigger")" none 'S07 pre-RW rejection retains device_unknown LED classification'
+    ms_equal "$(cat "$TEST_ROOT/red/trigger")" timer \
+        'S07 pre-RW rejection uses the four-lamp device_unknown error pattern (R slow blink), not an untriggered LED'
+    ms_equal "$(cat "$TEST_ROOT/red/delay_on")" 500 'S07 pre-RW rejection red LED slow-blinks at 500ms on'
+    ms_equal "$(cat "$TEST_ROOT/red/delay_off")" 500 'S07 pre-RW rejection red LED slow-blinks at 500ms off'
+    ms_equal "$(cat "$TEST_ROOT/green3/brightness")" 1 \
+        'S07 pre-RW rejection lights G3 (LED_GREEN3) solid for its device_unknown error class'
     ms_failure 'S07 pre-RW rejection has no transfer' grep -F -q '^rsync' "$EFFECTS"
 
     reset_case || { ms_fail 'S07 mutant fixture setup failed'; return; }
@@ -467,7 +490,12 @@ case_s08_prero_gate_rejects_after_rw_and_single_gate_mutant_restores_ro() {
     unset TEST_SOURCE_CHANGE_AFTER_SECOND_UMOUNT TEST_SOURCE_UUID_FILE
     ms_equal "$(mount_effect_sequence)" ro,umount,rw,umount 'S08 gate blocks RO restore before mount syscall'
     ms_success 'S08 RW configuration had already been published before the later replacement' test -f "$SOURCE_MOUNT/FieldBackup.conf"
-    ms_equal "$(cat "$TEST_ROOT/red/trigger")" none 'S08 pre-RO rejection retains device_unknown LED classification'
+    ms_equal "$(cat "$TEST_ROOT/red/trigger")" timer \
+        'S08 pre-RO rejection uses the four-lamp device_unknown error pattern (R slow blink), not an untriggered LED'
+    ms_equal "$(cat "$TEST_ROOT/red/delay_on")" 500 'S08 pre-RO rejection red LED slow-blinks at 500ms on'
+    ms_equal "$(cat "$TEST_ROOT/red/delay_off")" 500 'S08 pre-RO rejection red LED slow-blinks at 500ms off'
+    ms_equal "$(cat "$TEST_ROOT/green3/brightness")" 1 \
+        'S08 pre-RO rejection lights G3 (LED_GREEN3) solid for its device_unknown error class'
     ms_failure 'S08 pre-RO rejection has no transfer' grep -F -q '^rsync' "$EFFECTS"
     ms_failure 'S08 pre-RO rejection has no completion log' grep -F -q 'Backup completed successfully' "$RUNTIME/log/backup.log"
 
@@ -499,7 +527,8 @@ case_s10_afterlock_probe_term_stops_before_led() {
     run_cancelled_probe afterlock
     ms_success 'S10 after-lock probe acquired its own lock before cancellation' ms_wait_path "$CANCEL_LOCK_ACQUIRED"
     ms_absent "$RUNTIME/var/lock/backup.lock" 'S10 after-lock cancellation releases its lock'
-    ms_absent "$CANCEL_LED_START" 'S10 after-lock cancellation does not start the LED after probe success'
+    ms_success 'S10 after-lock cancellation does not start the LED after probe success' \
+        test "$(cat "$TEST_ROOT/green/trigger" 2>/dev/null || :)" != timer
     ms_absent "$SOURCE_MOUNT_STATE" 'S10 after-lock cancellation never mounts source'
 }
 
@@ -537,8 +566,12 @@ case_s12_postmount_uuid_mismatch_and_read_failure_are_source_rejections() {
     unset TEST_SOURCE_UUID_FILE TEST_SOURCE_UUID_CHANGE_AFTER_RO TEST_SOURCE_UUID_AFTER_RO
     ms_success 'S12 mismatch emits the static source-identity diagnostic' \
         grep -F -q 'source filesystem UUID differs from source snapshot' "$NOTICES"
-    ms_equal "$(cat "$TEST_ROOT/red/trigger")" none \
-        'S12 mismatch uses the device_unknown LED classification'
+    ms_equal "$(cat "$TEST_ROOT/red/trigger")" timer \
+        'S12 mismatch uses the four-lamp device_unknown error pattern (R slow blink), not an untriggered LED'
+    ms_equal "$(cat "$TEST_ROOT/red/delay_on")" 500 'S12 mismatch red LED slow-blinks at 500ms on'
+    ms_equal "$(cat "$TEST_ROOT/red/delay_off")" 500 'S12 mismatch red LED slow-blinks at 500ms off'
+    ms_equal "$(cat "$TEST_ROOT/green3/brightness")" 1 \
+        'S12 mismatch lights G3 (LED_GREEN3) solid for its device_unknown error class'
     ms_absent "$TARGET_MOUNT/backups/.card-identities" 'S12 mismatch creates no identity record'
     ms_absent /opt/outdoor-backup/conf/aliases.json 'S12 mismatch creates no alias'
     ms_failure 'S12 mismatch starts no rsync' grep -F -q '^rsync' "$EFFECTS"
@@ -566,8 +599,12 @@ case_s12_postmount_uuid_mismatch_and_read_failure_are_source_rejections() {
     unset TEST_SOURCE_POSTMOUNT_BLOCK_FAIL
     ms_success 'S12 post-mount read failure emits the static source-identity diagnostic' \
         grep -F -q 'source filesystem UUID cannot be read after read-only mount' "$NOTICES"
-    ms_equal "$(cat "$TEST_ROOT/red/trigger")" none \
-        'S12 post-mount read failure uses the device_unknown LED classification'
+    ms_equal "$(cat "$TEST_ROOT/red/trigger")" timer \
+        'S12 post-mount read failure uses the four-lamp device_unknown error pattern (R slow blink), not an untriggered LED'
+    ms_equal "$(cat "$TEST_ROOT/red/delay_on")" 500 'S12 post-mount read failure red LED slow-blinks at 500ms on'
+    ms_equal "$(cat "$TEST_ROOT/red/delay_off")" 500 'S12 post-mount read failure red LED slow-blinks at 500ms off'
+    ms_equal "$(cat "$TEST_ROOT/green3/brightness")" 1 \
+        'S12 post-mount read failure lights G3 (LED_GREEN3) solid for its device_unknown error class'
 }
 
 assert_assertion_gate_is_live() {
@@ -590,8 +627,8 @@ assert_assertion_gate_is_live() {
     ms_success 'assertion-count mutant failed specifically at the MS_ASSERTIONS gate' \
         /bin/ash -c "grep -F -q \"\$1\" \"\$2\" && grep -F -q \"\$3\" \"\$4\"" \
         assertion-count-mutant \
-        'expected 245 base assertions, ran 244' "$TEST_ROOT/assertion-mutant.stderr" \
-        'RESULT cases=12 assertions=244 failed=1' "$TEST_ROOT/assertion-mutant.stdout"
+        'expected 257 base assertions, ran 256' "$TEST_ROOT/assertion-mutant.stderr" \
+        'RESULT cases=12 assertions=256 failed=1' "$TEST_ROOT/assertion-mutant.stdout"
 }
 
 main() {
@@ -609,7 +646,7 @@ main() {
     case_s11_premount_probe_term_stops_before_rw
     case_s12_postmount_uuid_mismatch_and_read_failure_are_source_rejections
     [ "$MS_CASES" -eq 12 ] || ms_fail "expected 12 cases, ran $MS_CASES"
-    [ "$MS_ASSERTIONS" -eq 245 ] || ms_fail "expected 245 base assertions, ran $MS_ASSERTIONS"
+    [ "$MS_ASSERTIONS" -eq 257 ] || ms_fail "expected 257 base assertions, ran $MS_ASSERTIONS"
     assert_assertion_gate_is_live "$@"
     printf 'RESULT cases=%s assertions=%s failed=%s\n' "$MS_CASES" "$MS_ASSERTIONS" "$MS_FAILED"
     [ "$MS_FAILED" -eq 0 ]

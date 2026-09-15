@@ -5,8 +5,20 @@
 #
 
 # LED paths - R5S default, override in config
-LED_GREEN="${LED_GREEN:-/sys/class/leds/green:lan}"
-LED_RED="${LED_RED:-/sys/class/leds/red:sys}"
+# Four-lamp primitive layout: LED_RED is the power LED (error indicator only,
+# never touched by non-error states); LED_GREEN/LED_GREEN2/LED_GREEN3 map to
+# wan/lan-1/lan-2 and carry the progress walking-lamp + completion signal.
+#
+# ${VAR-default} (not ${VAR:-default}) is deliberate: an explicitly empty
+# value is the documented "no LED wired for this slot" contract shared with
+# config_normalize_optional_path/led_set (issue #40 fact 4) and must be
+# preserved as empty, not overwritten by the default. Only a genuinely unset
+# variable (the config loader never ran, or never touched this slot) falls
+# back to the R5S onboard path.
+LED_GREEN="${LED_GREEN-/sys/class/leds/green:wan}"
+LED_GREEN2="${LED_GREEN2-/sys/class/leds/green:lan-1}"
+LED_GREEN3="${LED_GREEN3-/sys/class/leds/green:lan-2}"
+LED_RED="${LED_RED-/sys/class/leds/red:power}"
 
 # Logging functions
 log_info() {
@@ -32,6 +44,12 @@ log_debug() {
 }
 
 # LED control functions
+#
+# Fail-loud contract: an empty $led_path is a legitimate "no LED configured
+# for this slot" and must stay silent (no logger, no error). A non-empty but
+# invalid/unwritable path is a real misconfiguration and must complain via
+# logger -- never via a file write (the test suite asserts zero application
+# log writes; see test-target-manager.sh's zero-log-file guard).
 led_set() {
 	local led_path="$1"
 	local trigger="$2"
@@ -39,188 +57,165 @@ led_set() {
 	local delay_off="$4"
 	local brightness="$5"
 
-	[ -d "$led_path" ] || return 1
+	[ -n "$led_path" ] || return 0
+
+	if [ ! -d "$led_path" ]; then
+		logger -t "$LOG_TAG" -p err "led_set: LED path does not exist: $led_path" 2>/dev/null || :
+		return 1
+	fi
 
 	# Set trigger
 	if [ -n "$trigger" ]; then
-		echo "$trigger" > "$led_path/trigger" 2>/dev/null || true
+		if ! echo "$trigger" > "$led_path/trigger" 2>/dev/null; then
+			logger -t "$LOG_TAG" -p err "led_set: failed to write trigger '$trigger' to $led_path/trigger" 2>/dev/null || :
+		fi
 	fi
 
 	# Set timing for blink
 	if [ -n "$delay_on" ] && [ "$trigger" = "timer" ]; then
-		echo "$delay_on" > "$led_path/delay_on" 2>/dev/null || true
-		echo "$delay_off" > "$led_path/delay_off" 2>/dev/null || true
+		if ! echo "$delay_on" > "$led_path/delay_on" 2>/dev/null; then
+			logger -t "$LOG_TAG" -p err "led_set: failed to write delay_on '$delay_on' to $led_path/delay_on" 2>/dev/null || :
+		fi
+		if ! echo "$delay_off" > "$led_path/delay_off" 2>/dev/null; then
+			logger -t "$LOG_TAG" -p err "led_set: failed to write delay_off '$delay_off' to $led_path/delay_off" 2>/dev/null || :
+		fi
 	fi
 
 	# Set brightness
 	if [ -n "$brightness" ]; then
-		echo "$brightness" > "$led_path/brightness" 2>/dev/null || true
+		if ! echo "$brightness" > "$led_path/brightness" 2>/dev/null; then
+			logger -t "$LOG_TAG" -p err "led_set: failed to write brightness '$brightness' to $led_path/brightness" 2>/dev/null || :
+		fi
 	fi
-}
-
-led_backup_start() {
-	# Fast blink - backup in progress
-	led_set "$LED_GREEN" "timer" "100" "100"
-	log_debug "LED set to fast blink"
-}
-
-led_backup_done() {
-	# Solid on - backup complete
-	led_set "$LED_GREEN" "none" "" "" "1"
-	log_debug "LED set to solid on"
-
-	# Auto-off after 30 seconds
-	(
-		sleep 30
-		led_set "$LED_GREEN" "none" "" "" "0"
-	) &
-}
-
-led_backup_error() {
-	# Slow blink red - generic error (kept as fallback / rsync failure)
-	led_set "$LED_RED" "timer" "500" "500"
-	log_debug "LED set to error blink"
-
-	# Auto-off after 60 seconds
-	(
-		sleep 60
-		led_set "$LED_RED" "none" "" "" "0"
-	) &
 }
 
 # ---------------------------------------------------------------------------
-# Differentiated LED error codes (issue #4)
+# Four-lamp state-machine primitives (issue #40)
 #
-# Field diagnostics: the operator has no SSH/network, the LED is the only
-# interface. A countable blink pattern (N flashes + pause, repeating) is far
-# easier to read by eye than a duty-cycle difference, so each error type maps
-# to a distinct flash count.
+# R (LED_RED, power) is touched only by the error primitive below; every
+# non-error primitive deliberately never writes to LED_RED -- "not touching R"
+# means literally issuing no write against it, matching the pre-existing
+# behavior of a successful run never touching the power LED. All six
+# functions are set-and-exit: they write the target sysfs node(s) once and
+# return, no fork, no sleep, no background job. The kernel "timer" trigger
+# keeps blinking on its own after the write returns.
 #
-# Pattern table:
-#   device unknown   -> red, 1 flash  + pause
-#   lock timeout     -> red, 2 flashes + pause
-#   no space         -> red, 3 flashes + pause
-#   card config      -> red, 4 flashes + pause
-#   rsync failure    -> red, slow blink (legacy led_backup_error)
-#   verify failed    -> red/green alternating slow blink
+# max_brightness on every real R5S LED is 1: "solid on" is brightness=1, not
+# 255 (issue #40 fact 1). An empty led_path is a legal "unconfigured slot"
+# (issue #40 fact 4) and is silently skipped by led_set; never gate on it here.
+#
+# Segment/which-green argument contract used below:
+#   segment / green slot: 1 = G1 (LED_GREEN/wan), 2 = G2 (LED_GREEN2/lan-1),
+#   3 = G3 (LED_GREEN3/lan-2), 0 = none (all green off).
 # ---------------------------------------------------------------------------
 
-# Blink a LED a fixed number of times, then pause, repeating for a duration.
-# Uses manual brightness toggling (not the kernel "timer" trigger) so we can
-# produce a countable N-flash burst the kernel timer can't express.
-# Args: $1=led_path  $2=flash_count  $3=duration_seconds
-led_blink_pattern() {
-	local led_path="$1"
-	local flash_count="$2"
-	local duration="${3:-60}"
-
-	# No LED hardware at this path -> nothing to do (matches led_set behavior)
-	[ -d "$led_path" ] || return 0
-
-	# Take manual control of the LED
-	echo "none" > "$led_path/trigger" 2>/dev/null || true
-
-	# Run the blink loop in the background so the caller can exit; the loop
-	# self-terminates after $duration to avoid leaving an orphan forever.
-	(
-		local elapsed=0
-		local pause_s=2    # pause between bursts, defines the "count" boundary
-
-		while [ "$elapsed" -lt "$duration" ]; do
-			local i=0
-			while [ "$i" -lt "$flash_count" ]; do
-				echo "1" > "$led_path/brightness" 2>/dev/null || true
-				sleep 1          # flash on for one second
-				echo "0" > "$led_path/brightness" 2>/dev/null || true
-				sleep 1          # one-second gap within a burst
-				i=$((i + 1))
-			done
-			sleep "$pause_s"
-			# One burst cycle = flash_count * two seconds + two-second pause.
-			elapsed=$((elapsed + (2 * flash_count + pause_s)))
-		done
-
-		# Leave the LED off when finished
-		echo "0" > "$led_path/brightness" 2>/dev/null || true
-	) &
+# Turn a single LED fully off. Args: $1 led sysfs path.
+led_state_off() {
+	led_set "$1" "none" "" "" "0"
 }
 
-# Device not recognized as SD card / reader (1 flash)
-led_err_device_unknown() {
-	led_blink_pattern "$LED_RED" 1 60
-	log_debug "LED error: device unknown (1 flash)"
+# Turn a single LED solid on. Args: $1 led sysfs path.
+led_state_solid() {
+	led_set "$1" "none" "" "" "1"
 }
 
-# Lock acquisition timeout / concurrent backup (2 flashes)
-led_err_lock_timeout() {
-	led_blink_pattern "$LED_RED" 2 60
-	log_debug "LED error: lock timeout (2 flashes)"
+# Fast-blink a single LED (100ms/100ms). Args: $1 led sysfs path.
+led_state_fast_blink() {
+	led_set "$1" "timer" "100" "100"
 }
 
-# Insufficient free space on target (3 flashes)
-led_err_no_space() {
-	led_blink_pattern "$LED_RED" 3 60
-	log_debug "LED error: no space (3 flashes)"
+# Slow-blink a single LED (500ms/500ms). Args: $1 led sysfs path.
+led_state_slow_blink() {
+	led_set "$1" "timer" "500" "500"
 }
 
-# SD card configuration rejected by policy (4 flashes)
-led_err_card_config() {
-	led_blink_pattern "$LED_RED" 4 60
-	log_debug "LED error: card config (4 flashes)"
+# Progress walking lamp for one segment (0-33 / 34-66 / 67-99). Pure and
+# stateless: the caller (backup-manager.sh) is responsible for calling this
+# only when the segment actually changes, to satisfy the cross-segment
+# debounce requirement. R is left untouched. Args: $1 segment (1, 2, or 3).
+led_state_progress() {
+	local segment="$1"
+
+	case "$segment" in
+		1)
+			led_state_fast_blink "$LED_GREEN"
+			led_state_off "$LED_GREEN2"
+			led_state_off "$LED_GREEN3"
+			;;
+		2)
+			led_state_solid "$LED_GREEN"
+			led_state_fast_blink "$LED_GREEN2"
+			led_state_off "$LED_GREEN3"
+			;;
+		3)
+			led_state_solid "$LED_GREEN"
+			led_state_solid "$LED_GREEN2"
+			led_state_fast_blink "$LED_GREEN3"
+			;;
+		*)
+			logger -t "$LOG_TAG" -p err "led_state_progress: invalid segment '$segment'" 2>/dev/null || :
+			return 1
+			;;
+	esac
 }
 
-# rsync transfer failure (legacy slow red blink)
-led_err_rsync() {
-	led_backup_error
-	log_debug "LED error: rsync failure (slow blink)"
+# Error signalling: R slow blink, plus at most one green LED solid to
+# distinguish the error class (0 = no green, matching "unclassified"/rsync).
+# Args: $1 which green slot to light solid (0, 1, 2, or 3).
+led_state_error() {
+	local which_green="$1"
+
+	led_state_slow_blink "$LED_RED"
+	case "$which_green" in
+		0)
+			led_state_off "$LED_GREEN"
+			led_state_off "$LED_GREEN2"
+			led_state_off "$LED_GREEN3"
+			;;
+		1)
+			led_state_solid "$LED_GREEN"
+			led_state_off "$LED_GREEN2"
+			led_state_off "$LED_GREEN3"
+			;;
+		2)
+			led_state_off "$LED_GREEN"
+			led_state_solid "$LED_GREEN2"
+			led_state_off "$LED_GREEN3"
+			;;
+		3)
+			led_state_off "$LED_GREEN"
+			led_state_off "$LED_GREEN2"
+			led_state_solid "$LED_GREEN3"
+			;;
+		*)
+			logger -t "$LOG_TAG" -p err "led_state_error: invalid green slot '$which_green'" 2>/dev/null || :
+			return 1
+			;;
+	esac
 }
 
-# Post-backup integrity verification failed (red/green alternating slow blink)
-led_err_verify_failed() {
-	if [ -d "$LED_RED" ] && [ -d "$LED_GREEN" ]; then
-		echo "none" > "$LED_RED/trigger" 2>/dev/null || true
-		echo "none" > "$LED_GREEN/trigger" 2>/dev/null || true
-
-		(
-			local elapsed=0
-			while [ "$elapsed" -lt 60 ]; do
-				echo "1" > "$LED_RED/brightness" 2>/dev/null || true
-				echo "0" > "$LED_GREEN/brightness" 2>/dev/null || true
-				sleep 1          # red on, green off for one second
-				echo "0" > "$LED_RED/brightness" 2>/dev/null || true
-				echo "1" > "$LED_GREEN/brightness" 2>/dev/null || true
-				sleep 1          # green on, red off for one second
-				elapsed=$((elapsed + 2))
-			done
-			echo "0" > "$LED_RED/brightness" 2>/dev/null || true
-			echo "0" > "$LED_GREEN/brightness" 2>/dev/null || true
-		) &
-
-		log_debug "LED error: verify failed (red/green alternating)"
-		return 0
-	fi
-
-	if [ -d "$LED_RED" ]; then
-		led_backup_error
-		log_debug "LED error: verify failed (green unavailable; red slow-blink fallback)"
-		return 0
-	fi
-
-	if [ -d "$LED_GREEN" ]; then
-		led_blink_pattern "$LED_GREEN" 1 60
-		log_debug "LED error: verify failed (red unavailable; green one-flash fallback)"
-		return 0
-	fi
-
-	log_debug "LED error: verify failed (both LEDs unavailable)"
-	return 0
+# Terminal success signalling (issue #40 / #41 PR review Critical 1): all
+# three green LEDs solid, R left untouched. This is the "完成" row of the
+# state table and is a real terminal state, not a transient one -- it must
+# persist until the next card insertion resets it (reset timing is out of
+# scope for this PR). Deliberately set-and-exit like every other primitive:
+# no sleep, no fork, no auto-off. Args: none.
+led_state_complete() {
+	led_state_solid "$LED_GREEN"
+	led_state_solid "$LED_GREEN2"
+	led_state_solid "$LED_GREEN3"
 }
 
-led_backup_stop() {
-	# Turn off all LEDs
-	led_set "$LED_GREEN" "none" "" "" "0"
-	led_set "$LED_RED" "none" "" "" "0"
-	log_debug "LEDs turned off"
+# Target-unconfigured signalling: G3 slow-blinks, G1/G2 stay off, R is left
+# untouched (no write issued against it at all -- this is a configuration
+# state, not an error the red LED should represent). Distinguished from the
+# device/anchor identity failure class (led_state_error slot 3: G3 SOLID +
+# R slow-blink) by which trigger G3 gets and by R being untouched here.
+# Args: none.
+led_state_unconfigured() {
+	led_state_off "$LED_GREEN"
+	led_state_off "$LED_GREEN2"
+	led_state_slow_blink "$LED_GREEN3"
 }
 
 # Check if path is safe (prevent directory traversal)

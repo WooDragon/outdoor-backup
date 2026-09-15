@@ -90,23 +90,33 @@ chmod +x install.sh
 ### 3.1 验证LED路径
 
 ```bash
-# 查找正确的LED路径
+# 查找LED路径
 ls -la /sys/class/leds/
 
-# 常见LED路径示例：
-# R5S: /sys/class/leds/green:lan, /sys/class/leds/red:sys
-# R4S: /sys/class/leds/green:lan1, /sys/class/leds/red:power
-# x86: 可能没有LED，需要禁用LED功能
+# R5S 默认四灯路径：
+# R  (power): /sys/class/leds/red:power
+# G1 (wan):   /sys/class/leds/green:wan
+# G2 (lan-1): /sys/class/leds/green:lan-1
+# G3 (lan-2): /sys/class/leds/green:lan-2
+# 其他硬件请以实际 /sys/class/leds/ 名称为准：
+# R4S 示例：/sys/class/leds/green:lan1、/sys/class/leds/red:power
+# x86 可能没有 LED，需要禁用 LED 功能
 ```
 
-修改配置文件中的LED路径：
+修改配置文件中的四个 LED 路径：
 ```bash
 vi /opt/outdoor-backup/conf/backup.conf
 
-# 修改LED_GREEN和LED_RED为实际路径
-LED_GREEN="/sys/class/leds/你的绿色LED路径"
-LED_RED="/sys/class/leds/你的红色LED路径"
+LED_RED="/sys/class/leds/red:power"
+LED_GREEN="/sys/class/leds/green:wan"
+LED_GREEN2="/sys/class/leds/green:lan-1"
+LED_GREEN3="/sys/class/leds/green:lan-2"
 ```
+
+某个槽位没有物理灯时，在 legacy shell 配置中将对应值设为空串；空串是该槽位
+静默 no-op，不会回落到默认路径。只有变量未设置时才使用 R5S 默认。非空但
+不存在的路径是配置错误，`led_set` 会以 error 级别写入 syslog 并返回失败。
+通过 UCI/LuCI 配置时使用字面值 `none` 表示空槽位。
 
 ### 3.2 调整备份路径
 
@@ -143,15 +153,20 @@ MAX_CONCURRENT=1         # 单任务
 ### 4.1 测试LED控制
 
 ```bash
-# 测试绿色LED
-echo "timer" > /sys/class/leds/green:lan/trigger
-echo 100 > /sys/class/leds/green:lan/delay_on
-echo 100 > /sys/class/leds/green:lan/delay_off
+# 测试 R5S G1（wan）快闪
+LED=/sys/class/leds/green:wan
+printf '%s\n' timer > "$LED/trigger"
+printf '%s\n' 100 > "$LED/delay_on"
+printf '%s\n' 100 > "$LED/delay_off"
 sleep 3
-echo "none" > /sys/class/leds/green:lan/trigger
+printf '%s\n' none > "$LED/trigger"
+printf '%s\n' 0 > "$LED/brightness"
 
-# 如果LED不闪烁，检查路径是否正确
+# 亮度只允许 0 或 1；其他槽位可按同样方式替换 LED 路径测试
 ```
+
+非空但不存在的 LED 路径不是静默 no-op；它会通过 error-level syslog 报告。只有
+显式空槽位（legacy 配置为空串，或 UCI/LuCI 使用 `none`）才静默跳过。
 
 ### 4.2 测试热插拔检测
 
@@ -176,13 +191,14 @@ tail -f /opt/outdoor-backup/log/backup.log
 ### 4.4 完整流程测试
 
 1. 插入空白SD卡
-2. 等待LED开始快闪
+2. 观察 G1（wan）开始快闪（0-33% 进度段）
 3. 查看日志确认配置文件创建
 4. 拔出SD卡
 5. 添加测试文件到SD卡
 6. 重新插入SD卡
-7. 等待LED变为常亮
-8. 验证备份文件
+7. 备份过程中 G1/G2/G3 依次呈 walking-lamp：G1 快闪、G1 常亮加 G2 快闪、再加 G3 快闪
+8. 完成后 G1、G2、G3 均保持常亮；R 不碰
+9. 验证备份文件
 
 ```bash
 # 验证备份

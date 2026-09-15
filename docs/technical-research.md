@@ -6,12 +6,24 @@
 
 ### 1.1 R5S LED控制接口
 
-**不确定点**: R5S的LED具体路径和控制方式
+R5S 的四盏板载 LED 路径和控制契约已确认：
 
-**需要验证**:
-- LED设备在`/sys/class/leds/`下的确切路径
-- 是否支持trigger模式（timer, heartbeat等）
-- 亮度控制范围（0-255还是0-1）
+| 槽位 | 用途 | sysfs 路径 |
+|------|------|------------|
+| R | 电源/错误 | `/sys/class/leds/red:power` |
+| G1 | 进度/完成 | `/sys/class/leds/green:wan` |
+| G2 | 进度/错误分类 | `/sys/class/leds/green:lan-1` |
+| G3 | 进度/未配置/错误分类 | `/sys/class/leds/green:lan-2` |
+
+每盏灯的 `max_brightness` 都是 1，因此亮度只使用 `0`（灭）和 `1`（亮）。
+快闪使用 `timer` 与 100/100 ms，慢闪使用 `timer` 与 500/500 ms，常亮使用
+`trigger=none` 和亮度 1。健康、未配置、进度和完成状态不写 R；R 只在错误
+状态慢闪。完成态保持到下次插卡，不自动熄灭。
+
+LED 配置支持四个槽位各自为空：legacy shell 配置中显式空串表示该槽位没有
+接灯，是静默 no-op，不回落默认；只有变量未设置时才使用 R5S 默认路径。非空
+但不存在的路径属于配置错误，由 `led_set` 通过 error-level syslog 报告并返回
+失败，不能写成“缺失路径静默忽略”。
 
 **验证方法**:
 ```bash
@@ -21,15 +33,16 @@ ls -la /sys/class/leds/
 # 查看LED支持的触发器
 cat /sys/class/leds/*/trigger
 
-# 测试LED控制
-echo "timer" > /sys/class/leds/green:lan/trigger
-echo 100 > /sys/class/leds/green:lan/delay_on
-echo 100 > /sys/class/leds/green:lan/delay_off
+# 测试 R5S G1 快闪
+LED=/sys/class/leds/green:wan
+printf '%s\n' timer > "$LED/trigger"
+printf '%s\n' 100 > "$LED/delay_on"
+printf '%s\n' 100 > "$LED/delay_off"
 ```
 
-**备选方案**:
-- 如果没有标准LED接口，考虑使用GPIO直接控制
-- 可以通过`/sys/class/gpio/`导出GPIO并控制
+**其他硬件**:
+- 其他板子的 LED 名称可能不同；请将四个配置槽位调整为该板真实的 `/sys/class/leds/` 路径。
+- 没有某个物理灯时，把对应 legacy 配置值设为空串；通过 UCI/LuCI 使用字面值 `none` 表示同样语义。
 
 ### 1.2 SD卡识别机制
 

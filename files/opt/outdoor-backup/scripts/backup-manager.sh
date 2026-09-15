@@ -45,6 +45,7 @@ BACKUP_STATUS_SAMPLE_COUNT=0
 BACKUP_STATUS_LAST_RECORD=""
 BACKUP_STATUS_WRITE_FAILED=0
 BACKUP_STATUS_WRITE_NOTICE_SENT=0
+BACKUP_STATUS_LED_SEGMENT=""
 # Signal handlers only record the first cancellation. They never exit, clean up,
 # or kill children: the active runner must first prove its writers have stopped.
 BACKUP_CANCEL_CODE=0
@@ -156,17 +157,47 @@ trap temporary_lease_cleanup EXIT
 . "$SCRIPT_DIR/target.sh"
 
 # Signal a rejected target without entering the backup lifecycle. common.sh is
-# deliberately sourced only here: it defines the configured LED helper without
-# creating package state. DEBUG stays off so the error indication cannot log.
+# deliberately sourced only here: it defines the configured LED primitives
+# without creating package state. DEBUG stays off so the error indication
+# cannot log. Every primitive is set-and-exit (no fork, no sleep), so the
+# former "close the anchor before it forks" subshell is no longer needed --
+# the write happens synchronously in this process. The subshell itself is
+# still needed, though: it is what keeps DEBUG=0 and the re-sourced
+# common.sh confined to this call instead of leaking into the rest of the
+# manager's environment.
+#
+# Fail-loud contract note (PR #41 review finding 3): this used to wrap the
+# whole block in `>/dev/null 2>&1`, which happened to be harmless only
+# because led_set's own failure path talks to syslog through `logger`
+# (which never touches this process's stdout/stderr) rather than through a
+# printf to stderr. That is a coincidence of today's implementation, not a
+# property this block should depend on -- config_notice (config.sh), which
+# this same manager already calls elsewhere, is a printf-to-stderr-then-
+# logger pattern, and a blanket stream redirect here would silently eat the
+# stderr half of any such call a future change routes through this path.
+# So this block no longer blanket-redirects stdout+stderr: it only discards
+# stdout (nothing here is expected to print any), and stderr is left to flow
+# through normally so any fail-loud complaint actually reaches the terminal
+# in addition to syslog. `|| :` is kept so a primitive's own nonzero return
+# (e.g. an invalid slot argument) cannot propagate through set -e here.
+#
+# Args: $1 which primitive to signal.
+#   unconfigured -> led_state_unconfigured (G3 slow-blink, R untouched):
+#     "target UUID is unconfigured" is a configuration state, not a device
+#     or anchor identity failure (PR #41 review finding 3).
+#   anything else -> led_state_error 3 (G3 solid + R slow-blink): the real
+#     device/anchor validation failure class (device_unknown-equivalent).
 guard_failure() {
-	# The LED helper backgrounds its auto-off timer. Close the anchor before it
-	# forks so that timer cannot keep the target mount busy after guard failure.
 	target_close
 	(
 		DEBUG=0
 		. "$SCRIPT_DIR/common.sh"
-		led_backup_error
-	) >/dev/null 2>&1 || :
+		if [ "$1" = unconfigured ]; then
+			led_state_unconfigured
+		else
+			led_state_error 3
+		fi
+	) >/dev/null || :
 }
 
 if [ "$ACTION" = "add" ]; then
@@ -174,13 +205,13 @@ if [ "$ACTION" = "add" ]; then
 	# before touching an optional default mount path or any application resource.
 	if [ -z "$TARGET_UUID" ]; then
 		target_device_notice 'target UUID is unconfigured'
-		guard_failure
+		guard_failure unconfigured
 		exit 1
 	fi
 	if ! target_open "$TARGET_MOUNT" || \
 		! target_device_validate "$TARGET_DEVICE" "$TARGET_UUID" "$DEVNAME" || \
 		! target_prepare_root "$BACKUP_ROOT"; then
-		guard_failure
+		guard_failure device_unknown
 		exit 1
 	fi
 fi
@@ -258,7 +289,30 @@ backup_status_begin() {
 	BACKUP_STATUS_LAST_RECORD=""
 	BACKUP_STATUS_WRITE_FAILED=0
 	BACKUP_STATUS_WRITE_NOTICE_SENT=0
+	BACKUP_STATUS_LED_SEGMENT=""
+	backup_led_update_progress
 	backup_status_publish '{"basis":"file_list_entries","entries_done":null,"entries_total":null,"sampled_at":null,"files_known":false}'
+}
+
+# Map BACKUP_STATUS_PERCENT (0-99, already capped) to a walking-lamp segment
+# and write it to the LED only when the segment actually changed since the
+# last call in this process -- the required cross-segment debounce. Args:
+# none. Always returns zero; an LED write failure is reported by led_set via
+# logger and must never affect the backup exit code.
+backup_led_update_progress() {
+	local segment
+
+	if [ "$BACKUP_STATUS_PERCENT" -le 33 ]; then
+		segment=1
+	elif [ "$BACKUP_STATUS_PERCENT" -le 66 ]; then
+		segment=2
+	else
+		segment=3
+	fi
+	[ "$segment" != "${BACKUP_STATUS_LED_SEGMENT:-}" ] || return 0
+	BACKUP_STATUS_LED_SEGMENT=$segment
+	led_state_progress "$segment"
+	return 0
 }
 
 # Extract exactly five numeric-or-null parser fields as fixed tab-separated slots.
@@ -325,6 +379,7 @@ backup_status_publish_progress() {
 		live_json=$(printf '{"basis":"file_list_entries","entries_done":null,"entries_total":null,"sampled_at":%s,"files_known":%s}' \
 			"$sampled_at" "$files_known")
 	fi
+	backup_led_update_progress
 	backup_status_publish "$live_json" || return 1
 	BACKUP_STATUS_LAST_RECORD=$BACKUP_STATUS_CURRENT_RECORD
 	return 0
@@ -379,16 +434,20 @@ write_failed_status() {
 	return 1
 }
 
-# Choose the existing, operator-visible LED error pattern for an evidence-based
-# failure type. Args: none. Always returns zero to preserve the real exit code.
+# Choose the operator-visible LED error state for an evidence-based failure
+# type, per the four-lamp state machine (issue #40). R always slow-blinks;
+# the green slot distinguishes the class. verify_failed is a target
+# anchor/UUID failure (see verify_final_target), not a data-integrity check,
+# so it shares device_unknown's class (G3). lock_timeout has no dedicated
+# mapping in this PR and falls through to the unclassified slot (G0/none).
+# Args: none. Always returns zero to preserve the real exit code.
 signal_failure_led() {
 	case "$ERROR_TYPE" in
-		device_unknown) led_err_device_unknown ;;
-		lock_timeout) led_err_lock_timeout ;;
-		no_space) led_err_no_space ;;
-		card_config) led_err_card_config ;;
-		verify_failed) led_err_verify_failed ;;
-		*) led_err_rsync ;;
+		no_space) led_state_error 1 ;;
+		card_config) led_state_error 2 ;;
+		device_unknown) led_state_error 3 ;;
+		verify_failed) led_state_error 3 ;;
+		*) led_state_error 0 ;;
 	esac
 	return 0
 }
@@ -456,10 +515,10 @@ cleanup() {
 		write_failed_status "${ERROR_TYPE:-rsync}" || :
 	fi
 	target_close
-	led_backup_stop
 
 	if [ "$cleanup_exit_code" -eq 0 ]; then
-		led_backup_done
+		led_state_complete
+		log_debug 'LED terminal state set to complete'
 		log_info 'Backup completed successfully'
 	else
 		signal_failure_led
@@ -868,7 +927,14 @@ main() {
 		exit 1
 	fi
 	check_cancel_request || exit "$?"
-	led_backup_start
+	# Reset all three green LEDs to the segment-1 walking-lamp state (PR #41
+	# review finding 2): the old led_backup_start only set G1, so a previous
+	# run's G2/G3 walking-lamp state (from led_state_progress reaching 34%+ or
+	# 67%+) stayed lit straight through backup_status_begin below. Calling the
+	# same primitive backup_led_update_progress uses keeps this a single
+	# source of truth for what "segment 1" looks like on the LEDs.
+	led_state_progress 1
+	BACKUP_STATUS_LED_SEGMENT=1
 	check_cancel_request || exit "$?"
 	if ! mount_sdcard ro; then
 		ERROR_TYPE=device_unknown
