@@ -60,17 +60,32 @@ config_normalize_path() {
 # rmempty on led_green/led_red/led_green2/led_green3) and must pass through
 # untouched, silently -- config_normalize_path's own empty-is-error rule
 # only applies to the mandatory paths (backup_root/mount_point/target_mount).
+#
+# Unlike config_normalize_path, an unsafe/ambiguous non-empty value here is
+# NOT fatal: LED paths only drive an indicator lamp, not data placement, so
+# they must never veto the rest of config_load. A rejected value is logged
+# once via config_notice (fail-loud, logger-only -- never written to a file)
+# and passed through unchanged, preserving whatever legacy/UCI value was
+# already present (see EDGE05: "legacy red LED retained").
 # Arguments: $1 path value, $2 human-readable option name.
 config_normalize_optional_path() {
     local path="$1"
     local option_name="$2"
+    local normalized
 
     [ -n "$path" ] || {
         printf '%s\n' ""
         return 0
     }
 
-    config_normalize_path "$path" "$option_name"
+    if normalized=$(config_normalize_path "$path" "$option_name" 2>/dev/null); then
+        printf '%s\n' "$normalized"
+        return 0
+    fi
+
+    config_notice "$option_name contains an unsafe path segment; keeping unvalidated value as-is"
+    printf '%s\n' "$path"
+    return 0
 }
 
 # Reject equal paths and either direction of ancestry before manager operations.

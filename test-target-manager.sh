@@ -384,9 +384,11 @@ TARGET_UUID="$TARGET_UUID"
 MOUNT_POINT="$SOURCE_MOUNT"
 MIN_FREE_SPACE=0
 LED_GREEN="$TEST_ROOT/green"
+LED_GREEN2="$TEST_ROOT/green2"
+LED_GREEN3="$TEST_ROOT/green3"
 LED_RED="$TEST_ROOT/red"
 EOF
-    mkdir -p "$TEST_ROOT/green" "$TEST_ROOT/red"
+    mkdir -p "$TEST_ROOT/green" "$TEST_ROOT/green2" "$TEST_ROOT/green3" "$TEST_ROOT/red"
     cat > "$BIN/logger" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >> "$TEST_NOTICES"
@@ -962,14 +964,34 @@ settle_led_fixture() {
         wait_for_timer_exit || return 1
     fi
 
+    # A kernel "timer" trigger is a legitimate, permanent terminal state under
+    # the four-lamp primitives (#40): led_state_slow_blink/fast_blink/error
+    # write it once and return, with no background process ever turning it
+    # off again, and the primitives never write brightness while trigger is
+    # timer (a real kernel driver doesn't expose brightness under an active
+    # blink trigger either). So a LED left on "timer" is already settled --
+    # it is not a pending transition waiting to reach brightness=0, it is the
+    # deliberately-blinking end state. Only a non-timer, non-empty trigger
+    # (the sysfs residue of an older write) still needs to prove it reached
+    # brightness=0 before this fixture directory is considered free of
+    # pending activity; the timer_pid join above already accounted for the
+    # one case (led_backup_done/led_backup_error's sleep-based auto-off) that
+    # can still be in flight when this function is entered.
     attempts=0
     while [ "$attempts" -lt 5 ]; do
-        red_active=0
-        green_active=0
-        [ -s "$TEST_ROOT/red/trigger" ] && red_active=1
-        [ -s "$TEST_ROOT/green/trigger" ] && green_active=1
-        if { [ "$red_active" -eq 0 ] || [ "$(cat "$TEST_ROOT/red/brightness")" = 0 ]; } && \
-            { [ "$green_active" -eq 0 ] || [ "$(cat "$TEST_ROOT/green/brightness")" = 0 ]; }; then
+        red_trigger=$(cat "$TEST_ROOT/red/trigger" 2>/dev/null || :)
+        green_trigger=$(cat "$TEST_ROOT/green/trigger" 2>/dev/null || :)
+        red_settled=1
+        green_settled=1
+        if [ -n "$red_trigger" ] && [ "$red_trigger" != timer ] && \
+            [ "$(cat "$TEST_ROOT/red/brightness")" != 0 ]; then
+            red_settled=0
+        fi
+        if [ -n "$green_trigger" ] && [ "$green_trigger" != timer ] && \
+            [ "$(cat "$TEST_ROOT/green/brightness")" != 0 ]; then
+            green_settled=0
+        fi
+        if [ "$red_settled" -eq 1 ] && [ "$green_settled" -eq 1 ]; then
             return 0
         fi
         /bin/sleep 1
@@ -1171,8 +1193,14 @@ BACKUP_MODE=\"REPLICA\""
     printf '%s\n' "$TEST_CARD_CONFIG" > "$SOURCE_MOUNT/FieldBackup.conf"
     assert_failure 'M03c existing REPLICA card fails manager' run_manager add sda1 /devices/mock
     unset TEST_CARD_CONFIG
-    assert_equal "$(cat "$TEST_ROOT/red/trigger")" none \
-        'M03c card_config uses the manual-toggle flash pattern, not the generic rsync timer trigger'
+    assert_equal "$(cat "$TEST_ROOT/red/trigger")" timer \
+        'M03c card_config uses the four-lamp error primitive (R slow blink), not an untriggered LED'
+    assert_equal "$(cat "$TEST_ROOT/red/delay_on")" 500 \
+        'M03c card_config red LED slow-blinks at 500ms on'
+    assert_equal "$(cat "$TEST_ROOT/red/delay_off")" 500 \
+        'M03c card_config red LED slow-blinks at 500ms off'
+    assert_equal "$(cat "$TEST_ROOT/green2/brightness")" 1 \
+        'M03c card_config lights G2 solid to distinguish its error class'
     assert_absent "$RUNTIME/var/status.json" \
         'M03c guard-stage rejection precedes STATUS_STARTED, so no status.json terminal write occurs'
     /bin/sleep 1
@@ -1380,14 +1408,18 @@ assert_m30_cleanup_phases() {
         "$case_id cleanup sync retains self lock"
     assert_matches 'sync count=1 lock=\[/proc/[0-9]+\] status-mv-count=1' "$EFFECTS" \
         "$case_id cleanup sync precedes completed status publication"
-    assert_cleanup_effect_has_self_lock 'logger args=[-t outdoor-backup -p debug LEDs turned off]' \
-        "$case_id LED stop finishes while self lock exists"
+    # led_backup_stop (the old "LEDs turned off" marker) was removed from
+    # cleanup() by the four-lamp rework (#40); the real terminal LED effect on
+    # the success path is now led_backup_done alone, logged as "LED set to
+    # solid on". The ordering intent -- LED effect happens before lock
+    # unlink, while self lock still exists -- is preserved against that
+    # marker.
     assert_cleanup_effect_has_self_lock 'logger args=[-t outdoor-backup -p debug LED set to solid on]' \
         "$case_id success LED terminal effect retains self lock"
     assert_cleanup_effect_has_self_lock 'logger args=[-t outdoor-backup -p info Backup completed successfully]' \
         "$case_id success log retains self lock"
     assert_cleanup_effect_order "$case_id shared cleanup effects precede lock unlink" \
-        'source-umount count=1' 'sync count=1' 'LEDs turned off' 'LED set to solid on' \
+        'source-umount count=1' 'sync count=1' 'LED set to solid on' \
         'Backup completed successfully' 'Releasing lock' 'lock-unlink'
     assert_absent "$RUNTIME/var/lock/backup.lock" "$case_id releases lock after cleanup phases"
 }
@@ -1452,13 +1484,26 @@ case_m30_owner_cleanup_releases_lock_after_source_cleanup() {
         'M30 rsync failure source unmount retains self lock'
     assert_cleanup_effect_has_self_lock 'sync count=1' \
         'M30 rsync failure cleanup sync retains self lock'
-    assert_cleanup_effect_has_self_lock 'logger args=[-t outdoor-backup -p debug LED error: rsync failure (slow blink)]' \
-        'M30 rsync failure LED terminal effect retains self lock'
+    # led_backup_stop ("LEDs turned off") is gone (#40), and signal_failure_led
+    # -> led_state_error writes sysfs directly via led_set without a logger
+    # call on the success path, so there is no logger marker left for the LED
+    # write itself. signal_failure_led still runs strictly before log_error in
+    # cleanup()'s source, so the log_error marker's retained self lock still
+    # proves the LED effect (called immediately before it, same non-reentrant
+    # stretch) also ran while the lock was held. The terminal LED state itself
+    # is checked directly against the fixture below (rsync/unclassified ->
+    # R slow blink, no green slot).
     assert_cleanup_effect_has_self_lock 'logger args=[-t outdoor-backup -p err Backup failed with code 23]' \
         'M30 rsync failure log retains self lock'
     assert_cleanup_effect_order 'M30 rsync shared cleanup effects precede lock unlink' \
-        'source-umount count=1' 'sync count=1' 'LEDs turned off' \
-        'LED error: rsync failure (slow blink)' 'Backup failed with code 23' 'Releasing lock' 'lock-unlink'
+        'source-umount count=1' 'sync count=1' \
+        'Backup failed with code 23' 'Releasing lock' 'lock-unlink'
+    assert_equal "$(cat "$TEST_ROOT/red/trigger")" timer \
+        'M30 rsync failure leaves the four-lamp error pattern (R slow blink) as its terminal LED state'
+    assert_equal "$(cat "$TEST_ROOT/red/delay_on")" 500 'M30 rsync failure red LED slow-blinks at 500ms on'
+    assert_equal "$(cat "$TEST_ROOT/red/delay_off")" 500 'M30 rsync failure red LED slow-blinks at 500ms off'
+    assert_equal "$(cat "$TEST_ROOT/green/brightness")" 0 \
+        'M30 rsync failure (unclassified) lights no green slot'
     assert_absent "$RUNTIME/var/lock/backup.lock" 'M30 rsync failure releases lock after cleanup phases'
 
     reset_case || { fail 'M30 rsync sync-failure fixture setup failed'; return; }
@@ -1509,12 +1554,19 @@ case_m15_write_protected_card_rejects_without_config() {
     # write_failed_status is gated on STATUS_STARTED, which perform_backup sets
     # only after a card config already validated; a card_config rejection here
     # happens strictly before that point, so (as M03c already establishes for
-    # the REPLICA case) no status.json is ever written -- the manual-toggle red
-    # LED trigger is this failure class's real, already-established signature.
+    # the REPLICA case) no status.json is ever written -- the R slow-blink +
+    # G2 solid pattern is this failure class's real, already-established
+    # signature (see led_state_error, card_config -> slot 2).
     assert_absent "$RUNTIME/var/status.json" \
         'M15 card_config rejection precedes STATUS_STARTED, so no status.json terminal write occurs'
-    assert_equal "$(cat "$TEST_ROOT/red/trigger")" none \
-        'M15 write-protected card uses the card_config manual-toggle LED pattern (4 flashes), not the rsync timer pattern'
+    assert_equal "$(cat "$TEST_ROOT/red/trigger")" timer \
+        'M15 write-protected card uses the four-lamp card_config error pattern (R slow blink), not an untriggered LED'
+    assert_equal "$(cat "$TEST_ROOT/red/delay_on")" 500 \
+        'M15 card_config red LED slow-blinks at 500ms on'
+    assert_equal "$(cat "$TEST_ROOT/red/delay_off")" 500 \
+        'M15 card_config red LED slow-blinks at 500ms off'
+    assert_equal "$(cat "$TEST_ROOT/green2/brightness")" 1 \
+        'M15 card_config lights G2 solid to distinguish its error class'
     assert_absent "$SOURCE_MOUNT/FieldBackup.conf" 'M15 write-protected card never gets a config file'
     assert_not_contains rsync "$EFFECTS" 'M15 write-protected card never reaches rsync'
     assert_equal "$(cat "$TEST_ROOT/source-umount-count")" 1 \
@@ -1843,8 +1895,12 @@ case_m07_transfer_failures_preserve_exit_and_classify_evidence() {
     unset TEST_RSYNC_EXIT TEST_RSYNC_DIAGNOSTIC
     assert_status_jq '.history[0].error_message == "no_space"' \
         'M07 ENOSPC produces no_space history classification'
-    assert_equal "$(cat "$TEST_ROOT/red/trigger")" none 'M07 ENOSPC uses no-space LED pattern'
-    assert_equal "$(cat "$TEST_ROOT/green/brightness")" 0 'M07 ENOSPC leaves completion LED off'
+    assert_equal "$(cat "$TEST_ROOT/red/trigger")" timer \
+        'M07 ENOSPC uses the four-lamp error pattern (R slow blink), not an untriggered LED'
+    assert_equal "$(cat "$TEST_ROOT/red/delay_on")" 500 'M07 ENOSPC red LED slow-blinks at 500ms on'
+    assert_equal "$(cat "$TEST_ROOT/red/delay_off")" 500 'M07 ENOSPC red LED slow-blinks at 500ms off'
+    assert_equal "$(cat "$TEST_ROOT/green/brightness")" 1 \
+        'M07 ENOSPC lights G1 (LED_GREEN) solid to distinguish its no_space error class'
 
     reset_case || { fail 'M07 mutation fixture setup failed'; return; }
     cp "$SCRIPTS/backup-manager.sh" "$SCRIPTS/backup-manager-mutated.sh"
@@ -1867,7 +1923,12 @@ case_m08_free_space_boundaries_are_strict_and_credible() {
     assert_failure 'M08 free space below configured minimum fails' run_manager add sda1 /devices/mock
     unset TEST_DF_MB
     assert_not_contains rsync "$EFFECTS" 'M08 insufficient preflight does not start rsync'
-    assert_equal "$(cat "$TEST_ROOT/red/trigger")" none 'M08 insufficient space uses no-space LED'
+    assert_equal "$(cat "$TEST_ROOT/red/trigger")" timer \
+        'M08 insufficient space uses the four-lamp error pattern (R slow blink), not an untriggered LED'
+    assert_equal "$(cat "$TEST_ROOT/red/delay_on")" 500 'M08 insufficient space red LED slow-blinks at 500ms on'
+    assert_equal "$(cat "$TEST_ROOT/red/delay_off")" 500 'M08 insufficient space red LED slow-blinks at 500ms off'
+    assert_equal "$(cat "$TEST_ROOT/green/brightness")" 1 \
+        'M08 insufficient space lights G1 (LED_GREEN) solid to distinguish its no_space error class'
 
     reset_case || { fail 'M08 equality fixture setup failed'; return; }
     set_config_value MIN_FREE_SPACE 2
@@ -1988,7 +2049,12 @@ case_m10_status_terminal_write_failure_never_signals_success() {
     assert_status_jq '.history[0].status == "error" and .history[0].error_message == "verify_failed"' \
         'M10 final target verification records failed terminal state'
     assert_equal "$(cat "$TEST_ROOT/green/brightness")" 0 'M10 final verification failure leaves completion LED off'
-    assert_equal "$(cat "$TEST_ROOT/red/trigger")" none 'M10 final verification failure uses its configured error LED pattern'
+    assert_equal "$(cat "$TEST_ROOT/red/trigger")" timer \
+        'M10 final verification failure uses the four-lamp error pattern (R slow blink)'
+    assert_equal "$(cat "$TEST_ROOT/red/delay_on")" 500 'M10 final verification red LED slow-blinks at 500ms on'
+    assert_equal "$(cat "$TEST_ROOT/red/delay_off")" 500 'M10 final verification red LED slow-blinks at 500ms off'
+    assert_equal "$(cat "$TEST_ROOT/green3/brightness")" 1 \
+        'M10 final verification lights G3 (LED_GREEN3) solid for its verify_failed error class'
     assert_not_contains 'Backup completed' "$RUNTIME/log/backup.log" \
         'M10 final verification failure has no application completion claim'
     target_log=''
@@ -2122,8 +2188,8 @@ main() {
     assert_success 'M06 completion timer releases before test exit' settle_led_fixture
     assert_no_async_led_stderr
     assert_equal "$CASES" 40 'all required cases executed'
-    if [ "$ASSERTIONS" -ne 366 ]; then
-        fail "all required assertions executed (expected=366, actual=$ASSERTIONS)"
+    if [ "$ASSERTIONS" -ne 379 ]; then
+        fail "all required assertions executed (expected=379, actual=$ASSERTIONS)"
     fi
     if [ "$FAILED" -ne 0 ]; then
         replay_async_stderr

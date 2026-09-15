@@ -610,7 +610,10 @@ EOF
     common_red=$(LED_GREEN="$LED_GREEN" LED_RED="$LED_RED" \
         /bin/ash -c '. "$1"; printf "%s" "$LED_RED"' \
         outdoor-backup-common "$REPO_ROOT/files/opt/outdoor-backup/scripts/common.sh")
-    assert_equal "$common_green" "/sys/class/leds/green:lan" \
+    # Default changed from green:lan to green:wan by the four-lamp primitive
+    # rework (see #40); this expectation tracks the new default, not the
+    # legacy bug-fingerprint value.
+    assert_equal "$common_green" "/sys/class/leds/green:wan" \
         "EDGE05 common defaulted empty green LED"
     assert_equal "$common_red" "/sys//class/leds/red:sys" \
         "EDGE05 common preserved non-empty red LED"
