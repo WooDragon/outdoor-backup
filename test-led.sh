@@ -461,10 +461,17 @@ case_p13_debounce_never_writes_within_a_segment_and_always_writes_across_a_bound
     release_and_settle 1
     assert_led_state "$TEST_ROOT/green" timer '' 100 100 'P13 percent=0 enters segment 1 (G1 fast-blink)'
     seg1_trigger=$(cat "$TEST_ROOT/green2/trigger")
-    seg1_hash=$(sha256sum "$TEST_ROOT/green/trigger" "$TEST_ROOT/green2/trigger" "$TEST_ROOT/green3/trigger" | sha256sum | awk '{print $1}')
+    printf '%s\n' SENTINEL-P13-S1-G1 > "$TEST_ROOT/green/trigger"
+    printf '%s\n' SENTINEL-P13-S1-G2 > "$TEST_ROOT/green2/trigger"
+    printf '%s\n' SENTINEL-P13-S1-G3 > "$TEST_ROOT/green3/trigger"
+    seg1_trigger=$(cat "$TEST_ROOT/green2/trigger")
     release_and_settle 2
-    assert_equal "$(sha256sum "$TEST_ROOT/green/trigger" "$TEST_ROOT/green2/trigger" "$TEST_ROOT/green3/trigger" | sha256sum | awk '{print $1}')" \
-        "$seg1_hash" 'P13 percent=33 stays in segment 1: no sysfs write at all (same-segment debounce)'
+    assert_equal "$(cat "$TEST_ROOT/green/trigger")" SENTINEL-P13-S1-G1 \
+        'P13 percent=33 keeps the G1 sentinel: same-segment debounce performs no sysfs write'
+    assert_equal "$(cat "$TEST_ROOT/green2/trigger")" SENTINEL-P13-S1-G2 \
+        'P13 percent=33 keeps the G2 sentinel: same-segment debounce performs no sysfs write'
+    assert_equal "$(cat "$TEST_ROOT/green3/trigger")" SENTINEL-P13-S1-G3 \
+        'P13 percent=33 keeps the G3 sentinel: same-segment debounce performs no sysfs write'
     release_led_progress_step 3
     assert_success 'P13 percent=34 crosses into segment 2, so G2 trigger must eventually change' \
         wait_for_trigger_change "$TEST_ROOT/green2" "$seg1_trigger"
@@ -473,11 +480,18 @@ case_p13_debounce_never_writes_within_a_segment_and_always_writes_across_a_bound
     assert_led_state "$TEST_ROOT/green2" timer 0 100 100 \
         'P13 percent=34 segment 2 (G2 fast-blink; brightness is stale 0 left over from segment 1s led_state_off, never cleared by fast_blink)'
     assert_led_state "$TEST_ROOT/green3" none 0 '' '' 'P13 percent=34 segment 2 (G3 off)'
-    seg2_hash=$(sha256sum "$TEST_ROOT/green/trigger" "$TEST_ROOT/green2/trigger" "$TEST_ROOT/green3/trigger" | sha256sum | awk '{print $1}')
-    release_and_settle 4
-    assert_equal "$(sha256sum "$TEST_ROOT/green/trigger" "$TEST_ROOT/green2/trigger" "$TEST_ROOT/green3/trigger" | sha256sum | awk '{print $1}')" \
-        "$seg2_hash" 'P13 percent=66 stays in segment 2: no sysfs write at all (same-segment debounce)'
     seg2_green3_trigger=$(cat "$TEST_ROOT/green3/trigger")
+    printf '%s\n' SENTINEL-P13-S2-G1 > "$TEST_ROOT/green/trigger"
+    printf '%s\n' SENTINEL-P13-S2-G2 > "$TEST_ROOT/green2/trigger"
+    printf '%s\n' SENTINEL-P13-S2-G3 > "$TEST_ROOT/green3/trigger"
+    seg2_green3_trigger=$(cat "$TEST_ROOT/green3/trigger")
+    release_and_settle 4
+    assert_equal "$(cat "$TEST_ROOT/green/trigger")" SENTINEL-P13-S2-G1 \
+        'P13 percent=66 keeps the G1 sentinel: same-segment debounce performs no sysfs write'
+    assert_equal "$(cat "$TEST_ROOT/green2/trigger")" SENTINEL-P13-S2-G2 \
+        'P13 percent=66 keeps the G2 sentinel: same-segment debounce performs no sysfs write'
+    assert_equal "$(cat "$TEST_ROOT/green3/trigger")" SENTINEL-P13-S2-G3 \
+        'P13 percent=66 keeps the G3 sentinel: same-segment debounce performs no sysfs write'
     release_led_progress_step 5
     assert_success 'P13 percent=67 crosses into segment 3, so G3 trigger must eventually change' \
         wait_for_trigger_change "$TEST_ROOT/green3" "$seg2_green3_trigger"
@@ -486,10 +500,16 @@ case_p13_debounce_never_writes_within_a_segment_and_always_writes_across_a_bound
     assert_led_state "$TEST_ROOT/green2" none 1 '' '' 'P13 percent=67 segment 3 (G2 solid)'
     assert_led_state "$TEST_ROOT/green3" timer 0 100 100 \
         'P13 percent=67 segment 3 (G3 fast-blink; brightness is stale 0 left over from segment 1/2s led_state_off, never cleared by fast_blink)'
-    seg3_hash=$(sha256sum "$TEST_ROOT/green/trigger" "$TEST_ROOT/green2/trigger" "$TEST_ROOT/green3/trigger" | sha256sum | awk '{print $1}')
+    printf '%s\n' SENTINEL-P13-S3-G1 > "$TEST_ROOT/green/trigger"
+    printf '%s\n' SENTINEL-P13-S3-G2 > "$TEST_ROOT/green2/trigger"
+    printf '%s\n' SENTINEL-P13-S3-G3 > "$TEST_ROOT/green3/trigger"
     release_and_settle 6
-    assert_equal "$(sha256sum "$TEST_ROOT/green/trigger" "$TEST_ROOT/green2/trigger" "$TEST_ROOT/green3/trigger" | sha256sum | awk '{print $1}')" \
-        "$seg3_hash" 'P13 percent=99 stays in segment 3: no sysfs write at all (same-segment debounce)'
+    assert_equal "$(cat "$TEST_ROOT/green/trigger")" SENTINEL-P13-S3-G1 \
+        'P13 percent=99 keeps the G1 sentinel: same-segment debounce performs no sysfs write'
+    assert_equal "$(cat "$TEST_ROOT/green2/trigger")" SENTINEL-P13-S3-G2 \
+        'P13 percent=99 keeps the G2 sentinel: same-segment debounce performs no sysfs write'
+    assert_equal "$(cat "$TEST_ROOT/green3/trigger")" SENTINEL-P13-S3-G3 \
+        'P13 percent=99 keeps the G3 sentinel: same-segment debounce performs no sysfs write'
     release_led_progress_step 7
     assert_success 'P13 real manager reaches completion' wait_for_exit "$LED_MANAGER_PID"
     manager_rc=0
@@ -545,8 +565,8 @@ main() {
     case_p13_debounce_never_writes_within_a_segment_and_always_writes_across_a_boundary
     case_p14_success_terminal_state_lights_all_three_greens_never_touches_red_and_persists
     assert_equal "$CASES" 14 'all required LED cases executed'
-    if [ "$ASSERTIONS" -ne 147 ]; then
-        fail "all required assertions executed (expected=147, actual=$ASSERTIONS)"
+    if [ "$ASSERTIONS" -ne 153 ]; then
+        fail "all required assertions executed (expected=153, actual=$ASSERTIONS)"
     fi
     if [ "$FAILED" -ne 0 ]; then
         printf 'cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"

@@ -198,8 +198,8 @@ EOF
         ms_success 'B source replacement reaches the expected segment-1 LED signal' \
             test -e "$TEST_ROOT/b-led-segment1"
     else
-        ms_success 'B rejection never starts the backup LED after its source mismatch' \
-            test "$(cat "$TEST_ROOT/green/trigger" 2>/dev/null || :)" != timer
+        ms_absent "$TEST_ROOT/s06-led-segment1" \
+            'B rejection never starts the backup LED after its source mismatch'
     fi
     ms_absent "$RUNTIME/var/lock/backup.lock" 'B cleanup removes only B lock after it owned it'
     unset LOCK_IDENTITY
@@ -415,6 +415,7 @@ case_s06_afterlock_gate_rejects_before_led_and_afterlock_mutant_is_red() {
     ms_case S06 'after-lock gate rejects before LED; deleting only that gate writes G1 fast-blink before the later mount gate rejects'
     reset_case || { ms_fail 'S06 production fixture setup failed'; return; }
     prepare_existing_card
+    make_led_progress_observer || { ms_fail 'S06 could not create production LED observer fixture'; return; }
     start_lock_holder
     start_waiting_b || {
         ms_fail 'S06 production B waiter setup failed'
