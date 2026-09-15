@@ -172,6 +172,16 @@ assert_equal() {
     fi
 }
 
+assert_not_equal() {
+    actual=$1
+    unexpected=$2
+    message=$3
+    ASSERTIONS=$((ASSERTIONS + 1))
+    if [ "$actual" = "$unexpected" ]; then
+        fail "$message (unexpected=[$unexpected])"
+    fi
+}
+
 assert_contains() {
     needle=$1
     file=$2
@@ -226,21 +236,17 @@ assert_no_async_led_stderr() {
     fi
 }
 
-# A target guard failure may emit syslog and the red LED only. The fixture sleep
-# stub records the production duration, then waits on a fixture-owned release file.
-# reset_case releases and joins that exact child before replacing its LED directory.
-assert_guard_failure_effects() {
+# Common effects shared by BOTH guard-failure classes: syslog at error
+# severity, no fork/sleep job, no mount/rsync/logging/completion signal.
+# Every led_state_* primitive is set-and-exit (#40) -- no fork, no sleep, no
+# auto-off job -- so there is nothing left to join before inspecting the
+# fixture directory.
+assert_guard_failure_common_effects() {
     case_id=$1
     assert_contains '-t outdoor-backup -p err' "$NOTICES" \
         "$case_id guard syslog uses error severity"
-    assert_equal "$(cat "$TEST_ROOT/red/trigger")" timer \
-        "$case_id guard sets red LED timer trigger"
-    assert_equal "$(cat "$TEST_ROOT/red/delay_on")" 500 \
-        "$case_id guard sets red LED on delay"
-    assert_equal "$(cat "$TEST_ROOT/red/delay_off")" 500 \
-        "$case_id guard sets red LED off delay"
-    assert_contains 'sleep duration=60' "$EFFECTS" \
-        "$case_id LED auto-off requests its production duration through the stub"
+    assert_not_contains 'sleep duration=' "$EFFECTS" \
+        "$case_id guard LED write is synchronous, no auto-off sleep job"
     assert_not_contains 'mount argc=' "$EFFECTS" \
         "$case_id guard did not mount source media"
     assert_not_contains rsync "$EFFECTS" \
@@ -249,13 +255,48 @@ assert_guard_failure_effects() {
         "$case_id guard did not create an application log"
     assert_absent /opt/outdoor-backup/conf/aliases.json \
         "$case_id guard did not create aliases"
-    assert_absent "$TEST_ROOT/green/trigger" \
+    assert_not_equal "$(cat "$TEST_ROOT/green/brightness" 2>/dev/null || :)" 1 \
         "$case_id guard did not signal backup completion"
+}
+
+# guard_failure device_unknown -> led_state_error 3: R slow-blink, G3 solid
+# (PR #41 review finding 3, the real device/anchor validation failure class).
+assert_guard_failure_effects() {
+    case_id=$1
+    assert_guard_failure_common_effects "$case_id"
+    assert_equal "$(cat "$TEST_ROOT/red/trigger")" timer \
+        "$case_id guard sets red LED timer trigger"
+    assert_equal "$(cat "$TEST_ROOT/red/delay_on")" 500 \
+        "$case_id guard sets red LED on delay"
+    assert_equal "$(cat "$TEST_ROOT/red/delay_off")" 500 \
+        "$case_id guard sets red LED off delay"
+    assert_equal "$(cat "$TEST_ROOT/green3/brightness")" 1 \
+        "$case_id guard lights G3 (LED_GREEN3) solid for its device-unknown error class"
 }
 
 assert_guard_failure_observable() {
     assert_guard_failure_effects "$1"
-    /bin/sleep 1
+}
+
+# guard_failure unconfigured -> led_state_unconfigured: G3 slow-blinks
+# (trigger=timer, no brightness write), G1/G2 stay off, R is left untouched
+# entirely (no write issued against it at all -- this is a configuration
+# state, not a device/anchor error; PR #41 review finding 3).
+assert_guard_unconfigured_effects() {
+    case_id=$1
+    assert_guard_failure_common_effects "$case_id"
+    assert_absent "$TEST_ROOT/red/trigger" \
+        "$case_id guard never wrote red LED for the unconfigured state"
+    assert_equal "$(cat "$TEST_ROOT/green3/trigger")" timer \
+        "$case_id guard sets G3 (LED_GREEN3) timer trigger for unconfigured state"
+    assert_equal "$(cat "$TEST_ROOT/green3/delay_on")" 500 \
+        "$case_id guard sets G3 slow-blink on delay"
+    assert_equal "$(cat "$TEST_ROOT/green3/delay_off")" 500 \
+        "$case_id guard sets G3 slow-blink off delay"
+}
+
+assert_guard_unconfigured_observable() {
+    assert_guard_unconfigured_effects "$1"
 }
 
 wait_for_path() {
@@ -956,48 +997,34 @@ run_manager() {
 
 settle_led_fixture() {
     [ -d "$TEST_ROOT" ] || return 0
+    # No led_state_* primitive forks or sleeps (#40): every one of them writes
+    # its target sysfs node(s) once and returns, so there is no longer a
+    # background auto-off job to join here. A leftover timer-pid file can
+    # only be residue from this fixture's own controlled-sleep stub (used
+    # elsewhere in the suite for non-LED purposes); if one exists and is
+    # still alive, release and join it before inspecting LED state below.
+    #
+    # There used to be a further poll here waiting for any non-timer,
+    # non-empty trigger to reach brightness=0, modeled on the old wrapper
+    # era where led_backup_done/led_backup_error forked a 30s/60s auto-off
+    # job that eventually zeroed brightness on its own. Under the four-lamp
+    # primitives that assumption is simply wrong: led_state_solid (used
+    # directly by led_state_error's "which_green" slot and by
+    # led_state_complete) leaves brightness=1 with trigger=none as its own
+    # permanent, intended terminal state -- nothing is ever going to write
+    # brightness=0 to it later, no matter how long this loop waits. Polling
+    # for that transition doesn't just waste time, it 5-second-timeouts and
+    # fails every subsequent case's reset_case whenever the prior case ended
+    # on a solid LED (e.g. M03c's G2-solid card_config error), which is most
+    # of this suite. There is no pending write left to wait for once
+    # run_manager has returned; the timer_pid join above is the only real
+    # asynchronous residue this fixture can have.
     timer_pid=$(cat "$TEST_ROOT/timer-pid" 2>/dev/null || :)
-    [ -n "$timer_pid" ] || return 0
-
-    if kill -0 "$timer_pid" 2>/dev/null; then
+    if [ -n "$timer_pid" ] && kill -0 "$timer_pid" 2>/dev/null; then
         : > "$TEST_ROOT/timer-release"
         wait_for_timer_exit || return 1
     fi
-
-    # A kernel "timer" trigger is a legitimate, permanent terminal state under
-    # the four-lamp primitives (#40): led_state_slow_blink/fast_blink/error
-    # write it once and return, with no background process ever turning it
-    # off again, and the primitives never write brightness while trigger is
-    # timer (a real kernel driver doesn't expose brightness under an active
-    # blink trigger either). So a LED left on "timer" is already settled --
-    # it is not a pending transition waiting to reach brightness=0, it is the
-    # deliberately-blinking end state. Only a non-timer, non-empty trigger
-    # (the sysfs residue of an older write) still needs to prove it reached
-    # brightness=0 before this fixture directory is considered free of
-    # pending activity; the timer_pid join above already accounted for the
-    # one case (led_backup_done/led_backup_error's sleep-based auto-off) that
-    # can still be in flight when this function is entered.
-    attempts=0
-    while [ "$attempts" -lt 5 ]; do
-        red_trigger=$(cat "$TEST_ROOT/red/trigger" 2>/dev/null || :)
-        green_trigger=$(cat "$TEST_ROOT/green/trigger" 2>/dev/null || :)
-        red_settled=1
-        green_settled=1
-        if [ -n "$red_trigger" ] && [ "$red_trigger" != timer ] && \
-            [ "$(cat "$TEST_ROOT/red/brightness")" != 0 ]; then
-            red_settled=0
-        fi
-        if [ -n "$green_trigger" ] && [ "$green_trigger" != timer ] && \
-            [ "$(cat "$TEST_ROOT/green/brightness")" != 0 ]; then
-            green_settled=0
-        fi
-        if [ "$red_settled" -eq 1 ] && [ "$green_settled" -eq 1 ]; then
-            return 0
-        fi
-        /bin/sleep 1
-        attempts=$((attempts + 1))
-    done
-    return 1
+    return 0
 }
 
 reset_case() {
@@ -1022,25 +1049,26 @@ case_m01_unconfigured_uuid_stops_before_common_side_effects() {
     fi
     assert_contains 'target UUID is unconfigured' "$TEST_ROOT/error" 'M01 reports UUID decision'
     assert_equal "$(wc -l < "$NOTICES")" 1 'M01 only emitted guard observability'
-    assert_guard_failure_observable M01
+    assert_guard_unconfigured_observable M01
 }
 
 case_m01b_missing_led_keeps_guard_failure_and_error_syslog() {
-    begin_case M01b 'missing optional red LED cannot hide unconfigured target failure'
+    begin_case M01b 'missing optional G3 LED cannot hide unconfigured target failure'
     reset_case || { fail 'M01b fixture setup failed'; return; }
     set_config_target_uuid ''
-    rm -rf "$TEST_ROOT/red"
+    # led_state_unconfigured (guard_failure unconfigured) only ever touches
+    # G3 -- R is deliberately never written for this configuration state
+    # (PR #41 review finding 3) -- so the missing-optional-LED probe removes
+    # green3, not red, to actually exercise led_set's fail-loud path here.
+    rm -rf "$TEST_ROOT/green3"
     assert_failure 'M01b missing LED still leaves manager failure nonzero' run_manager add sda1 /devices/mock
     assert_contains '-t outdoor-backup -p err' "$NOTICES" \
         'M01b missing LED still reports error-severity syslog'
-    assert_equal "$(wc -l < "$EFFECTS")" 1 \
-        'M01b missing LED emitted only its controlled auto-off sleep effect'
-    assert_contains 'sleep duration=60' "$EFFECTS" \
-        'M01b missing LED retained the production auto-off request'
+    assert_equal "$(wc -l < "$EFFECTS")" 0 \
+        'M01b missing LED emitted no other effects (LED write is synchronous, no fork/sleep)'
     assert_absent "$RUNTIME/log/backup.log" 'M01b missing LED did not create application log'
     assert_absent /opt/outdoor-backup/conf/aliases.json 'M01b missing LED did not create aliases'
-    assert_absent "$TEST_ROOT/green/trigger" 'M01b missing LED did not signal completion'
-    /bin/sleep 1
+    assert_not_equal "$(cat "$TEST_ROOT/green/brightness" 2>/dev/null || :)" 1 'M01b missing LED did not signal completion'
 }
 
 case_m01c_debug_guard_failure_does_not_create_application_log() {
@@ -1048,7 +1076,7 @@ case_m01c_debug_guard_failure_does_not_create_application_log() {
     reset_case || { fail 'M01c fixture setup failed'; return; }
     set_config_target_uuid ''
     DEBUG=1 assert_failure 'M01c DEBUG fixture manager still fails' run_manager add sda1 /devices/mock
-    assert_guard_failure_observable M01c
+    assert_guard_unconfigured_observable M01c
 }
 
 case_m02_target_device_mismatch_stops_before_source_mount() {
@@ -1059,23 +1087,21 @@ case_m02_target_device_mismatch_stops_before_source_mount() {
     assert_guard_failure_observable M02
 }
 
-case_m02d_uuid_mismatch_releases_anchor_before_led_timer() {
-    begin_case M02d 'UUID mismatch closes the target anchor before its red LED timer waits'
+case_m02d_uuid_mismatch_releases_anchor_before_led_write() {
+    begin_case M02d 'UUID mismatch closes the target anchor before its LED write'
     reset_case || { fail 'M02d fixture setup failed'; return; }
     set_config_target_uuid 'WRONG-UUID'
-    TEST_TIMER_CONTROLLED=1
-    export TEST_TIMER_CONTROLLED
+    # guard_failure() calls target_close before issuing its (now synchronous,
+    # non-forking) led_state_error write -- #40's four-lamp primitives removed
+    # the sleep-based auto-off job this case used to observe mid-flight via a
+    # controllable timer fixture. With no background job left to catch in the
+    # act, the only thing left to prove is the end state: the anchor is
+    # already released (regular umount succeeds) by the time guard_failure
+    # returns and the manager exits.
     assert_failure 'M02d mismatched target UUID fails manager' run_manager add sda1 /devices/mock
-    assert_success 'M02d LED timer reached its controlled wait' \
-        wait_for_path "$TEST_ROOT/timer-ready"
-    assert_success 'M02d LED timer remains alive before target unmount' \
-        kill -0 "$(cat "$TEST_ROOT/timer-pid")"
     assert_guard_failure_effects M02d
-    assert_success 'M02d regular umount succeeds while LED timer is waiting' \
+    assert_success 'M02d regular umount succeeds once the manager has exited' \
         /bin/umount "$TARGET_MOUNT"
-    : > "$TEST_ROOT/timer-release"
-    assert_success 'M02d LED timer exits after fixture release' wait_for_timer_exit
-    unset TEST_TIMER_CONTROLLED
 }
 
 case_m02a_read_only_target_stops_before_common_side_effects() {
@@ -1408,19 +1434,25 @@ assert_m30_cleanup_phases() {
         "$case_id cleanup sync retains self lock"
     assert_matches 'sync count=1 lock=\[/proc/[0-9]+\] status-mv-count=1' "$EFFECTS" \
         "$case_id cleanup sync precedes completed status publication"
-    # led_backup_stop (the old "LEDs turned off" marker) was removed from
-    # cleanup() by the four-lamp rework (#40); the real terminal LED effect on
-    # the success path is now led_backup_done alone, logged as "LED set to
-    # solid on". The ordering intent -- LED effect happens before lock
-    # unlink, while self lock still exists -- is preserved against that
-    # marker.
-    assert_cleanup_effect_has_self_lock 'logger args=[-t outdoor-backup -p debug LED set to solid on]' \
+    # led_backup_stop/led_backup_done (the old forking-wrapper markers) were
+    # removed by the four-lamp rework (#40); the terminal LED effect on the
+    # success path is now led_state_complete alone (set-and-exit, no fork),
+    # logged via the explicit log_debug call cleanup() issues right after it.
+    # The ordering intent -- LED effect happens before lock unlink, while
+    # self lock still exists -- is preserved against that marker.
+    assert_cleanup_effect_has_self_lock 'logger args=[-t outdoor-backup -p debug LED terminal state set to complete]' \
         "$case_id success LED terminal effect retains self lock"
     assert_cleanup_effect_has_self_lock 'logger args=[-t outdoor-backup -p info Backup completed successfully]' \
         "$case_id success log retains self lock"
     assert_cleanup_effect_order "$case_id shared cleanup effects precede lock unlink" \
-        'source-umount count=1' 'sync count=1' 'LED set to solid on' \
+        'source-umount count=1' 'sync count=1' 'LED terminal state set to complete' \
         'Backup completed successfully' 'Releasing lock' 'lock-unlink'
+    assert_equal "$(cat "$TEST_ROOT/green/brightness")" 1 \
+        "$case_id success terminal state lights G1 solid"
+    assert_equal "$(cat "$TEST_ROOT/green2/brightness")" 1 \
+        "$case_id success terminal state lights G2 solid"
+    assert_equal "$(cat "$TEST_ROOT/green3/brightness")" 1 \
+        "$case_id success terminal state lights G3 solid"
     assert_absent "$RUNTIME/var/lock/backup.lock" "$case_id releases lock after cleanup phases"
 }
 
@@ -1530,6 +1562,12 @@ case_m13_steady_state_source_stays_read_only() {
     assert_not_contains 'mount mode=rw' "$EFFECTS" 'M13 steady state never opens a read-write source mount'
     assert_equal "$(sha256sum "$SOURCE_MOUNT/FieldBackup.conf" | awk '{print $1}')" "$config_hash_before" \
         'M13 steady state never rewrites the existing card configuration bytes'
+    # Successful add reaches cleanup()'s cleanup_exit_code=0 branch, which
+    # fires led_state_complete: all three green lamps solid, R untouched
+    # (PR #41 review finding 11).
+    assert_equal "$(cat "$TEST_ROOT/green/brightness")" 1 'M13 success terminal state lights G1 solid'
+    assert_equal "$(cat "$TEST_ROOT/green2/brightness")" 1 'M13 success terminal state lights G2 solid'
+    assert_equal "$(cat "$TEST_ROOT/green3/brightness")" 1 'M13 success terminal state lights G3 solid'
 }
 
 case_m14_first_write_bounded_mount_sequence() {
@@ -1542,6 +1580,10 @@ case_m14_first_write_bounded_mount_sequence() {
     assert_success 'M14 card configuration exists after provisioning' test -f "$SOURCE_MOUNT/FieldBackup.conf"
     last_mount_mode=$(grep '^mount mode=' "$EFFECTS" | tail -n 1 | sed -E 's/^mount mode=([a-z]+).*/\1/')
     assert_equal "$last_mount_mode" ro 'M14 the final source mount is read-only before rsync runs'
+    # Same terminal-state contract as M13 (PR #41 review finding 11).
+    assert_equal "$(cat "$TEST_ROOT/green/brightness")" 1 'M14 success terminal state lights G1 solid'
+    assert_equal "$(cat "$TEST_ROOT/green2/brightness")" 1 'M14 success terminal state lights G2 solid'
+    assert_equal "$(cat "$TEST_ROOT/green3/brightness")" 1 'M14 success terminal state lights G3 solid'
 }
 
 case_m15_write_protected_card_rejects_without_config() {
@@ -2072,9 +2114,7 @@ case_m11_status_stats_are_real_and_paths_are_stable() {
     begin_case M11 'successful transfer uses helper statistics and never serializes an FD path'
     reset_case || { fail 'M11 fixture setup failed'; return; }
     TEST_RSYNC_STATS=1
-    TEST_TIMER_CONTROLLED=1
-    TEST_TIMER_DURATION=30
-    export TEST_RSYNC_STATS TEST_TIMER_CONTROLLED TEST_TIMER_DURATION
+    export TEST_RSYNC_STATS
     assert_success 'M11 transfer with helper stats succeeds' run_manager add sda1 /devices/mock
     unset TEST_RSYNC_STATS
     assert_status_jq '.history[0].status == "completed" and .history[0].files_count == 7 and
@@ -2083,12 +2123,10 @@ case_m11_status_stats_are_real_and_paths_are_stable() {
         'M11 JSON reports helper stats and stable user-visible paths'
     assert_contains 'df -m /proc/' "$EFFECTS" 'M11 free-space check probes anchored FD path'
     assert_not_contains 'du ' "$EFFECTS" 'M11 manager never scans source with du'
-    assert_success 'M11 completion timer reaches controlled wait' wait_for_path "$TEST_ROOT/timer-ready"
-    assert_success 'M11 completion timer remains alive until release' kill -0 "$(cat "$TEST_ROOT/timer-pid")"
-    assert_success 'M11 completed LED timer cannot retain target FD' /bin/umount "$TARGET_MOUNT"
-    : > "$TEST_ROOT/timer-release"
-    assert_success 'M11 completion timer exits after fixture release' wait_for_timer_exit
-    unset TEST_TIMER_CONTROLLED TEST_TIMER_DURATION
+    # led_state_complete is set-and-exit (#40): no fork, no sleep, no auto-off
+    # job left to retain the target FD, so the anchor is already released by
+    # the time the manager exits and a regular umount succeeds immediately.
+    assert_success 'M11 completed LED write cannot retain target FD' /bin/umount "$TARGET_MOUNT"
 }
 
 run_replay_probe_with_timeout() {
@@ -2149,7 +2187,7 @@ main() {
     case_m01b_missing_led_keeps_guard_failure_and_error_syslog
     case_m01c_debug_guard_failure_does_not_create_application_log
     case_m02_target_device_mismatch_stops_before_source_mount
-    case_m02d_uuid_mismatch_releases_anchor_before_led_timer
+    case_m02d_uuid_mismatch_releases_anchor_before_led_write
     case_m02a_read_only_target_stops_before_common_side_effects
     case_m02b_missing_mount_stops_before_common_side_effects
     case_m02c_same_source_or_system_disk_stops_before_common
@@ -2188,8 +2226,8 @@ main() {
     assert_success 'M06 completion timer releases before test exit' settle_led_fixture
     assert_no_async_led_stderr
     assert_equal "$CASES" 40 'all required cases executed'
-    if [ "$ASSERTIONS" -ne 379 ]; then
-        fail "all required assertions executed (expected=379, actual=$ASSERTIONS)"
+    if [ "$ASSERTIONS" -ne 389 ]; then
+        fail "all required assertions executed (expected=389, actual=$ASSERTIONS)"
     fi
     if [ "$FAILED" -ne 0 ]; then
         replay_async_stderr

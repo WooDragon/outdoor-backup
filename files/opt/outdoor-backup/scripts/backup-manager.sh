@@ -157,17 +157,47 @@ trap temporary_lease_cleanup EXIT
 . "$SCRIPT_DIR/target.sh"
 
 # Signal a rejected target without entering the backup lifecycle. common.sh is
-# deliberately sourced only here: it defines the configured LED helper without
-# creating package state. DEBUG stays off so the error indication cannot log.
+# deliberately sourced only here: it defines the configured LED primitives
+# without creating package state. DEBUG stays off so the error indication
+# cannot log. Every primitive is set-and-exit (no fork, no sleep), so the
+# former "close the anchor before it forks" subshell is no longer needed --
+# the write happens synchronously in this process. The subshell itself is
+# still needed, though: it is what keeps DEBUG=0 and the re-sourced
+# common.sh confined to this call instead of leaking into the rest of the
+# manager's environment.
+#
+# Fail-loud contract note (PR #41 review finding 3): this used to wrap the
+# whole block in `>/dev/null 2>&1`, which happened to be harmless only
+# because led_set's own failure path talks to syslog through `logger`
+# (which never touches this process's stdout/stderr) rather than through a
+# printf to stderr. That is a coincidence of today's implementation, not a
+# property this block should depend on -- config_notice (config.sh), which
+# this same manager already calls elsewhere, is a printf-to-stderr-then-
+# logger pattern, and a blanket stream redirect here would silently eat the
+# stderr half of any such call a future change routes through this path.
+# So this block no longer blanket-redirects stdout+stderr: it only discards
+# stdout (nothing here is expected to print any), and stderr is left to flow
+# through normally so any fail-loud complaint actually reaches the terminal
+# in addition to syslog. `|| :` is kept so a primitive's own nonzero return
+# (e.g. an invalid slot argument) cannot propagate through set -e here.
+#
+# Args: $1 which primitive to signal.
+#   unconfigured -> led_state_unconfigured (G3 slow-blink, R untouched):
+#     "target UUID is unconfigured" is a configuration state, not a device
+#     or anchor identity failure (PR #41 review finding 3).
+#   anything else -> led_state_error 3 (G3 solid + R slow-blink): the real
+#     device/anchor validation failure class (device_unknown-equivalent).
 guard_failure() {
-	# The LED helper backgrounds its auto-off timer. Close the anchor before it
-	# forks so that timer cannot keep the target mount busy after guard failure.
 	target_close
 	(
 		DEBUG=0
 		. "$SCRIPT_DIR/common.sh"
-		led_backup_error
-	) >/dev/null 2>&1 || :
+		if [ "$1" = unconfigured ]; then
+			led_state_unconfigured
+		else
+			led_state_error 3
+		fi
+	) >/dev/null || :
 }
 
 if [ "$ACTION" = "add" ]; then
@@ -175,13 +205,13 @@ if [ "$ACTION" = "add" ]; then
 	# before touching an optional default mount path or any application resource.
 	if [ -z "$TARGET_UUID" ]; then
 		target_device_notice 'target UUID is unconfigured'
-		guard_failure
+		guard_failure unconfigured
 		exit 1
 	fi
 	if ! target_open "$TARGET_MOUNT" || \
 		! target_device_validate "$TARGET_DEVICE" "$TARGET_UUID" "$DEVNAME" || \
 		! target_prepare_root "$BACKUP_ROOT"; then
-		guard_failure
+		guard_failure device_unknown
 		exit 1
 	fi
 fi
@@ -487,7 +517,8 @@ cleanup() {
 	target_close
 
 	if [ "$cleanup_exit_code" -eq 0 ]; then
-		led_backup_done
+		led_state_complete
+		log_debug 'LED terminal state set to complete'
 		log_info 'Backup completed successfully'
 	else
 		signal_failure_led
@@ -896,7 +927,14 @@ main() {
 		exit 1
 	fi
 	check_cancel_request || exit "$?"
-	led_backup_start
+	# Reset all three green LEDs to the segment-1 walking-lamp state (PR #41
+	# review finding 2): the old led_backup_start only set G1, so a previous
+	# run's G2/G3 walking-lamp state (from led_state_progress reaching 34%+ or
+	# 67%+) stayed lit straight through backup_status_begin below. Calling the
+	# same primitive backup_led_update_progress uses keeps this a single
+	# source of truth for what "segment 1" looks like on the LEDs.
+	led_state_progress 1
+	BACKUP_STATUS_LED_SEGMENT=1
 	check_cancel_request || exit "$?"
 	if ! mount_sdcard ro; then
 		ERROR_TYPE=device_unknown

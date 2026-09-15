@@ -21,32 +21,60 @@ config_error() {
     return 1
 }
 
+# Determine the specific reason a path is unsafe/ambiguous, without emitting
+# any notice or touching syslog: purely computational, so both the mandatory
+# path validator below and the optional (LED) one can each build their own
+# single, accurate message from the same reason text instead of guessing at
+# or hardcoding one particular failure class (PR #41 review finding 8).
+# Arguments: $1 path value.
+# Output: the reason phrase on failure (nothing on success).
+# Returns: 0 if the path is safe, 1 otherwise.
+config_path_safety_reason() {
+    local path="$1"
+
+    case "$path" in
+        "")
+            printf '%s' "must be an absolute non-root path (empty)"
+            return 1
+            ;;
+        /)
+            printf '%s' "must be an absolute non-root path (root)"
+            return 1
+            ;;
+        /*)
+            ;;
+        *)
+            printf '%s' "must be an absolute non-root path (relative)"
+            return 1
+            ;;
+    esac
+
+    case "$path" in
+        *[[:cntrl:]]*)
+            printf '%s' "contains a control character"
+            return 1
+            ;;
+        *//*|*/./*|*/../*|*/.|*/..)
+            printf '%s' "contains an unsafe path segment"
+            return 1
+            ;;
+    esac
+
+    return 0
+}
+
 # Normalize an absolute path after rejecting ambiguous or unsafe forms.
 # Arguments: $1 path value, $2 human-readable option name.
 # Output: normalized path without a trailing slash (except root, which is invalid).
 config_normalize_path() {
     local path="$1"
     local option_name="$2"
+    local reason
 
-    case "$path" in
-        ""|/)
-            config_error "$option_name must be an absolute non-root path"
-            return 1
-            ;;
-        /*)
-            ;;
-        *)
-            config_error "$option_name must be an absolute non-root path"
-            return 1
-            ;;
-    esac
-
-    case "$path" in
-        *[[:cntrl:]]*|*//*|*/./*|*/../*|*/.|*/..)
-            config_error "$option_name contains an unsafe path segment"
-            return 1
-            ;;
-    esac
+    if ! reason=$(config_path_safety_reason "$path"); then
+        config_error "$option_name $reason"
+        return 1
+    fi
 
     while [ "${path%/}" != "$path" ]; do
         path=${path%/}
@@ -64,26 +92,35 @@ config_normalize_path() {
 # Unlike config_normalize_path, an unsafe/ambiguous non-empty value here is
 # NOT fatal: LED paths only drive an indicator lamp, not data placement, so
 # they must never veto the rest of config_load. A rejected value is logged
-# once via config_notice (fail-loud, logger-only -- never written to a file)
-# and passed through unchanged, preserving whatever legacy/UCI value was
-# already present (see EDGE05: "legacy red LED retained").
+# exactly once via config_notice (fail-loud, logger-only -- never written to
+# a file) and passed through unchanged, preserving whatever legacy/UCI value
+# was already present (see EDGE05: "legacy red LED retained"). The notice
+# uses config_path_safety_reason's real reason text instead of a single
+# hardcoded phrase (PR #41 review finding 8): a relative or empty-looking
+# LED path was previously always reported as "an unsafe path segment", which
+# is misleading -- config_path_safety_reason is called directly here (not
+# through config_normalize_path) precisely so no second, generic complaint
+# gets logged underneath this one.
 # Arguments: $1 path value, $2 human-readable option name.
 config_normalize_optional_path() {
     local path="$1"
     local option_name="$2"
-    local normalized
+    local reason
 
     [ -n "$path" ] || {
         printf '%s\n' ""
         return 0
     }
 
-    if normalized=$(config_normalize_path "$path" "$option_name" 2>/dev/null); then
-        printf '%s\n' "$normalized"
+    if reason=$(config_path_safety_reason "$path"); then
+        while [ "${path%/}" != "$path" ]; do
+            path=${path%/}
+        done
+        printf '%s\n' "$path"
         return 0
     fi
 
-    config_notice "$option_name contains an unsafe path segment; keeping unvalidated value as-is"
+    config_notice "$option_name $reason; keeping unvalidated value as-is"
     printf '%s\n' "$path"
     return 0
 }
@@ -109,6 +146,26 @@ config_paths_are_disjoint() {
     esac
 
     return 0
+}
+
+# UCI itself -- independent of any LuCI form attribute such as rmempty --
+# does not persist a genuinely empty option value: `option led_green ''`
+# is dropped at parse/load time and is indistinguishable from the option
+# never having been set at all (confirmed against the pinned OpenWrt UCI
+# CLI: `uci get`/`show`/`export` all treat it as absent). A single-space
+# value round-trips correctly, so "empty on purpose" cannot be expressed
+# with an actual empty string through UCI at any layer above the raw
+# config file. To let "no LED wired for this slot" (PR #41 review finding
+# 4) actually be set and persisted, the four LED options accept the literal
+# sentinel "none" and fold it to a real empty string here in the loader;
+# LuCI's config.lua documents "none" as the UI's own no-LED value for the
+# same reason.
+config_resolve_led_sentinel() {
+    if [ "$1" = none ]; then
+        printf '%s' ''
+    else
+        printf '%s' "$1"
+    fi
 }
 
 # Apply one UCI option only when the CLI reports that it explicitly exists.
@@ -142,16 +199,16 @@ config_apply_uci_option() {
             DEBUG="$option_value"
             ;;
         led_green)
-            LED_GREEN="$option_value"
+            LED_GREEN=$(config_resolve_led_sentinel "$option_value")
             ;;
         led_green2)
-            LED_GREEN2="$option_value"
+            LED_GREEN2=$(config_resolve_led_sentinel "$option_value")
             ;;
         led_green3)
-            LED_GREEN3="$option_value"
+            LED_GREEN3=$(config_resolve_led_sentinel "$option_value")
             ;;
         led_red)
-            LED_RED="$option_value"
+            LED_RED=$(config_resolve_led_sentinel "$option_value")
             ;;
         card_reader_usb_ids)
             CARD_READER_USB_IDS="$option_value"
@@ -251,10 +308,14 @@ config_load() {
     BACKUP_ROOT=$(config_normalize_path "$BACKUP_ROOT" backup_root) || return 1
     MOUNT_POINT=$(config_normalize_path "$MOUNT_POINT" mount_point) || return 1
     TARGET_MOUNT=$(config_normalize_path "$TARGET_MOUNT" target_mount) || return 1
-    LED_GREEN=$(config_normalize_optional_path "$LED_GREEN" led_green) || return 1
-    LED_GREEN2=$(config_normalize_optional_path "$LED_GREEN2" led_green2) || return 1
-    LED_GREEN3=$(config_normalize_optional_path "$LED_GREEN3" led_green3) || return 1
-    LED_RED=$(config_normalize_optional_path "$LED_RED" led_red) || return 1
+    # config_normalize_optional_path always returns 0 by design (LED paths
+    # must never veto config_load; see its own comment) -- no `|| return 1`
+    # here, since one would be dead code pretending to be a safety gate
+    # (PR #41 review finding 9).
+    LED_GREEN=$(config_normalize_optional_path "$LED_GREEN" led_green)
+    LED_GREEN2=$(config_normalize_optional_path "$LED_GREEN2" led_green2)
+    LED_GREEN3=$(config_normalize_optional_path "$LED_GREEN3" led_green3)
+    LED_RED=$(config_normalize_optional_path "$LED_RED" led_red)
     case "$TARGET_UUID" in
         ''|*[!A-Za-z0-9-]*)
             [ -z "$TARGET_UUID" ] || {

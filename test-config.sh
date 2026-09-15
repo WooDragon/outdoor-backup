@@ -268,12 +268,65 @@ case_c03_uci_only_overrides_defaults() {
 	option mount_point '/uci/card'
 	option debug '1'
 	option led_green '/led/green'
+	option led_green2 '/led/green2'
+	option led_green3 '/led/green3'
 	option led_red '/led/red'"
     assert_success load_config
     assert_equal "$ENABLED" "0" "C03 enabled UCI mapping"
     assert_equal "$BACKUP_ROOT" "/uci/backups" "C03 backup root UCI mapping"
     assert_equal "$MOUNT_POINT" "/uci/card" "C03 mount point UCI mapping"
     assert_equal "$LED_GREEN" "/led/green" "C03 green LED UCI mapping"
+    assert_equal "$LED_GREEN2" "/led/green2" "C03 green2 LED UCI mapping"
+    assert_equal "$LED_GREEN3" "/led/green3" "C03 green3 LED UCI mapping"
+}
+
+case_c03b_led_green2_green3_defaults_empty_and_invalid_path_behavior() {
+    begin_case C03b "led_green2/led_green3 cover default, empty, and invalid-path-keep-as-is"
+    # No UCI led_green2/led_green3 option at all: config_load's own
+    # defaults block (not common.sh) supplies the R5S onboard path (Major 6).
+    prepare_config_state
+    write_uci "config outdoor-backup 'config'"
+    assert_success load_config
+    assert_equal "$LED_GREEN2" "/sys/class/leds/green:lan-1" \
+        "C03b led_green2 default when UCI option absent"
+    assert_equal "$LED_GREEN3" "/sys/class/leds/green:lan-2" \
+        "C03b led_green3 default when UCI option absent"
+
+    # Explicit "none" sentinel: stays empty ("no LED wired for this slot"),
+    # never refilled by config_load's default (finding 4). A literal empty
+    # UCI option string cannot be used here -- raw UCI drops a genuinely
+    # empty option value at parse time (verified against the real UCI CLI),
+    # indistinguishable from the option never being set at all, independent
+    # of any LuCI rmempty attribute. config_resolve_led_sentinel() is what
+    # folds "none" back to an actual empty string.
+    prepare_config_state
+    write_uci "config outdoor-backup 'config'
+	option led_green2 'none'
+	option led_green3 'none'"
+    assert_success load_config
+    assert_equal "$LED_GREEN2" "" "C03b led_green2 explicit none sentinel folds to empty"
+    assert_equal "$LED_GREEN3" "" "C03b led_green3 explicit none sentinel folds to empty"
+
+    # Invalid/unsafe path value: config_normalize_optional_path never vetoes
+    # config_load (finding 9) and keeps the unvalidated value as-is, logging
+    # once via config_notice rather than failing the whole load.
+    prepare_config_state
+    write_uci "config outdoor-backup 'config'
+	option led_green2 'relative/unsafe'
+	option led_green3 '/bad/../path'"
+    c03b_notice_err="$TEST_ROOT/c03b-notice.err"
+    ASSERTIONS=$((ASSERTIONS + 1))
+    if ! load_config 2> "$c03b_notice_err"; then
+        fail "C03b invalid-path load should still succeed"
+    fi
+    assert_equal "$LED_GREEN2" "relative/unsafe" \
+        "C03b led_green2 invalid path kept as-is, load still succeeds"
+    assert_equal "$LED_GREEN3" "/bad/../path" \
+        "C03b led_green3 invalid path kept as-is, load still succeeds"
+    assert_file_contains "led_green2" "$c03b_notice_err" \
+        "C03b led_green2 invalid path logged via config_notice"
+    assert_file_contains "led_green3" "$c03b_notice_err" \
+        "C03b led_green3 invalid path logged via config_notice"
 }
 
 case_c04_only_explicit_uci_options_override_legacy() {
@@ -610,11 +663,13 @@ EOF
     common_red=$(LED_GREEN="$LED_GREEN" LED_RED="$LED_RED" \
         /bin/ash -c '. "$1"; printf "%s" "$LED_RED"' \
         outdoor-backup-common "$REPO_ROOT/files/opt/outdoor-backup/scripts/common.sh")
-    # Default changed from green:lan to green:wan by the four-lamp primitive
-    # rework (see #40); this expectation tracks the new default, not the
-    # legacy bug-fingerprint value.
-    assert_equal "$common_green" "/sys/class/leds/green:wan" \
-        "EDGE05 common defaulted empty green LED"
+    # common.sh now uses ${VAR-default}, not ${VAR:-default} (PR #41 review
+    # finding 4 / issue #40 fact 4): an explicitly empty LED_GREEN is the
+    # documented "no LED wired for this slot" contract and must stay empty
+    # through common.sh, not get refilled with the R5S default. Only a
+    # genuinely unset variable would fall back.
+    assert_equal "$common_green" "" \
+        "EDGE05 common preserved explicitly empty green LED (no fallback)"
     assert_equal "$common_red" "/sys//class/leds/red:sys" \
         "EDGE05 common preserved non-empty red LED"
 }
@@ -637,6 +692,7 @@ main() {
     case_c01_no_configuration_uses_defaults
     case_c02_legacy_only_preserves_extra_values
     case_c03_uci_only_overrides_defaults
+    case_c03b_led_green2_green3_defaults_empty_and_invalid_path_behavior
     case_c04_only_explicit_uci_options_override_legacy
     case_c04b_target_options_follow_legacy_then_named_uci_precedence
     case_c05_empty_uci_options_inherit_lower_precedence
@@ -654,10 +710,10 @@ main() {
     case_legacy_variable_names_do_not_control_uci
     case_common_sources_preserve_legacy_led_values
 
-    assert_equal "$CASES" "20" "all required cases executed"
+    assert_equal "$CASES" "21" "all required cases executed"
     ASSERTIONS=$((ASSERTIONS + 1))
-    if [ "$ASSERTIONS" -ne 96 ]; then
-        fail "all required assertions executed (expected=96, actual=$ASSERTIONS)"
+    if [ "$ASSERTIONS" -ne 109 ]; then
+        fail "all required assertions executed (expected=109, actual=$ASSERTIONS)"
     fi
     if [ "$FAILED" -ne 0 ]; then
         printf 'cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"

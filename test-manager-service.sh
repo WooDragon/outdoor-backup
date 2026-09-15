@@ -49,8 +49,11 @@ ASSERTIONS=0
 FAILED=0
 ACTIVE_PIDS=''
 EXPECTED_CASES=8
-# MS02 F8 adds 11 lifecycle assertions; MS05 adds 17; MS07 adds 16.
-EXPECTED_ASSERTIONS=206 # 195 baseline + 11
+# MS02 F8 adds 11 lifecycle assertions; MS05 adds 18 (17 original + 1 new
+# normal-half manager-validity check now that the normal path also runs a
+# private FD8-witness manager copy instead of the delivered manager
+# directly); MS07 adds 16.
+EXPECTED_ASSERTIONS=207 # 195 baseline + 11 + 1
 
 fail() {
     printf 'FAIL: %s\n' "$1" >&2
@@ -1155,82 +1158,149 @@ case_ms04_prelock_lease_blocks_stop() {
     unset TEST_PRELOCK_READY TEST_PRELOCK_RELEASE
 }
 
-# Capture a real timer process identity. A PID alone is not liveness evidence:
-# it may be a zombie or have been reused. The starttime makes the before/after
-# comparison an identity check, while the state excludes both zombie and dead.
-ms05_capture_live_timer_stat() {
-    timer_pid=$1
-    timer_stat_file=$2
-    : > "$timer_stat_file" || return 1
+# Capture a real witness process identity. A PID alone is not liveness
+# evidence: it may be a zombie or have been reused. The starttime makes the
+# before/after comparison an identity check, while the state excludes both
+# zombie and dead.
+ms05_capture_live_witness_stat() {
+    witness_pid=$1
+    witness_stat_file=$2
+    : > "$witness_stat_file" || return 1
     awk '{printf "pid=%s state=%s starttime=%s\n", $1, $3, $22}' \
-        "/proc/$timer_pid/stat" > "$timer_stat_file" 2>/dev/null || return 1
-    grep -E -q -x "pid=$timer_pid state=[^ZX] starttime=[0-9]+" "$timer_stat_file"
+        "/proc/$witness_pid/stat" > "$witness_stat_file" 2>/dev/null || return 1
+    grep -E -q -x "pid=$witness_pid state=[^ZX] starttime=[0-9]+" "$witness_stat_file"
 }
 
-ms05_timer_starttime() {
+ms05_witness_starttime() {
     awk -F '[ =]' '{print $6}' "$1"
 }
 
-# This mutation is deliberately limited to the original FD8 owner branch:
-# closing the parent's descriptor preserves the inherited OFD lock if a child
-# still owns it, unlike production's flock -u. The manager otherwise remains
-# the delivered manager with only its source-only state library redirected.
-make_ms05_parent_close_only_lease_manager() {
+# The witness is a grandchild (forked inside a manager subprocess that has
+# already exited), not a direct child of this shell -- POSIX wait only reaps
+# direct children, so it cannot observe this pid. Poll kill -0 instead, the
+# same pattern test-target-manager.sh's wait_for_timer_exit already uses for
+# an analogous non-child descendant.
+wait_ms05_witness_exit() {
+    poll_witness_pid=$1 poll_attempts=0
+    while kill -0 "$poll_witness_pid" 2>/dev/null && [ "$poll_attempts" -lt 20 ]; do
+        /bin/sleep 1
+        poll_attempts=$((poll_attempts + 1))
+    done
+    ! kill -0 "$poll_witness_pid" 2>/dev/null
+}
+
+# #40's four-lamp LED rewrite made every led_state_* primitive a synchronous
+# set-and-exit sysfs write (no fork, no sleep), so guard_failure() no longer
+# leaves behind any live process for MS05 to observe. The FD8 lock semantics
+# MS05 exists to verify are unrelated to LEDs: what matters is a genuine
+# process that inherits FD8 by being forked from the manager's own shell
+# while FD8 is open, and that survives past the manager's own exit so a
+# probe can observe the OFD's lock state afterward. This inserts exactly
+# that fork into a disposable manager copy, anchored right after the
+# admission lease is confirmed held and the lifecycle trap is installed --
+# well before the target guard can fail and the manager can exit. Production
+# backup-manager.sh is never touched; only this test-local copy forks.
+make_ms05_fd8_witness_manager() {
+    witness_manager=$SCRIPTS/manager-ms05-fd8-witness.sh
+    trap_anchor='trap temporary_lease_cleanup EXIT'
+    [ "$(grep -F -c -- "$trap_anchor" "$SCRIPTS/backup-manager.sh")" -eq 1 ] || return 1
+    awk -v anchor="$trap_anchor" '
+        { print }
+        $0 == anchor {
+            print "("
+            print "\ttrap - EXIT"
+            print "\twhile [ ! -e \"${TEST_MS05_WITNESS_RELEASE:?}\" ]; do /bin/sleep 1; done"
+            print ") &"
+            print "printf \047%s\\n\047 \"$!\" > \"${TEST_MS05_WITNESS_PID:?}\""
+            print ": > \"${TEST_MS05_WITNESS_READY:?}\""
+            inserted++
+        }
+        END { exit !(inserted == 1) }
+    ' "$SCRIPTS/backup-manager.sh" > "$witness_manager" || return 1
+    chmod 700 "$witness_manager" || return 1
+    /bin/ash -n "$witness_manager"
+}
+
+# Combines the FD8 witness fork above with the same close-only-lease mutation
+# as before: the original FD8 owner branch is limited to closing its own
+# descriptor, preserving the OFD lock only because the witness above still
+# holds its own inherited copy of FD8 open, unlike production's flock -u.
+# The manager otherwise remains the delivered manager with only its
+# source-only state library redirected.
+make_ms05_fd8_witness_close_only_lease_manager() {
     mutant_state=$SCRIPTS/service-state-parent-close-only.sh
-    mutant_manager=$SCRIPTS/manager-ms05-parent-close-only.sh
+    mutant_manager=$SCRIPTS/manager-ms05-fd8-witness-close-only.sh
     state_anchor='    flock -u 8 || return 1'
+    source_anchor='. "$SCRIPT_DIR/service-state.sh"'
+    trap_anchor='trap temporary_lease_cleanup EXIT'
     [ "$(grep -F -c -- "$state_anchor" "$SCRIPTS/service-state.sh")" -eq 1 ] || return 1
-    [ "$(awk '$0 == ". \"$SCRIPT_DIR/service-state.sh\"" { matches++ } END { print matches + 0 }' \
-        "$SCRIPTS/backup-manager.sh")" -eq 1 ] || return 1
+    [ "$(grep -F -c -- "$source_anchor" "$SCRIPTS/backup-manager.sh")" -eq 1 ] || return 1
+    [ "$(grep -F -c -- "$trap_anchor" "$SCRIPTS/backup-manager.sh")" -eq 1 ] || return 1
     awk '
         $0 == "    flock -u 8 || return 1" { removed++; next }
         { print }
         END { exit !(removed == 1) }
     ' "$SCRIPTS/service-state.sh" > "$mutant_state" || return 1
     /bin/ash -n "$mutant_state" || return 1
-    awk '
-        $0 == ". \"$SCRIPT_DIR/service-state.sh\"" {
+    awk -v source_anchor="$source_anchor" -v trap_anchor="$trap_anchor" '
+        $0 == source_anchor {
             print ". \"$SCRIPT_DIR/service-state-parent-close-only.sh\""
             replaced++
             next
         }
+        $0 == trap_anchor {
+            print
+            print "("
+            print "\ttrap - EXIT"
+            print "\twhile [ ! -e \"${TEST_MS05_WITNESS_RELEASE:?}\" ]; do /bin/sleep 1; done"
+            print ") &"
+            print "printf \047%s\\n\047 \"$!\" > \"${TEST_MS05_WITNESS_PID:?}\""
+            print ": > \"${TEST_MS05_WITNESS_READY:?}\""
+            inserted++
+            next
+        }
         { print }
-        END { exit !(replaced == 1) }
+        END { exit !(replaced == 1 && inserted == 1) }
     ' "$SCRIPTS/backup-manager.sh" > "$mutant_manager" || return 1
     chmod 700 "$mutant_manager" || return 1
     /bin/ash -n "$mutant_manager"
 }
 
 case_ms05_guard_failure_releases_inherited_lease() {
-    begin_case MS05 'guard failure unlocks FD8 while the same live LED timer remains held'
+    begin_case MS05 'guard failure unlocks FD8 while a separately forked live process still inherits it'
     prepare_service_case || { fail 'MS05 fixture setup failed'; return; }
+    assert_success 'MS05 private FD8 witness manager is syntactically valid' \
+        make_ms05_fd8_witness_manager
     set_config_target_uuid WRONG-UUID
-    TEST_TIMER_CONTROLLED=1
-    export TEST_TIMER_CONTROLLED
-    if run_manager add sda1 /devices/mock >"$TEST_ROOT/guard.out" 2>&1; then
+    TEST_MS05_WITNESS_PID="$TEST_ROOT/witness-pid"
+    TEST_MS05_WITNESS_READY="$TEST_ROOT/witness-ready"
+    TEST_MS05_WITNESS_RELEASE="$TEST_ROOT/witness-release"
+    export TEST_MS05_WITNESS_PID TEST_MS05_WITNESS_READY TEST_MS05_WITNESS_RELEASE
+    if MANAGER_SCRIPT="$SCRIPTS/manager-ms05-fd8-witness.sh" \
+        run_manager add sda1 /devices/mock >"$TEST_ROOT/guard.out" 2>&1; then
         guard_rc=0
     else
         guard_rc=$?
     fi
     assert_equal "$guard_rc" 1 'MS05 normal guard failure preserves failure status'
-    assert_success 'MS05 normal inherited LED timer reached controlled wait' \
-        wait_path "$TEST_ROOT/timer-ready" $$ 'MS05 normal timer'
-    timer_pid=$(cat "$TEST_ROOT/timer-pid")
-    assert_success 'MS05 normal timer is live before X' \
-        ms05_capture_live_timer_stat "$timer_pid" "$TEST_ROOT/normal.timer.before.stat"
-    assert_file_absent "$TEST_ROOT/timer-release" 'MS05 normal timer remains unreleased before X'
+    assert_success 'MS05 normal forked FD8 witness reached controlled wait' \
+        wait_path "$TEST_ROOT/witness-ready" $$ 'MS05 normal witness'
+    witness_pid=$(cat "$TEST_ROOT/witness-pid")
+    assert_success 'MS05 normal witness is live before X' \
+        ms05_capture_live_witness_stat "$witness_pid" "$TEST_ROOT/normal.witness.before.stat"
+    assert_file_absent "$TEST_ROOT/witness-release" 'MS05 normal witness remains unreleased before X'
     if admission_x_probe; then
         normal_before_x_rc=0
     else
         normal_before_x_rc=$?
     fi
-    assert_equal "$normal_before_x_rc" 0 'MS05 normal explicit release permits X while timer is live'
-    assert_success 'MS05 normal timer remains live after first X' \
-        ms05_capture_live_timer_stat "$timer_pid" "$TEST_ROOT/normal.timer.after.stat"
-    assert_equal "$(ms05_timer_starttime "$TEST_ROOT/normal.timer.before.stat")" \
-        "$(ms05_timer_starttime "$TEST_ROOT/normal.timer.after.stat")" \
-        'MS05 normal X sees the same timer instance before and after admission'
-    assert_file_absent "$TEST_ROOT/timer-release" 'MS05 normal timer remains unreleased after first X'
+    assert_equal "$normal_before_x_rc" 0 'MS05 normal explicit release permits X while witness is live'
+    assert_success 'MS05 normal witness remains live after first X' \
+        ms05_capture_live_witness_stat "$witness_pid" "$TEST_ROOT/normal.witness.after.stat"
+    assert_equal "$(ms05_witness_starttime "$TEST_ROOT/normal.witness.before.stat")" \
+        "$(ms05_witness_starttime "$TEST_ROOT/normal.witness.after.stat")" \
+        'MS05 normal X sees the same witness instance before and after admission'
+    assert_file_absent "$TEST_ROOT/witness-release" 'MS05 normal witness remains unreleased after first X'
     if admission_x_probe; then
         normal_after_x_rc=0
     else
@@ -1240,51 +1310,58 @@ case_ms05_guard_failure_releases_inherited_lease() {
     persist_evidence_value ms05/normal.guard.rc "$guard_rc" || fail 'MS05 cannot persist normal guard rc'
     persist_evidence_value ms05/normal.x-before.rc "$normal_before_x_rc" || fail 'MS05 cannot persist normal pre-X rc'
     persist_evidence_value ms05/normal.x-after.rc "$normal_after_x_rc" || fail 'MS05 cannot persist normal post-X rc'
-    persist_evidence_file ms05/normal.timer.before.stat "$TEST_ROOT/normal.timer.before.stat" || \
-        fail 'MS05 cannot persist normal pre-X timer stat'
-    persist_evidence_file ms05/normal.timer.after.stat "$TEST_ROOT/normal.timer.after.stat" || \
-        fail 'MS05 cannot persist normal post-X timer stat'
-    : > "$TEST_ROOT/timer-release"
-    assert_success 'MS05 normal explicit release settles its timer' settle_led_fixture
+    persist_evidence_file ms05/normal.witness.before.stat "$TEST_ROOT/normal.witness.before.stat" || \
+        fail 'MS05 cannot persist normal pre-X witness stat'
+    persist_evidence_file ms05/normal.witness.after.stat "$TEST_ROOT/normal.witness.after.stat" || \
+        fail 'MS05 cannot persist normal post-X witness stat'
+    : > "$TEST_ROOT/witness-release"
+    assert_success 'MS05 normal explicit release settles its witness' \
+        wait_ms05_witness_exit "$witness_pid"
 
-    # Negative control: retain a live timer after the parent closes FD8 but does
-    # not unlock its OFD. If the actual timer inherited FD8, X must see ordinary
-    # contention (2); if it did not, the persisted evidence records that fact.
+    # Negative control: retain a live witness after the parent closes FD8 but
+    # does not unlock its OFD. If the witness genuinely inherited FD8, X must
+    # see ordinary contention (2); if it did not, the persisted evidence
+    # records that fact instead of silently passing.
     prepare_service_case || { fail 'MS05 mutant fixture setup failed'; return; }
-    assert_success 'MS05 private parent-close-only lease state is syntactically valid' \
-        make_ms05_parent_close_only_lease_manager
+    assert_success 'MS05 private FD8 witness close-only lease manager is syntactically valid' \
+        make_ms05_fd8_witness_close_only_lease_manager
     set_config_target_uuid WRONG-UUID
-    MANAGER_SCRIPT="$SCRIPTS/manager-ms05-parent-close-only.sh" TEST_TIMER_CONTROLLED=1 \
+    TEST_MS05_WITNESS_PID="$TEST_ROOT/witness-pid"
+    TEST_MS05_WITNESS_READY="$TEST_ROOT/witness-ready"
+    TEST_MS05_WITNESS_RELEASE="$TEST_ROOT/witness-release"
+    export TEST_MS05_WITNESS_PID TEST_MS05_WITNESS_READY TEST_MS05_WITNESS_RELEASE
+    MANAGER_SCRIPT="$SCRIPTS/manager-ms05-fd8-witness-close-only.sh" \
         run_manager add sda1 /devices/mock >"$TEST_ROOT/mutant-guard.out" 2>&1
     mutant_guard_rc=$?
-    assert_equal "$mutant_guard_rc" 1 'MS05 parent-close-only mutant preserves guard failure status'
-    assert_success 'MS05 mutant inherited LED timer reached controlled wait' \
-        wait_path "$TEST_ROOT/timer-ready" $$ 'MS05 mutant timer'
-    mutant_timer_pid=$(cat "$TEST_ROOT/timer-pid")
-    assert_success 'MS05 mutant timer is live before X' \
-        ms05_capture_live_timer_stat "$mutant_timer_pid" "$TEST_ROOT/mutant.timer.before.stat"
-    assert_file_absent "$TEST_ROOT/timer-release" 'MS05 mutant timer remains unreleased before X'
+    assert_equal "$mutant_guard_rc" 1 'MS05 close-only mutant preserves guard failure status'
+    assert_success 'MS05 mutant forked FD8 witness reached controlled wait' \
+        wait_path "$TEST_ROOT/witness-ready" $$ 'MS05 mutant witness'
+    mutant_witness_pid=$(cat "$TEST_ROOT/witness-pid")
+    assert_success 'MS05 mutant witness is live before X' \
+        ms05_capture_live_witness_stat "$mutant_witness_pid" "$TEST_ROOT/mutant.witness.before.stat"
+    assert_file_absent "$TEST_ROOT/witness-release" 'MS05 mutant witness remains unreleased before X'
     if admission_x_probe; then
         mutant_x_rc=0
     else
         mutant_x_rc=$?
     fi
     assert_failure 'MS05 normal X=0 predicate rejects close-only OFD mutant' test "$mutant_x_rc" -eq 0
-    assert_equal "$mutant_x_rc" 2 'MS05 live timer inherits FD8 and keeps the close-only OFD lease busy'
-    assert_success 'MS05 mutant timer remains live through rejected X' \
-        ms05_capture_live_timer_stat "$mutant_timer_pid" "$TEST_ROOT/mutant.timer.after.stat"
-    assert_equal "$(ms05_timer_starttime "$TEST_ROOT/mutant.timer.before.stat")" \
-        "$(ms05_timer_starttime "$TEST_ROOT/mutant.timer.after.stat")" \
-        'MS05 mutant X sees the same timer instance before and after contention'
+    assert_equal "$mutant_x_rc" 2 'MS05 live witness inherits FD8 and keeps the close-only OFD lease busy'
+    assert_success 'MS05 mutant witness remains live through rejected X' \
+        ms05_capture_live_witness_stat "$mutant_witness_pid" "$TEST_ROOT/mutant.witness.after.stat"
+    assert_equal "$(ms05_witness_starttime "$TEST_ROOT/mutant.witness.before.stat")" \
+        "$(ms05_witness_starttime "$TEST_ROOT/mutant.witness.after.stat")" \
+        'MS05 mutant X sees the same witness instance before and after contention'
     persist_evidence_value ms05/mutant.guard.rc "$mutant_guard_rc" || fail 'MS05 cannot persist mutant guard rc'
     persist_evidence_value ms05/mutant.x.rc "$mutant_x_rc" || fail 'MS05 cannot persist mutant X rc'
-    persist_evidence_file ms05/mutant.timer.before.stat "$TEST_ROOT/mutant.timer.before.stat" || \
-        fail 'MS05 cannot persist mutant pre-X timer stat'
-    persist_evidence_file ms05/mutant.timer.after.stat "$TEST_ROOT/mutant.timer.after.stat" || \
-        fail 'MS05 cannot persist mutant post-X timer stat'
-    : > "$TEST_ROOT/timer-release"
-    assert_success 'MS05 mutant explicit release settles its timer' settle_led_fixture
-    unset TEST_TIMER_CONTROLLED
+    persist_evidence_file ms05/mutant.witness.before.stat "$TEST_ROOT/mutant.witness.before.stat" || \
+        fail 'MS05 cannot persist mutant pre-X witness stat'
+    persist_evidence_file ms05/mutant.witness.after.stat "$TEST_ROOT/mutant.witness.after.stat" || \
+        fail 'MS05 cannot persist mutant post-X witness stat'
+    : > "$TEST_ROOT/witness-release"
+    assert_success 'MS05 mutant explicit release settles its witness' \
+        wait_ms05_witness_exit "$mutant_witness_pid"
+    unset TEST_MS05_WITNESS_PID TEST_MS05_WITNESS_READY TEST_MS05_WITNESS_RELEASE
 }
 
 case_ms06_epoch_restart_rejects_old_manager() {

@@ -238,8 +238,10 @@
 └─────────────────────────────────────────────────┘
 
 ┌─ LED 指示灯设置 ───────────────────────────────┐
-│ 绿灯（成功）:     /sys/class/leds/green:lan     │
-│ 红灯（错误）:     /sys/class/leds/red:sys       │
+│ G1（wan，进度）:   /sys/class/leds/green:wan     │
+│ G2（lan-1，进度）: /sys/class/leds/green:lan-1   │
+│ G3（lan-2，进度）: /sys/class/leds/green:lan-2   │
+│ R（power，错误）:  /sys/class/leds/red:power     │
 └─────────────────────────────────────────────────┘
 
 ┌─ 高级设置 ─────────────────────────────────────┐
@@ -710,15 +712,21 @@ o.placeholder = "/mnt/ssd/SDMirrors"
 o = s:option(Flag, "debug", translate("Debug Mode"))
 o.default = "0"
 
--- LED 设置
+-- LED 设置：R5S 四灯映射；空槽位使用字面值 "none"，不回落默认。
 s = m:section(TypedSection, "outdoor-backup", translate("LED Settings"))
 s.anonymous = true
 
-o = s:option(Value, "led_green", translate("Green LED Path"))
-o.default = "/sys/class/leds/green:lan"
+o = s:option(Value, "led_green", translate("Green LED 1 Path (wan)"))
+o.default = "/sys/class/leds/green:wan"
 
-o = s:option(Value, "led_red", translate("Red LED Path"))
-o.default = "/sys/class/leds/red:sys"
+o = s:option(Value, "led_green2", translate("Green LED 2 Path (lan-1)"))
+o.default = "/sys/class/leds/green:lan-1"
+
+o = s:option(Value, "led_green3", translate("Green LED 3 Path (lan-2)"))
+o.default = "/sys/class/leds/green:lan-2"
+
+o = s:option(Value, "led_red", translate("Red LED Path (power)"))
+o.default = "/sys/class/leds/red:power"
 
 -- 高级设置
 s = m:section(TypedSection, "outdoor-backup", translate("Advanced Settings"))

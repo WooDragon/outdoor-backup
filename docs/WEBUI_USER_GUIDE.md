@@ -162,14 +162,20 @@ Use this after backing up to NAS.
 
 #### 2.2 LED 设置
 
-**功能**：配置 LED 指示灯路径（硬件相关）
+**功能**：配置四盏 LED 指示灯路径（硬件相关）。R5S 的默认映射为 R（电源/错误）、G1（wan）、G2（lan-1）和 G3（lan-2）。
 
 **配置项**：
 
 | 配置项 | 说明 | 默认值 |
 |--------|------|--------|
-| **Green LED Path** | 绿灯路径（成功指示） | `/sys/class/leds/green:lan` |
-| **Red LED Path** | 红灯路径（错误指示） | `/sys/class/leds/red:sys` |
+| **Green LED 1 Path (`led_green`)** | G1：wan，进度/完成 | `/sys/class/leds/green:wan` |
+| **Green LED 2 Path (`led_green2`)** | G2：lan-1，进度/错误分类 | `/sys/class/leds/green:lan-1` |
+| **Green LED 3 Path (`led_green3`)** | G3：lan-2，进度/未配置/错误分类 | `/sys/class/leds/green:lan-2` |
+| **Red LED Path (`led_red`)** | R：power，仅错误状态 | `/sys/class/leds/red:power` |
+
+某个槽位没有物理灯时，使用字面值 `none`；它表示空槽位并静默跳过，不会
+回落到默认路径。非空但不存在的路径属于配置错误，核心会通过 error-level
+syslog 报告。亮度仅有 0（灭）和 1（亮）。
 
 **查找 LED 路径**：
 
@@ -177,8 +183,8 @@ Use this after backing up to NAS.
 # SSH 到路由器
 ls /sys/class/leds/
 
-# 示例输出
-green:lan  red:sys  blue:wan
+# R5S 默认示例
+red:power  green:wan  green:lan-1  green:lan-2
 ```
 
 #### 2.3 高级设置
@@ -251,7 +257,7 @@ green:lan  red:sys  blue:wan
 **步骤**：
 
 1. **插入 SD 卡并等待备份完成**
-   - 绿色 LED 常亮表示完成
+   - R 不碰；G1（wan）、G2（lan-1）、G3（lan-2）三盏绿灯均常亮表示完成
 
 2. **访问 WebUI 状态页面**
    ```

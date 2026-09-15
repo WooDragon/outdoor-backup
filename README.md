@@ -99,23 +99,29 @@ Configure and mount the target storage before inserting an SD card. The manager 
 
 ## LED Status Reference
 
-In the field there is no screen or SSH — the LED is the only diagnostic
-interface. Each state maps to a distinct, countable pattern so you can tell at
-a glance what happened:
+In the field there is no screen or SSH — the LEDs are the only diagnostic
+interface. On the R5S, `R` is `/sys/class/leds/red:power`, `G1` is
+`/sys/class/leds/green:wan`, `G2` is `/sys/class/leds/green:lan-1`, and `G3` is
+`/sys/class/leds/green:lan-2`.
 
-| State | LED pattern | Meaning |
-|-------|-------------|---------|
-| Backup in progress | Green fast blink | Transfer running |
-| Backup complete | Green solid (30s) | Done, verified |
-| Device not recognized | Red, **1 flash** + pause | Inserted device not detected as an SD card / reader |
-| Lock timeout / busy | Red, **2 flashes** + pause | Another backup is already running; waited and gave up |
-| Insufficient space | Red, **3 flashes** + pause | Target free space below `MIN_FREE_SPACE` (or disk full) |
-| Card configuration rejected | Red, **4 flashes** + pause | SD card configuration was rejected by policy (e.g. an existing REPLICA card) |
-| rsync transfer failed | Red slow blink | rsync exited non-zero (read/write error) |
-| Integrity verify failed | Red/green alternating | Transfer reported done but post-check disagreed |
+| State | R (power) | G1 (wan) | G2 (lan-1) | G3 (lan-2) |
+|-------|-----------|----------|------------|------------|
+| Idle / healthy | untouched | off | off | off |
+| Target not configured | untouched | off | off | slow blink |
+| Backup 0-33% | untouched | fast blink | off | off |
+| Backup 34-66% | untouched | solid on | fast blink | off |
+| Backup 67-99% | untouched | solid on | solid on | fast blink |
+| Complete | untouched | solid on | solid on | solid on |
+| Error: insufficient space | slow blink | solid on | off | off |
+| Error: card configuration | slow blink | off | solid on | off |
+| Error: target disk | slow blink | off | off | solid on |
+| Error: unclassified | slow blink | off | off | off |
 
-Count the red flashes between pauses to identify the fault. All error patterns
-auto-clear after 60 seconds.
+Fast blink uses `timer` with 100/100 ms delays; slow blink uses 500/500 ms.
+Solid and off use `trigger=none` with brightness `1` and `0`, respectively.
+The power LED is deliberately untouched for healthy, target-unconfigured, and
+progress/completion states. Completion remains lit until the next card
+insertion; it does not auto-clear.
 
 ## Configuration
 
@@ -180,7 +186,7 @@ The guard accepts direct `sd`, `mmc`, and `nvme` disks. It can trace a system lo
 
 The static directory check rejects a symlink at the configured mount path or in an existing target-directory component, including `BACKUP_ROOT/.logs`. The guard rejects mounts covering the target mount point, an ancestor of `BACKUP_ROOT`, or a child mount inside the backup tree; mounts in disjoint directories are not rejected. This shell implementation does not provide an `openat2` guarantee against a malicious root process that replaces target directories concurrently. It does not claim complete real-device compatibility.
 
-If the initial target guard fails, the manager writes the reason to stderr and error-level syslog. It may signal the optional red LED, but it does not enter the source mount, `rsync`, alias, lock, or application-log lifecycle. The manager closes the target FD before the LED helper starts its delayed child process. A missing LED does not turn this failure into success. `enabled=0` exits an `add` event before any LED side effect.
+If the initial target guard fails, the manager writes the reason to stderr and error-level syslog. It may signal the optional red LED, but it does not enter the source mount, `rsync`, alias, lock, or application-log lifecycle. LED state primitives perform their sysfs writes synchronously and create no delayed child process. A missing LED does not turn this failure into success. `enabled=0` exits an `add` event before any LED side effect.
 
 Automatic backup supports the PRIMARY direction only: SD card to the configured storage target. The data-only card reader still accepts `REPLICA` in an existing `FieldBackup.conf` for compatibility. The manager rejects that card with an explicit error before `rsync`. It does not change the card configuration or UUID, update an alias, create the target UUID directory, or create a per-backup log. The manager does not convert `REPLICA` to `PRIMARY`. #15 binds each configured card UUID to an observed source filesystem UUID. The source snapshot added for #16 also compares the `DEVNAME`, canonical sysfs node, major:minor value, normalized filesystem UUID, and parent gendisk `diskseq` when available. Neither mechanism makes a filesystem UUID or `diskseq` a physical-card identity. A clone is indistinguishable when the kernel does not report the media change and every observed snapshot field remains the same.
 
@@ -208,7 +214,7 @@ The LuCI form exposes `target_mount`, `target_uuid`, and the `backup_root` bound
 
 ### Set other UCI overrides
 
-Set only values that must override the lower layers. The supported UCI options are `enabled`, `backup_root`, `mount_point`, `target_mount`, `target_uuid`, `debug`, `led_green`, and `led_red`.
+Set only values that must override the lower layers. The supported UCI options are `enabled`, `backup_root`, `mount_point`, `target_mount`, `target_uuid`, `debug`, `led_green`, `led_green2`, `led_green3`, and `led_red`. The three green options map to G1 (wan), G2 (lan-1), and G3 (lan-2); `led_red` maps to R (power).
 
 ```sh
 # Use absolute, non-root, non-nested paths.
@@ -224,7 +230,7 @@ uci delete outdoor-backup.config.backup_root
 uci commit outdoor-backup
 ```
 
-An empty UCI option is normalized by UCI as unset, so it also inherits the lower layer. Final empty or invalid storage paths in `backup_root`, `mount_point`, or `target_mount`, invalid target UUID characters, and values other than `0` or `1` for `enabled` or `debug` make the manager stop before resource operations and report the reason to stderr and syslog with the `outdoor-backup` tag. The `enabled=0` switch exits an `add` event before target checks, LED, lock, mount, or I/O work. A `remove` event bypasses configuration and target setup before it enters the owner-aware cancellation sender. The remove sender neither registers nor executes its own cleanup. A matched owner performs resource cleanup through its existing sticky-cancellation and cleanup lifecycle. LED paths retain their existing optional semantics: an empty legacy LED value falls back to the default in `common.sh`, and LED sysfs paths do not use storage-path validation.
+An empty UCI option is normalized by UCI as unset, so it also inherits the lower layer. To disable one LED slot through UCI, use the literal value `none`; the loader converts it to an empty path. In the legacy shell configuration, an explicit empty string means that slot has no LED and is a silent no-op; it does not fall back to the R5S default. Only an unset variable uses the built-in default. A non-empty path that does not exist is a configuration error: `led_set` reports it through error-level syslog and returns failure. Final empty or invalid storage paths in `backup_root`, `mount_point`, or `target_mount`, invalid target UUID characters, and values other than `0` or `1` for `enabled` or `debug` make the manager stop before resource operations and report the reason to stderr and syslog with the `outdoor-backup` tag. The `enabled=0` switch exits an `add` event before target checks, LED, lock, mount, or I/O work. A `remove` event bypasses configuration and target setup before it enters the owner-aware cancellation sender. The remove sender neither registers nor executes its own cleanup. A matched owner performs resource cleanup through its existing sticky-cancellation and cleanup lifecycle.
 
 ### Maintain legacy configuration
 
@@ -469,10 +475,11 @@ rsync --version
 # Find correct LED paths
 ls /sys/class/leds/
 
-# Test LED manually
-echo "timer" > /sys/class/leds/green:lan/trigger
-echo "100" > /sys/class/leds/green:lan/delay_on
-echo "100" > /sys/class/leds/green:lan/delay_off
+# Test the R5S G1 LED manually
+LED=/sys/class/leds/green:wan
+printf '%s\n' timer > "$LED/trigger"
+printf '%s\n' 100 > "$LED/delay_on"
+printf '%s\n' 100 > "$LED/delay_off"
 ```
 
 ### Logs

@@ -107,28 +107,39 @@ o = s:option(DummyValue, "_led_separator", translate("LED Indicators"))
 o.rawhtml = true
 o.value = "<hr style='margin: 15px 0; border: none; border-top: 1px solid #ccc;'>"
 
+-- NOTE (PR #41 review finding 4): raw UCI cannot persist a genuinely empty
+-- option value regardless of rmempty -- `option led_green ''` is dropped at
+-- UCI's own parse/load time and is indistinguishable from the option never
+-- having been set (verified against the real UCI CLI, not just this form).
+-- So "no LED wired for this slot" is expressed with the literal string
+-- "none", which config_load's config_resolve_led_sentinel() folds back to
+-- an actual empty path before use. rmempty stays true only so that leaving
+-- the field untouched still falls back to the board default, not so that a
+-- deliberately blanked field can persist as empty -- it cannot, at the UCI
+-- layer, no matter what this form does.
+
 o = s:option(Value, "led_green", translate("Green LED 1 Path"),
-             translate("Sysfs path for the first progress/status indicator (e.g., /sys/class/leds/green:wan)"))
+             translate("Sysfs path for the first progress/status indicator (e.g., /sys/class/leds/green:wan). Enter \"none\" if no LED is wired for this slot."))
 o.default = "/sys/class/leds/green:wan"
 o.placeholder = "/sys/class/leds/green:wan"
-o.rmempty = true  -- LED 是可选的
+o.rmempty = true  -- LED 是可选的；显式留空用 "none"，见上方说明
 
 o = s:option(Value, "led_green2", translate("Green LED 2 Path"),
-             translate("Sysfs path for the second progress/status indicator (e.g., /sys/class/leds/green:lan-1)"))
+             translate("Sysfs path for the second progress/status indicator (e.g., /sys/class/leds/green:lan-1). Enter \"none\" if no LED is wired for this slot."))
 o.default = "/sys/class/leds/green:lan-1"
 o.placeholder = "/sys/class/leds/green:lan-1"
-o.rmempty = true  -- LED 是可选的
+o.rmempty = true  -- LED 是可选的；显式留空用 "none"，见上方说明
 
 o = s:option(Value, "led_green3", translate("Green LED 3 Path"),
-             translate("Sysfs path for the third progress/status indicator (e.g., /sys/class/leds/green:lan-2)"))
+             translate("Sysfs path for the third progress/status indicator (e.g., /sys/class/leds/green:lan-2). Enter \"none\" if no LED is wired for this slot."))
 o.default = "/sys/class/leds/green:lan-2"
 o.placeholder = "/sys/class/leds/green:lan-2"
-o.rmempty = true  -- LED 是可选的
+o.rmempty = true  -- LED 是可选的；显式留空用 "none"，见上方说明
 
 o = s:option(Value, "led_red", translate("Red LED Path"),
-             translate("Sysfs path for error indicator (e.g., /sys/class/leds/red:power)"))
+             translate("Sysfs path for error indicator (e.g., /sys/class/leds/red:power). Enter \"none\" if no LED is wired for this slot."))
 o.default = "/sys/class/leds/red:power"
 o.placeholder = "/sys/class/leds/red:power"
-o.rmempty = true  -- LED 是可选的
+o.rmempty = true  -- LED 是可选的；显式留空用 "none"，见上方说明
 
 return m

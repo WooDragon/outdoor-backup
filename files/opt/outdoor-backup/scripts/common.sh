@@ -8,10 +8,17 @@
 # Four-lamp primitive layout: LED_RED is the power LED (error indicator only,
 # never touched by non-error states); LED_GREEN/LED_GREEN2/LED_GREEN3 map to
 # wan/lan-1/lan-2 and carry the progress walking-lamp + completion signal.
-LED_GREEN="${LED_GREEN:-/sys/class/leds/green:wan}"
-LED_GREEN2="${LED_GREEN2:-/sys/class/leds/green:lan-1}"
-LED_GREEN3="${LED_GREEN3:-/sys/class/leds/green:lan-2}"
-LED_RED="${LED_RED:-/sys/class/leds/red:power}"
+#
+# ${VAR-default} (not ${VAR:-default}) is deliberate: an explicitly empty
+# value is the documented "no LED wired for this slot" contract shared with
+# config_normalize_optional_path/led_set (issue #40 fact 4) and must be
+# preserved as empty, not overwritten by the default. Only a genuinely unset
+# variable (the config loader never ran, or never touched this slot) falls
+# back to the R5S onboard path.
+LED_GREEN="${LED_GREEN-/sys/class/leds/green:wan}"
+LED_GREEN2="${LED_GREEN2-/sys/class/leds/green:lan-1}"
+LED_GREEN3="${LED_GREEN3-/sys/class/leds/green:lan-2}"
+LED_RED="${LED_RED-/sys/class/leds/red:power}"
 
 # Logging functions
 log_info() {
@@ -187,41 +194,28 @@ led_state_error() {
 	esac
 }
 
-led_backup_start() {
-	# Fast blink - backup in progress
-	led_set "$LED_GREEN" "timer" "100" "100"
-	log_debug "LED set to fast blink"
+# Terminal success signalling (issue #40 / #41 PR review Critical 1): all
+# three green LEDs solid, R left untouched. This is the "完成" row of the
+# state table and is a real terminal state, not a transient one -- it must
+# persist until the next card insertion resets it (reset timing is out of
+# scope for this PR). Deliberately set-and-exit like every other primitive:
+# no sleep, no fork, no auto-off. Args: none.
+led_state_complete() {
+	led_state_solid "$LED_GREEN"
+	led_state_solid "$LED_GREEN2"
+	led_state_solid "$LED_GREEN3"
 }
 
-led_backup_done() {
-	# Solid on - backup complete
-	led_set "$LED_GREEN" "none" "" "" "1"
-	log_debug "LED set to solid on"
-
-	# Auto-off after 30 seconds
-	(
-		sleep 30
-		led_set "$LED_GREEN" "none" "" "" "0"
-	) &
-}
-
-led_backup_error() {
-	# Slow blink red - generic error (kept as fallback / rsync failure)
-	led_set "$LED_RED" "timer" "500" "500"
-	log_debug "LED set to error blink"
-
-	# Auto-off after 60 seconds
-	(
-		sleep 60
-		led_set "$LED_RED" "none" "" "" "0"
-	) &
-}
-
-led_backup_stop() {
-	# Turn off all LEDs
-	led_set "$LED_GREEN" "none" "" "" "0"
-	led_set "$LED_RED" "none" "" "" "0"
-	log_debug "LEDs turned off"
+# Target-unconfigured signalling: G3 slow-blinks, G1/G2 stay off, R is left
+# untouched (no write issued against it at all -- this is a configuration
+# state, not an error the red LED should represent). Distinguished from the
+# device/anchor identity failure class (led_state_error slot 3: G3 SOLID +
+# R slow-blink) by which trigger G3 gets and by R being untouched here.
+# Args: none.
+led_state_unconfigured() {
+	led_state_off "$LED_GREEN"
+	led_state_off "$LED_GREEN2"
+	led_state_slow_blink "$LED_GREEN3"
 }
 
 # Check if path is safe (prevent directory traversal)

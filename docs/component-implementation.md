@@ -130,107 +130,53 @@ The workflow runs `make defconfig` before it checks the actual SDK `.config`. It
 
 ### 文件: `/opt/outdoor-backup/scripts/common.sh`
 
-```bash
-#!/bin/sh
-#
-# Common functions for SD Card Backup System
-#
+生产实现使用四灯状态机。R5S 默认路径为：
 
-# LED paths - R5S specific, needs verification
-LED_GREEN="/sys/class/leds/green:lan"
-LED_RED="/sys/class/leds/red:sys"
+```sh
+LED_RED="/sys/class/leds/red:power"       # R：仅错误状态
+LED_GREEN="/sys/class/leds/green:wan"     # G1：0-33% / 完成
+LED_GREEN2="/sys/class/leds/green:lan-1"  # G2：34-66% / 错误分类
+LED_GREEN3="/sys/class/leds/green:lan-2"  # G3：67-99% / 未配置/错误分类
+```
 
-# Logging functions
-log_info() {
-    logger -t "$LOG_TAG" -p info "$1"
-    echo "$(date '+%Y-%m-%d %H:%M:%S') [INFO] $1" >> "$BASE_DIR/log/backup.log"
-}
+默认表达式使用 `${VAR-default}`：变量未设置时使用 R5S 默认；变量显式为空
+时保留空串，表示该槽位没有物理灯，由 `led_set` 静默跳过。非空但不存在的
+路径是实际配置错误，`led_set` 通过 `logger -p err` 报告并返回失败。
 
-log_error() {
-    logger -t "$LOG_TAG" -p err "$1"
-    echo "$(date '+%Y-%m-%d %H:%M:%S') [ERROR] $1" >> "$BASE_DIR/log/backup.log"
-}
+`led_set` 是唯一的 sysfs 写入入口。它接受单个灯路径、trigger、延时和亮度；
+空路径直接返回 0。R5S 的 `max_brightness` 为 1，因而亮度只写 0 或 1：
 
-log_warn() {
-    logger -t "$LOG_TAG" -p warn "$1"
-    echo "$(date '+%Y-%m-%d %H:%M:%S') [WARN] $1" >> "$BASE_DIR/log/backup.log"
-}
+```sh
+led_state_off()       { led_set "$1" "none" "" "" "0"; }
+led_state_solid()     { led_set "$1" "none" "" "" "1"; }
+led_state_fast_blink(){ led_set "$1" "timer" "100" "100" ""; }
+led_state_slow_blink(){ led_set "$1" "timer" "500" "500" ""; }
+```
 
-log_debug() {
-    if [ "${DEBUG:-0}" = "1" ]; then
-        logger -t "$LOG_TAG" -p debug "$1"
-        echo "$(date '+%Y-%m-%d %H:%M:%S') [DEBUG] $1" >> "$BASE_DIR/log/backup.log"
-    fi
-}
+状态原语对应以下契约：
 
-# LED control functions
-led_backup_start() {
-    # Fast blink - backup in progress
-    if [ -d "$LED_GREEN" ]; then
-        echo "timer" > "$LED_GREEN/trigger" 2>/dev/null || true
-        echo "100" > "$LED_GREEN/delay_on" 2>/dev/null || true
-        echo "100" > "$LED_GREEN/delay_off" 2>/dev/null || true
-        log_debug "LED set to fast blink"
-    fi
-}
+| 状态 | R | G1 | G2 | G3 |
+|------|---|----|----|----|
+| 空闲/健康 | 不碰 | 灭 | 灭 | 灭 |
+| 目标未配置 | 不碰 | 灭 | 灭 | 慢闪 |
+| 备份 0-33% | 不碰 | 快闪 | 灭 | 灭 |
+| 备份 34-66% | 不碰 | 静亮 | 快闪 | 灭 |
+| 备份 67-99% | 不碰 | 静亮 | 静亮 | 快闪 |
+| 完成 | 不碰 | 静亮 | 静亮 | 静亮 |
+| 错误：空间不足 | 慢闪 | 静亮 | 灭 | 灭 |
+| 错误：卡配置 | 慢闪 | 灭 | 静亮 | 灭 |
+| 错误：目标盘问题 | 慢闪 | 灭 | 灭 | 静亮 |
+| 错误：未分类 | 慢闪 | 灭 | 灭 | 灭 |
 
-led_backup_done() {
-    # Solid on - backup complete
-    if [ -d "$LED_GREEN" ]; then
-        echo "none" > "$LED_GREEN/trigger" 2>/dev/null || true
-        echo "1" > "$LED_GREEN/brightness" 2>/dev/null || true
-        log_debug "LED set to solid on"
+快闪为 timer 100/100 ms，慢闪为 timer 500/500 ms；静亮/灭分别为
+`trigger=none`、brightness 1/0。“不碰 R”表示不向 R 的任何 sysfs 节点写入。
+完成态是终态，会保持到下次插卡；原语只写一次并退出，不 fork、sleep 或自动
+熄灭。空槽位仍由 `led_set` 静默跳过，其他非空失效路径则走 syslog 错误。
 
-        # Auto-off after 30 seconds
-        (
-            sleep 30
-            echo "0" > "$LED_GREEN/brightness" 2>/dev/null || true
-        ) &
-    fi
-}
-
-led_backup_error() {
-    # Slow blink red - error occurred
-    if [ -d "$LED_RED" ]; then
-        echo "timer" > "$LED_RED/trigger" 2>/dev/null || true
-        echo "500" > "$LED_RED/delay_on" 2>/dev/null || true
-        echo "500" > "$LED_RED/delay_off" 2>/dev/null || true
-        log_debug "LED set to error blink"
-
-        # Auto-off after 60 seconds
-        (
-            sleep 60
-            echo "none" > "$LED_RED/trigger" 2>/dev/null || true
-            echo "0" > "$LED_RED/brightness" 2>/dev/null || true
-        ) &
-    fi
-}
-
-led_backup_stop() {
-    # Turn off all LEDs
-    if [ -d "$LED_GREEN" ]; then
-        echo "none" > "$LED_GREEN/trigger" 2>/dev/null || true
-        echo "0" > "$LED_GREEN/brightness" 2>/dev/null || true
-    fi
-    if [ -d "$LED_RED" ]; then
-        echo "none" > "$LED_RED/trigger" 2>/dev/null || true
-        echo "0" > "$LED_RED/brightness" 2>/dev/null || true
-    fi
-    log_debug "LEDs turned off"
-}
-
-# Check if path is safe (prevent directory traversal)
-is_safe_path() {
-    local path="$1"
-    case "$path" in
-        *../*|*/../*|*/..)
-            return 1
-            ;;
-        *)
-            return 0
-            ;;
-    esac
-}
+`led_state_progress` 根据 segment 1、2、3 写入三盏绿灯的 walking-lamp 状态；
+`led_state_unconfigured` 让 G3 慢闪并保持 R 不动；`led_state_error` 让 R 慢闪，
+再按错误类别将 G1、G2 或 G3 之一静亮；`led_state_complete` 让三盏绿灯静亮。
+管理器负责在状态变化时调用这些原语，公共函数库不自行启动后台任务。
 
 # Get filesystem type of device
 get_fs_type() {
@@ -364,24 +310,27 @@ DEBUG=0
 # Maximum concurrent backups
 MAX_CONCURRENT=1
 
-# LED paths (adjust for your hardware)
-LED_GREEN="/sys/class/leds/green:lan"
-LED_RED="/sys/class/leds/red:sys"
+# LED paths (R5S defaults; adjust each slot for other hardware)
+LED_RED="/sys/class/leds/red:power"
+LED_GREEN="/sys/class/leds/green:wan"
+LED_GREEN2="/sys/class/leds/green:lan-1"
+LED_GREEN3="/sys/class/leds/green:lan-2"
 EOF
 
 # Test LED access
+# An empty slot is a deliberate silent no-op; a non-empty missing path is an error.
 echo "Testing LED access..."
-if [ -d "/sys/class/leds/green:lan" ]; then
-    echo "Green LED found"
-else
-    echo "Warning: Green LED not found at expected path"
-fi
-
-if [ -d "/sys/class/leds/red:sys" ]; then
-    echo "Red LED found"
-else
-    echo "Warning: Red LED not found at expected path"
-fi
+for led in \
+    /sys/class/leds/red:power \
+    /sys/class/leds/green:wan \
+    /sys/class/leds/green:lan-1 \
+    /sys/class/leds/green:lan-2; do
+    if [ -d "$led" ]; then
+        echo "LED found: $led"
+    else
+        echo "Warning: LED not found at expected path: $led"
+    fi
+done
 
 # Create uninstall script
 cat > "$SCRIPT_DIR/uninstall.sh" << 'EOF'
@@ -410,14 +359,14 @@ echo "To uninstall:"
 echo "  $SCRIPT_DIR/uninstall.sh"
 echo
 
-# Test with a quick LED blink
-echo "Testing LED (3 second blink)..."
-echo "timer" > /sys/class/leds/green:lan/trigger 2>/dev/null || true
-echo "500" > /sys/class/leds/green:lan/delay_on 2>/dev/null || true
-echo "500" > /sys/class/leds/green:lan/delay_off 2>/dev/null || true
+# Test the R5S G1 LED (wan) with a 3-second fast blink
+LED=/sys/class/leds/green:wan
+printf '%s\n' timer > "$LED/trigger" 2>/dev/null || true
+printf '%s\n' 100 > "$LED/delay_on" 2>/dev/null || true
+printf '%s\n' 100 > "$LED/delay_off" 2>/dev/null || true
 sleep 3
-echo "none" > /sys/class/leds/green:lan/trigger 2>/dev/null || true
-echo "0" > /sys/class/leds/green:lan/brightness 2>/dev/null || true
+printf '%s\n' none > "$LED/trigger" 2>/dev/null || true
+printf '%s\n' 0 > "$LED/brightness" 2>/dev/null || true
 
 echo "Setup complete!"
 ```
@@ -477,13 +426,11 @@ LOG_MAX_SIZE=10240
 LOG_ROTATE_COUNT=10
 
 # === LED Settings ===
-# Adjust these paths for your specific hardware
-
-# Green LED for normal operations
-LED_GREEN="/sys/class/leds/green:lan"
-
-# Red LED for errors
-LED_RED="/sys/class/leds/red:sys"
+# R5S four-lamp defaults. An explicit empty value means no LED for that slot.
+LED_RED="/sys/class/leds/red:power"
+LED_GREEN="/sys/class/leds/green:wan"
+LED_GREEN2="/sys/class/leds/green:lan-1"
+LED_GREEN3="/sys/class/leds/green:lan-2"
 
 # LED blink rates (milliseconds)
 LED_FAST_BLINK=100
