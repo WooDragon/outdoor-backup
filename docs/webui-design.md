@@ -837,7 +837,7 @@ iStoreOS 可能启用了更严格的权限控制，需要正确配置：
 
 ```json
 {
-  "outdoor-backup": {
+  "luci-app-outdoor-backup": {
     "description": "Outdoor backup management",
     "read": {
       "uci": ["outdoor-backup"],

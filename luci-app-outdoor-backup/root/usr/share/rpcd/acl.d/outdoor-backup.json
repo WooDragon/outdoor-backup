@@ -1,5 +1,5 @@
 {
-  "outdoor-backup": {
+  "luci-app-outdoor-backup": {
     "description": "Outdoor backup management",
     "read": {
       "uci": ["outdoor-backup"],

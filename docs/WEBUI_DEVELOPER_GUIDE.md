@@ -110,8 +110,11 @@ luci-app-outdoor-backup/
 │       ├── status.htm                   # 状态页面（911 行）
 │       └── log.htm                      # 日志页面（243 行）
 ├── root/
-│   └── usr/share/rpcd/acl.d/
-│       └── outdoor-backup.json          # RPCD 权限（待添加）
+│   └── usr/share/
+│       ├── luci/menu.d/
+│       │   └── luci-app-outdoor-backup.json  # 菜单入口（受版本跟踪）
+│       └── rpcd/acl.d/
+│           └── outdoor-backup.json      # RPCD 权限（待添加）
 └── po/                                   # 国际化（待添加）
     ├── zh_Hans/outdoor-backup.po        # 简体中文
     └── templates/outdoor-backup.pot     # 翻译模板
