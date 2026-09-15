@@ -20,6 +20,8 @@ ACL_JSON="$REPO_ROOT/luci-app-outdoor-backup/root/usr/share/rpcd/acl.d/outdoor-b
 MENU_JSON="$REPO_ROOT/luci-app-outdoor-backup/root/usr/share/luci/menu.d/luci-app-outdoor-backup.json"
 MAKEFILE="$REPO_ROOT/luci-app-outdoor-backup/Makefile"
 FIXTURE_FILE=
+POSTINST_FIXTURE_FILE=
+COMMENTED_POSTINST_FIXTURE_FILE=
 CASES=0
 ASSERTIONS=0
 FAILED=0
@@ -49,6 +51,16 @@ assert_failure() {
     ASSERTIONS=$((ASSERTIONS + 1))
     if "$@"; then
         fail "$message"
+    fi
+}
+
+assert_success_nonempty_stdout() {
+    message=$1
+    shift
+    ASSERTIONS=$((ASSERTIONS + 1))
+    output=$("$@" 2>/dev/null) || { fail "$message"; return; }
+    if [ -z "$output" ]; then
+        fail "$message (empty extraction)"
     fi
 }
 
@@ -82,6 +94,61 @@ assert_file_contains_regex() {
     fi
 }
 
+assert_active_contains() {
+    needle=$1
+    file=$2
+    message=$3
+    ASSERTIONS=$((ASSERTIONS + 1))
+    if ! grep -v -E '^[[:space:]]*#' "$file" | grep -F -q -- "$needle"; then
+        fail "$message (missing-active=[$needle])"
+    fi
+}
+
+assert_active_lacks() {
+    needle=$1
+    file=$2
+    message=$3
+    ASSERTIONS=$((ASSERTIONS + 1))
+    if grep -v -E '^[[:space:]]*#' "$file" | grep -F -q -- "$needle"; then
+        fail "$message (unexpected-active-match=[$needle])"
+    fi
+}
+
+extract_postinst() {
+    if ! awk '
+        $0 == "define Package/luci-app-outdoor-backup/postinst" {
+            definitions += 1
+            if (in_block) {
+                invalid = 1
+            }
+            in_block = 1
+            next
+        }
+        in_block && $0 == "endef" {
+            if (lines == 0) {
+                invalid = 1
+            }
+            in_block = 0
+            next
+        }
+        in_block {
+            print
+            lines += 1
+            if ($0 ~ /[^[:space:]]/) {
+                nonempty = 1
+            }
+        }
+        END {
+            if (definitions != 1 || in_block || invalid || !nonempty) {
+                exit 1
+            }
+        }
+    ' "$MAKEFILE" > "$POSTINST_FIXTURE_FILE"; then
+        printf '%s\n' 'FAIL: Makefile postinst definition is not exactly one non-empty block' >&2
+        exit 1
+    fi
+}
+
 case_l01_both_json_files_parse() {
     begin_case L01 'ACL and menu JSON parse with jsonfilter'
     assert_success 'L01 ACL JSON parses' jsonfilter -i "$ACL_JSON" -e '@'
@@ -98,7 +165,7 @@ case_l02_menu_acl_dependencies_resolve() {
     fi
     while IFS= read -r dependency; do
         [ -n "$dependency" ] || continue
-        assert_success "L02 ACL group exists: $dependency" \
+        assert_success_nonempty_stdout "L02 ACL group exists: $dependency" \
             jsonfilter -i "$ACL_JSON" -e "@[\"$dependency\"]"
     done <<EOF
 $dependencies
@@ -135,17 +202,45 @@ case_l05_makefile_installs_source_menu() {
 
 case_l06_postinst_flushes_luci_caches() {
     begin_case L06 'package postinst flushes stale LuCI caches'
-    assert_file_contains \
-        'define Package/luci-app-outdoor-backup/postinst' "$MAKEFILE" \
-        'L06 postinst definition exists'
-    assert_file_contains \
-        'rm -f /tmp/luci-indexcache.*' "$MAKEFILE" \
+    POSTINST_FIXTURE_FILE=${TMPDIR:-/tmp}/test-luci-acl-postinst.$$
+    extract_postinst
+    assert_active_contains \
+        'rm -f /tmp/luci-indexcache.*' "$POSTINST_FIXTURE_FILE" \
         'L06 postinst removes the LuCI index cache'
+    assert_active_contains \
+        'rpcd reload' "$POSTINST_FIXTURE_FILE" \
+        'L06 postinst reloads rpcd'
+    assert_active_contains \
+        'IPKG_INSTROOT' "$POSTINST_FIXTURE_FILE" \
+        'L06 postinst guards on IPKG_INSTROOT'
+
+    COMMENTED_POSTINST_FIXTURE_FILE=${TMPDIR:-/tmp}/test-luci-acl-postinst-commented.$$
+    {
+        printf '%s\n' '#!/bin/sh'
+        printf '%s\n' '# rm -f /tmp/luci-indexcache.*'
+        printf '%s\n' '#/etc/init.d/rpcd reload'
+        printf '%s\n' '  # IPKG_INSTROOT guard commented out too'
+    } >"$COMMENTED_POSTINST_FIXTURE_FILE"
+    assert_active_lacks \
+        'rm -f /tmp/luci-indexcache.*' "$COMMENTED_POSTINST_FIXTURE_FILE" \
+        'L06 self-check: commented index-cache line must not read as active'
+    assert_active_lacks \
+        'rpcd reload' "$COMMENTED_POSTINST_FIXTURE_FILE" \
+        'L06 self-check: commented rpcd reload must not read as active'
+    assert_active_lacks \
+        'IPKG_INSTROOT' "$COMMENTED_POSTINST_FIXTURE_FILE" \
+        'L06 self-check: commented IPKG_INSTROOT guard must not read as active'
 }
 
 cleanup() {
     if [ -n "$FIXTURE_FILE" ]; then
         rm -f -- "$FIXTURE_FILE"
+    fi
+    if [ -n "$POSTINST_FIXTURE_FILE" ]; then
+        rm -f -- "$POSTINST_FIXTURE_FILE"
+    fi
+    if [ -n "$COMMENTED_POSTINST_FIXTURE_FILE" ]; then
+        rm -f -- "$COMMENTED_POSTINST_FIXTURE_FILE"
     fi
 }
 

@@ -56,7 +56,7 @@ define Package/luci-app-outdoor-backup/install
 	$(INSTALL_DIR) $(1)/usr/share/luci/menu.d
 	$(INSTALL_DATA) ./root/usr/share/luci/menu.d/luci-app-outdoor-backup.json $(1)/usr/share/luci/menu.d/
 
-	# Install uHTTPd ACL
+	# Install rpcd ACL
 	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
 	$(INSTALL_DATA) ./root/usr/share/rpcd/acl.d/outdoor-backup.json $(1)/usr/share/rpcd/acl.d/
 endef
