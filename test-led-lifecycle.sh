@@ -14,6 +14,10 @@ if [ "${IN_OPENWRT_TEST:-}" != "1" ]; then
 fi
 
 REPO_ROOT=/src
+TEST_CAPTURED_STDERR=1
+TEST_ASYNC_STDERR="/tmp/outdoor-backup-led-lifecycle-async.$$.stderr"
+TEST_TARGET_MANAGER_LIBRARY_ONLY=1
+. "$REPO_ROOT/test-target-manager.sh" --inside
 CASES=0
 ASSERTIONS=0
 FAILED=0
@@ -132,6 +136,108 @@ all_leds_snapshot() {
         "$(serialize_lamp "$GREEN2")" "$(serialize_lamp "$GREEN3")"
 }
 
+manager_led_sentinel() {
+    for d in "$TEST_ROOT/red" "$TEST_ROOT/green" \
+        "$TEST_ROOT/green2" "$TEST_ROOT/green3"; do
+        printf '%s\n' sentinel > "$d/trigger"
+        printf '%s\n' 777 > "$d/brightness"
+        printf '%s\n' sentinel > "$d/delay_on"
+        printf '%s\n' sentinel > "$d/delay_off"
+    done
+}
+
+install_manager_led_snapshot_logger() {
+    cat > "$BIN/logger" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$TEST_NOTICES"
+if [ ! -e "$TEST_LED_SNAPSHOT/.captured" ]; then
+    mkdir -p "$TEST_LED_SNAPSHOT/red" "$TEST_LED_SNAPSHOT/green" \
+        "$TEST_LED_SNAPSHOT/green2" "$TEST_LED_SNAPSHOT/green3"
+    for field in trigger brightness delay_on delay_off; do
+        cp "$TEST_LED_RED/$field" "$TEST_LED_SNAPSHOT/red/$field"
+        cp "$TEST_LED_GREEN/$field" "$TEST_LED_SNAPSHOT/green/$field"
+        cp "$TEST_LED_GREEN2/$field" "$TEST_LED_SNAPSHOT/green2/$field"
+        cp "$TEST_LED_GREEN3/$field" "$TEST_LED_SNAPSHOT/green3/$field"
+    done
+    : > "$TEST_LED_SNAPSHOT/.captured"
+fi
+exit 0
+EOF
+    chmod 755 "$BIN/logger"
+}
+
+run_manager_led_snapshot() {
+    snapshot=$1
+    shift
+    TEST_LED_SNAPSHOT="$snapshot"
+    TEST_LED_RED="$TEST_ROOT/red"
+    TEST_LED_GREEN="$TEST_ROOT/green"
+    TEST_LED_GREEN2="$TEST_ROOT/green2"
+    TEST_LED_GREEN3="$TEST_ROOT/green3"
+    export TEST_LED_SNAPSHOT TEST_LED_RED TEST_LED_GREEN TEST_LED_GREEN2 TEST_LED_GREEN3
+    run_manager "$@"
+}
+
+assert_manager_snapshot() {
+    snapshot=$1
+    expected=$2
+    label=$3
+    assert_equal "$(serialize_lamp "$snapshot/red")" "$expected" "$label red"
+    assert_equal "$(serialize_lamp "$snapshot/green")" "$expected" "$label green"
+    assert_equal "$(serialize_lamp "$snapshot/green2")" "$expected" "$label green2"
+    assert_equal "$(serialize_lamp "$snapshot/green3")" "$expected" "$label green3"
+}
+
+case_manager_add_resets_terminal_leds() {
+    begin_case L1 "add resets a prior completed LED state before guard failure"
+    reset_case || { fail "L1 fixture setup failed"; return; }
+    manager_led_sentinel
+    for d in "$TEST_ROOT/green" "$TEST_ROOT/green2" "$TEST_ROOT/green3"; do
+        printf '%s\n' none > "$d/trigger"
+        printf '%s\n' 1 > "$d/brightness"
+    done
+    install_manager_led_snapshot_logger
+    set_config_target_uuid ''
+    snapshot="$TEST_ROOT/reset-snapshot"
+    run_manager_led_snapshot "$snapshot" add sda1 /devices/mock || :
+    assert_manager_snapshot "$snapshot" "none/0/sentinel/sentinel" \
+        "L1 reset snapshot"
+}
+
+case_manager_add_lock_reset_race_guard() {
+    begin_case L2 "add defers reset while lock exists, including a stale lock"
+    reset_case || { fail "L2 live-lock fixture setup failed"; return; }
+    manager_led_sentinel
+    install_manager_led_snapshot_logger
+    set_config_target_uuid ''
+    LOCK_LINK="$RUNTIME/var/lock/backup.lock"
+    ln -s "/proc/$$" "$LOCK_LINK"
+    live_snapshot="$TEST_ROOT/live-lock-snapshot"
+    run_manager_led_snapshot "$live_snapshot" add sda1 /devices/mock || :
+    assert_manager_snapshot "$live_snapshot" "sentinel/777/sentinel/sentinel" \
+        "L2 live lock preserves LEDs"
+
+    reset_case || { fail "L2 unlocked fixture setup failed"; return; }
+    manager_led_sentinel
+    install_manager_led_snapshot_logger
+    set_config_target_uuid ''
+    unlocked_snapshot="$TEST_ROOT/unlocked-snapshot"
+    run_manager_led_snapshot "$unlocked_snapshot" add sda1 /devices/mock || :
+    assert_manager_snapshot "$unlocked_snapshot" "none/0/sentinel/sentinel" \
+        "L2 absent lock resets LEDs"
+
+    reset_case || { fail "L2 stale-lock fixture setup failed"; return; }
+    manager_led_sentinel
+    install_manager_led_snapshot_logger
+    set_config_target_uuid ''
+    LOCK_LINK="$RUNTIME/var/lock/backup.lock"
+    ln -s /proc/2147483647 "$LOCK_LINK"
+    stale_snapshot="$TEST_ROOT/stale-lock-snapshot"
+    run_manager_led_snapshot "$stale_snapshot" add sda1 /devices/mock || :
+    assert_manager_snapshot "$stale_snapshot" "sentinel/777/sentinel/sentinel" \
+        "L2 stale lock preserves LEDs"
+}
+
 case_cancelled_operator() {
     begin_case L3 "operator cancellation turns green LEDs off without writing red LED"
     prepare_led_red_pristine
@@ -171,19 +277,23 @@ case_cancelled_paths_differ() {
 }
 
 cleanup() {
-    rm -rf "$LED_ROOT"
+    settle_led_fixture 2>/dev/null || :
+    unmount_target 2>/dev/null || :
+    rm -rf "$LED_ROOT" "$SUITE_ROOT" /opt/outdoor-backup/conf "$TEST_ASYNC_STDERR"
 }
 
 main() {
     trap cleanup EXIT INT TERM
+    case_manager_add_resets_terminal_leds
+    case_manager_add_lock_reset_race_guard
     case_cancelled_operator
     case_cancelled_lease
     case_cancelled_paths_differ
-    if [ "$CASES" -ne 3 ]; then
-        fail "all required LED lifecycle cases executed (expected=3, actual=$CASES)"
+    if [ "$CASES" -ne 5 ]; then
+        fail "all required LED lifecycle cases executed (expected=5, actual=$CASES)"
     fi
-    if [ "$ASSERTIONS" -ne 26 ]; then
-        fail "assertion count gate (expected=26, actual=$ASSERTIONS)"
+    if [ "$ASSERTIONS" -ne 42 ]; then
+        fail "assertion count gate (expected=42, actual=$ASSERTIONS)"
     fi
     if [ "$FAILED" -ne 0 ]; then
         printf 'cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"
