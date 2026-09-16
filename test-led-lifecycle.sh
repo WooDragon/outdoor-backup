@@ -276,6 +276,145 @@ case_cancelled_paths_differ() {
         "operator and lease cancellation LED snapshots differ"
 }
 
+INIT=/etc/init.d/outdoor-backup
+INIT_ROOT=/opt/outdoor-backup
+INIT_SCRIPTS="$INIT_ROOT/scripts"
+INIT_CONFIG="$INIT_ROOT/conf/backup.conf"
+INIT_LOCK="$INIT_ROOT/var/lock/backup.lock"
+
+prepare_init_fixture() {
+    rm -rf "$INIT_ROOT" "$INIT" /etc/config/outdoor-backup \
+        /etc/hotplug.d/block/90-outdoor-backup
+    mkdir -p "$INIT_SCRIPTS" "${INIT_CONFIG%/*}" "${INIT_LOCK%/*}" \
+        /etc/init.d /etc/config /etc/hotplug.d/block
+    cp "$REPO_ROOT/files/opt/outdoor-backup/scripts/."* "$INIT_SCRIPTS/" 2>/dev/null || :
+    cp "$REPO_ROOT/files/opt/outdoor-backup/scripts/"*.sh "$INIT_SCRIPTS/"
+    cp "$REPO_ROOT/files/etc/init.d/outdoor-backup" "$INIT"
+    chmod 755 "$INIT" "$INIT_SCRIPTS"/*.sh
+    cat > "$INIT_CONFIG" <<EOF
+BACKUP_ROOT="/tmp/outdoor-backup-led-lifecycle-backups"
+TARGET_MOUNT="/tmp/outdoor-backup-led-lifecycle-target"
+TARGET_UUID=""
+MOUNT_POINT="/tmp/outdoor-backup-led-lifecycle-source"
+LED_GREEN="$GREEN1"
+LED_GREEN2="$GREEN2"
+LED_GREEN3="$GREEN3"
+LED_RED="$RED"
+EOF
+    mkdir -p /tmp/outdoor-backup-led-lifecycle-backups \
+        /tmp/outdoor-backup-led-lifecycle-target \
+        /tmp/outdoor-backup-led-lifecycle-source
+    cat > "$INIT_ROOT/scripts/service-control.sh" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$1" >> "${TEST_INIT_CONTROLLER_LOG:?}"
+exit 0
+EOF
+    chmod 755 "$INIT_ROOT/scripts/service-control.sh"
+    : > /etc/hotplug.d/block/90-outdoor-backup
+    chmod 755 /etc/hotplug.d/block/90-outdoor-backup
+}
+
+run_init() {
+    action=$1
+    TEST_INIT_CONTROLLER_LOG="$NOTICES" \
+        /bin/ash /etc/rc.common "$INIT" "$action"
+}
+
+init_led_sentinel() {
+    for d in "$RED" "$GREEN1" "$GREEN2" "$GREEN3"; do
+        printf '%s\n' sentinel > "$d/trigger"
+        printf '%s\n' 777 > "$d/brightness"
+        printf '%s\n' sentinel > "$d/delay_on"
+        printf '%s\n' sentinel > "$d/delay_off"
+    done
+}
+
+assert_init_reset() {
+    expected=$1
+    assert_equal "$(serialize_lamp "$RED")" "$expected" "L6 red LED state"
+    assert_equal "$(serialize_lamp "$GREEN1")" "$expected" "L6 green1 LED state"
+    assert_equal "$(serialize_lamp "$GREEN2")" "$expected" "L6 green2 LED state"
+    assert_equal "$(serialize_lamp "$GREEN3")" "$expected" "L6 green3 LED state"
+}
+
+case_init_led_lifecycle() {
+    begin_case L6 "init start/restart reset only while idle and stop preserves terminal LEDs"
+    prepare_led
+    prepare_init_fixture
+    init_led_sentinel
+    : > "$INIT_LOCK"
+    assert_success "L6 start with business lock succeeds" run_init start
+    assert_init_reset "sentinel/777/sentinel/sentinel"
+
+    rm -f "$INIT_LOCK"
+    init_led_sentinel
+    assert_success "L6 start without business lock succeeds" run_init start
+    assert_init_reset "none/0/sentinel/sentinel"
+
+    : > "$INIT_LOCK"
+    init_led_sentinel
+    assert_success "L6 restart with business lock succeeds" run_init restart
+    assert_init_reset "sentinel/777/sentinel/sentinel"
+
+    rm -f "$INIT_LOCK"
+    init_led_sentinel
+    assert_success "L6 restart without business lock succeeds" run_init restart
+    assert_init_reset "none/0/sentinel/sentinel"
+
+    init_led_sentinel
+    assert_success "L6 stop succeeds" run_init stop
+    assert_init_reset "sentinel/777/sentinel/sentinel"
+}
+
+case_led_reset_ignores_optional_led_configuration() {
+    begin_case L7 "led-reset keeps working when an optional LED path is invalid"
+    prepare_led
+    prepare_init_fixture
+    cat > "$INIT_CONFIG" <<EOF
+BACKUP_ROOT="/tmp/outdoor-backup-led-lifecycle-backups"
+TARGET_MOUNT="/tmp/outdoor-backup-led-lifecycle-target"
+TARGET_UUID=""
+MOUNT_POINT="/tmp/outdoor-backup-led-lifecycle-source"
+LED_GREEN="$GREEN1"
+LED_GREEN2="relative-led-path"
+LED_GREEN3="$GREEN3"
+LED_RED="$RED"
+EOF
+    init_led_sentinel
+    assert_success "L7 led-reset tolerates invalid optional LED path" \
+        "$INIT_SCRIPTS/led-reset.sh"
+    assert_equal "$(serialize_lamp "$RED")" "none/0/sentinel/sentinel" \
+        "L7 red LED reset despite optional config error"
+    assert_equal "$(serialize_lamp "$GREEN1")" "none/0/sentinel/sentinel" \
+        "L7 green1 LED reset despite optional config error"
+    assert_equal "$(serialize_lamp "$GREEN2")" "sentinel/777/sentinel/sentinel" \
+        "L7 invalid optional LED remains untouched"
+    assert_equal "$(serialize_lamp "$GREEN3")" "none/0/sentinel/sentinel" \
+        "L7 green3 LED reset despite optional config error"
+
+    cat > "$INIT_CONFIG" <<EOF
+BACKUP_ROOT="/"
+TARGET_MOUNT="/tmp/outdoor-backup-led-lifecycle-target"
+TARGET_UUID=""
+MOUNT_POINT="/tmp/outdoor-backup-led-lifecycle-source"
+LED_GREEN="$GREEN1"
+LED_GREEN2="$GREEN2"
+LED_GREEN3="$GREEN3"
+LED_RED="$RED"
+EOF
+    init_led_sentinel
+    assert_success "L7 led-reset exits safely on invalid required path" \
+        "$INIT_SCRIPTS/led-reset.sh"
+    assert_equal "$(serialize_lamp "$RED")" "sentinel/777/sentinel/sentinel" \
+        "L7 required config failure preserves red LED"
+    assert_equal "$(serialize_lamp "$GREEN1")" "sentinel/777/sentinel/sentinel" \
+        "L7 required config failure preserves green1 LED"
+    assert_equal "$(serialize_lamp "$GREEN2")" "sentinel/777/sentinel/sentinel" \
+        "L7 required config failure preserves green2 LED"
+    assert_equal "$(serialize_lamp "$GREEN3")" "sentinel/777/sentinel/sentinel" \
+        "L7 required config failure preserves green3 LED"
+}
+
 cleanup() {
     settle_led_fixture 2>/dev/null || :
     unmount_target 2>/dev/null || :
@@ -289,11 +428,13 @@ main() {
     case_cancelled_operator
     case_cancelled_lease
     case_cancelled_paths_differ
-    if [ "$CASES" -ne 5 ]; then
-        fail "all required LED lifecycle cases executed (expected=5, actual=$CASES)"
+    case_init_led_lifecycle
+    case_led_reset_ignores_optional_led_configuration
+    if [ "$CASES" -ne 7 ]; then
+        fail "all required LED lifecycle cases executed (expected=7, actual=$CASES)"
     fi
-    if [ "$ASSERTIONS" -ne 42 ]; then
-        fail "assertion count gate (expected=42, actual=$ASSERTIONS)"
+    if [ "$ASSERTIONS" -ne 77 ]; then
+        fail "assertion count gate (expected=77, actual=$ASSERTIONS)"
     fi
     if [ "$FAILED" -ne 0 ]; then
         printf 'cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"
