@@ -267,8 +267,11 @@ case_r01b_matching_remove_shows_operator_led() {
     mr_equal "$(mr_hash_or_absent "$TEST_ROOT/red/delay_off")" "$red_delay_off_before" \
         'R01b operator cancellation issues no further write against the red LED off-delay file'
     mr_equal "$(cat "$TEST_ROOT/green/brightness")" 0 'R01b operator cancellation leaves G1 off'
+    mr_equal "$(cat "$TEST_ROOT/green/trigger")" none 'R01b operator cancellation clears G1 trigger'
     mr_equal "$(cat "$TEST_ROOT/green2/brightness")" 0 'R01b operator cancellation leaves G2 off'
+    mr_equal "$(cat "$TEST_ROOT/green2/trigger")" none 'R01b operator cancellation clears G2 trigger'
     mr_equal "$(cat "$TEST_ROOT/green3/brightness")" 0 'R01b operator cancellation leaves G3 off'
+    mr_equal "$(cat "$TEST_ROOT/green3/trigger")" none 'R01b operator cancellation clears G3 trigger'
 }
 
 case_r02_waiter_remove_does_not_touch_owner() {
@@ -510,6 +513,7 @@ main() {
     case_r06_real_hotplug_dispatches_remove_without_reader_config
     case_r07_enabled_add_event_gate_precedes_target
     mr_equal "$MR_CASES" 8 'all required manager-removal cases executed'
+    mr_equal "$MR_ASSERTIONS" 129 'manager-removal assertion count remains covered'
     if [ "$MR_FAILED" -ne 0 ]; then
         printf 'RESULT cases=%s assertions=%s failed=%s\n' "$MR_CASES" "$MR_ASSERTIONS" "$MR_FAILED"
         exit 1
