@@ -48,12 +48,14 @@ CASES=0
 ASSERTIONS=0
 FAILED=0
 ACTIVE_PIDS=''
-EXPECTED_CASES=8
+EXPECTED_CASES=9
 # MS02 F8 adds 11 lifecycle assertions; MS05 adds 18 (17 original + 1 new
 # normal-half manager-validity check now that the normal path also runs a
 # private FD8-witness manager copy instead of the delivered manager
-# directly); MS07 adds 16.
-EXPECTED_ASSERTIONS=207 # 195 baseline + 11 + 1
+# directly); MS07 adds 16. MS02b (PR #44 review item 2a) adds 8: 2 exit-code
+# assertions plus the 6-assertion lease LED shape (R timer/500/500, G1/G2
+# solid, G3 off).
+EXPECTED_ASSERTIONS=215 # 195 baseline + 11 + 1 + 8
 
 fail() {
     printf 'FAIL: %s\n' "$1" >&2
@@ -913,6 +915,48 @@ case_ms02_stop_real_manager_and_writer() {
     persist_evidence_value ms02/controller.rc "$ms02_controller_rc" || fail 'MS02 cannot persist controller rc'
     persist_evidence_file ms02/events "$TEST_MS08_EVENTS" || fail 'MS02 cannot persist lifecycle events'
     persist_evidence_file ms02/controller.out "$TEST_ROOT/controller.out" || fail 'MS02 cannot persist controller diagnostic'
+}
+
+# PR #44 review finding 1 (Item 2a): a controller-driven quiescent stop is a
+# lease-loss cancellation, not an operator card-pull, so cleanup must show the
+# lease LED pattern (R slow-blink, G1/G2 solid, G3 off) -- never the operator
+# pattern's all-greens-off shape. This reuses MS02's exact real signal-delivery
+# mechanics; it only adds the LED assertions MS02 itself does not make.
+case_ms02b_stop_shows_lease_led() {
+    begin_case MS02b 'controller-driven stop cleanup shows the lease cancellation LED pattern, not the operator pattern'
+    prepare_service_case || { fail 'MS02b fixture setup failed'; return; }
+    install_transfer_barrier || { fail 'MS02b writer hold setup failed'; return; }
+    start_manager_service "$TEST_ROOT/manager.out"
+    wait_path "$TEST_ROOT/manager.ready" "$MANAGER_PID" 'MS02b real manager' || return
+    run_controller_background "$TEST_ROOT/controller.out"
+    wait_file_value "$SERVICE_RUNTIME/state" stopped:0 "$CONTROLLER_PID" 'MS02b controller closes state' || return
+    : > "$TEST_ROOT/manager.release"
+    if wait_pid "$MANAGER_PID" 20 'MS02b manager'; then
+        ms02b_manager_rc=0
+    else
+        ms02b_manager_rc=$?
+    fi
+    if wait_pid "$CONTROLLER_PID" 20 'MS02b controller'; then
+        ms02b_controller_rc=0
+    else
+        ms02b_controller_rc=$?
+    fi
+    assert_equal "$ms02b_manager_rc" 143 'MS02b real manager exits with cancellation code 143'
+    assert_equal "$ms02b_controller_rc" 0 'MS02b controller succeeds only after quiescence'
+    assert_equal "$(cat "$TEST_ROOT/red/trigger")" timer \
+        'MS02b lease cancellation lights the red LED timer trigger'
+    assert_equal "$(cat "$TEST_ROOT/red/delay_on")" 500 \
+        'MS02b lease cancellation sets red LED on delay'
+    assert_equal "$(cat "$TEST_ROOT/red/delay_off")" 500 \
+        'MS02b lease cancellation sets red LED off delay'
+    assert_equal "$(cat "$TEST_ROOT/green/brightness")" 1 \
+        'MS02b lease cancellation leaves G1 solid'
+    assert_equal "$(cat "$TEST_ROOT/green2/brightness")" 1 \
+        'MS02b lease cancellation leaves G2 solid'
+    assert_equal "$(cat "$TEST_ROOT/green3/brightness")" 0 \
+        'MS02b lease cancellation leaves G3 off'
+    persist_evidence_value ms02b/manager.rc "$ms02b_manager_rc" || fail 'MS02b cannot persist manager rc'
+    persist_evidence_value ms02b/controller.rc "$ms02b_controller_rc" || fail 'MS02b cannot persist controller rc'
 }
 
 start_ms03_waiter() {
@@ -1919,6 +1963,7 @@ main() {
     mkdir -p "$MANAGER_SERVICE_ROOT" || exit 1
     case_ms01_admission_partitions_and_fast_paths
     case_ms02_stop_real_manager_and_writer
+    case_ms02b_stop_shows_lease_led
     case_ms03_waiter_current_gate
     case_ms04_prelock_lease_blocks_stop
     case_ms05_guard_failure_releases_inherited_lease

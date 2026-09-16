@@ -237,6 +237,40 @@ case_r01_matching_remove_cancels_once() {
         'R01 repeated remove does not repeat owner cleanup'
 }
 
+# PR #44 review finding 1 (Item 2b): a matching 4-arg remove is a real operator
+# card-pull, so cleanup must show the operator LED pattern (all three greens
+# off, red LED never written) -- never the lease pattern's solid greens. Proof
+# for red is file-absence (mr_absent), not a trigger==none read, because the
+# lease pattern's own red LED never sets trigger=none either -- reading only
+# `trigger` there would not distinguish the two patterns.
+case_r01b_matching_remove_shows_operator_led() {
+    mr_case R01b 'matching remove cancellation shows the operator LED pattern, not the lease pattern'
+    reset_case || { mr_fail 'R01b fixture setup failed'; return; }
+    start_active_owner 10
+    # Sentinel capture, not a trigger==none read: reset_leds_for_new_card
+    # already wrote red/trigger=none at this add event's own startup, before
+    # the owner ever reached transfer, so red/trigger already exists here.
+    # The proof this case needs is that operator cancellation issues no
+    # further write against R at all -- captured as a byte-identity sentinel
+    # before the remove and compared after, the same discipline M28 in
+    # test-target-manager.sh already uses for a live holder's LED bytes.
+    red_trigger_before=$(mr_hash_or_absent "$TEST_ROOT/red/trigger")
+    red_delay_on_before=$(mr_hash_or_absent "$TEST_ROOT/red/delay_on")
+    red_delay_off_before=$(mr_hash_or_absent "$TEST_ROOT/red/delay_off")
+    request_remove sda1 /devices/mock/sda/sda1 11
+    mr_equal "$MR_RC" 0 'R01b matching remove succeeds'
+    assert_cancelled_owner R01b
+    mr_equal "$(mr_hash_or_absent "$TEST_ROOT/red/trigger")" "$red_trigger_before" \
+        'R01b operator cancellation issues no further write against the red LED trigger file'
+    mr_equal "$(mr_hash_or_absent "$TEST_ROOT/red/delay_on")" "$red_delay_on_before" \
+        'R01b operator cancellation issues no further write against the red LED on-delay file'
+    mr_equal "$(mr_hash_or_absent "$TEST_ROOT/red/delay_off")" "$red_delay_off_before" \
+        'R01b operator cancellation issues no further write against the red LED off-delay file'
+    mr_equal "$(cat "$TEST_ROOT/green/brightness")" 0 'R01b operator cancellation leaves G1 off'
+    mr_equal "$(cat "$TEST_ROOT/green2/brightness")" 0 'R01b operator cancellation leaves G2 off'
+    mr_equal "$(cat "$TEST_ROOT/green3/brightness")" 0 'R01b operator cancellation leaves G3 off'
+}
+
 case_r02_waiter_remove_does_not_touch_owner() {
     mr_case R02 'remove for a waiting manager does not affect an active different owner'
     reset_case || { mr_fail 'R02 fixture setup failed'; return; }
@@ -468,13 +502,14 @@ main() {
     mr_success 'owner-event library validates canonical event in manager fixture' \
         owner_event_validate_event sda1 /devices/mock/sda/sda1 1
     case_r01_matching_remove_cancels_once
+    case_r01b_matching_remove_shows_operator_led
     case_r02_waiter_remove_does_not_touch_owner
     case_r03_path_relation_is_exact
     case_r04_sequence_and_legacy_forms_are_safe
     case_r05_bad_events_and_bad_config_have_no_shared_side_effects
     case_r06_real_hotplug_dispatches_remove_without_reader_config
     case_r07_enabled_add_event_gate_precedes_target
-    mr_equal "$MR_CASES" 7 'all required manager-removal cases executed'
+    mr_equal "$MR_CASES" 8 'all required manager-removal cases executed'
     if [ "$MR_FAILED" -ne 0 ]; then
         printf 'RESULT cases=%s assertions=%s failed=%s\n' "$MR_CASES" "$MR_ASSERTIONS" "$MR_FAILED"
         exit 1

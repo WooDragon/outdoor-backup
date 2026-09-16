@@ -185,6 +185,10 @@ trap temporary_lease_cleanup EXIT
 #   unconfigured -> led_state_unconfigured (G3 slow-blink, R untouched):
 #     "target UUID is unconfigured" is a configuration state, not a device
 #     or anchor identity failure (PR #41 review finding 3).
+#   unclassified -> led_state_error 0 (R slow-blink, no green): target_prepare_root
+#     failing is neither a device/anchor identity failure nor a configuration
+#     state -- it is an unclassified backup-root problem (issue #43 scope 4),
+#     and must not be conflated with the device_unknown class below.
 #   anything else -> led_state_error 3 (G3 solid + R slow-blink): the real
 #     device/anchor validation failure class (device_unknown-equivalent).
 guard_failure() {
@@ -192,15 +196,49 @@ guard_failure() {
 	(
 		DEBUG=0
 		. "$SCRIPT_DIR/common.sh"
-		if [ "$1" = unconfigured ]; then
-			led_state_unconfigured
-		else
-			led_state_error 3
-		fi
+		case "$1" in
+			unconfigured) led_state_unconfigured ;;
+			unclassified) led_state_error 0 ;;
+			*) led_state_error 3 ;;
+		esac
+	) >/dev/null || :
+}
+
+# Reset all four lamps (including R) to off at the very start of an add event,
+# before any check that can fail (issue #43 scope 1). This is the agreed
+# "reset on next card insertion" design: a prior run's terminal error/complete
+# state must not persist visually once a new card is being processed, and this
+# is the only site outside the cancellation/error LED primitives that is ever
+# allowed to actively write to R. Runs in its own DEBUG=0 subshell so common.sh
+# stays confined here, matching guard_failure's existing sourcing pattern.
+reset_leds_for_new_card() {
+	# Skip when another manager instance currently holds the lock: this event
+	# has not acquired it yet, so blindly resetting here would stomp on that
+	# other instance's live progress/terminal LEDs -- the same race init.d's
+	# led_reset_if_idle already guards against for service start/restart
+	# (issue #43 scope 3). A stale (holder-dead) lock is deliberately treated
+	# the same as a live one here: acquire_lock's own stale-lock reclaim runs
+	# later and is the sole owner of that decision, so this reset simply
+	# defers rather than duplicating that judgment.
+	# This existence check and the reset below are not atomic (PR #44 review
+	# finding 6): another instance can acquire the lock in the gap between
+	# this check and led_state_reset_idle actually running, in which case
+	# this call still stomps on that instance's live LEDs. This is a
+	# best-effort guard against the common case, not a closed guarantee --
+	# closing it would mean resetting only after acquiring the lock, which
+	# is a real design change out of scope here, not a comment fix.
+	if [ -e "$LOCK_LINK" ] || [ -L "$LOCK_LINK" ]; then
+		return 0
+	fi
+	(
+		DEBUG=0
+		. "$SCRIPT_DIR/common.sh"
+		led_state_reset_idle
 	) >/dev/null || :
 }
 
 if [ "$ACTION" = "add" ]; then
+	reset_leds_for_new_card
 	# An unconfigured UUID is a configuration state, not a mount probe. Report it
 	# before touching an optional default mount path or any application resource.
 	if [ -z "$TARGET_UUID" ]; then
@@ -209,9 +247,12 @@ if [ "$ACTION" = "add" ]; then
 		exit 1
 	fi
 	if ! target_open "$TARGET_MOUNT" || \
-		! target_device_validate "$TARGET_DEVICE" "$TARGET_UUID" "$DEVNAME" || \
-		! target_prepare_root "$BACKUP_ROOT"; then
+		! target_device_validate "$TARGET_DEVICE" "$TARGET_UUID" "$DEVNAME"; then
 		guard_failure device_unknown
+		exit 1
+	fi
+	if ! target_prepare_root "$BACKUP_ROOT"; then
+		guard_failure unclassified
 		exit 1
 	fi
 fi
@@ -231,6 +272,11 @@ fi
 
 # Record only the first signal so repeated requests are idempotent and the
 # original operator intent (INT=130, TERM=143) survives cleanup.
+# Args: $1 exit code. There is no origin-kind argument (PR #44 review finding
+# 1): this guard's first-wins CODE freeze made a second kind argument unsafe
+# to trust anywhere but the moment it is actually consumed, so origin is
+# re-derived from service_lease_current at consumption time in
+# signal_failure_led instead of being captured here.
 record_cancel() {
 	[ "${BACKUP_CANCEL_CODE:-0}" -eq 0 ] || return 0
 	BACKUP_CANCEL_CODE=$1
@@ -435,11 +481,32 @@ write_failed_status() {
 }
 
 # Choose the operator-visible LED error state for an evidence-based failure
-# type, per the four-lamp state machine (issue #40). R always slow-blinks;
-# the green slot distinguishes the class. verify_failed is a target
-# anchor/UUID failure (see verify_final_target), not a data-integrity check,
-# so it shares device_unknown's class (G3). lock_timeout has no dedicated
-# mapping in this PR and falls through to the unclassified slot (G0/none).
+# type, per the four-lamp state machine (issue #40). The error slot's R
+# slow-blinks for every class except cancelled (see below); the green slot
+# distinguishes the class. verify_failed is a target anchor/UUID failure (see
+# verify_final_target), not a data-integrity check, so it shares
+# device_unknown's class (G3). lock_timeout has no dedicated mapping in this
+# PR and falls through to the unclassified slot (G0/none).
+# cancelled further branches on origin (issue #43 scope 2): an operator
+# card-pull turns every lamp off without touching R at all, while a lease no
+# longer being current (service stop/restart/upgrade while the card is still
+# inserted) is its own distinct pattern (R slow-blink + G1/G2 solid) that
+# neither led_state_error nor led_state_unconfigured can express.
+#
+# The origin is re-derived here from service_lease_current, never captured at
+# signal time (PR #44 review finding 1): record_cancel's first-wins CODE
+# guard means whichever of INT/TERM/check_cancel_request lands first would
+# also freeze any origin passed alongside it, so a raw signal recorded before
+# check_cancel_request's own cancellation could permanently misattribute a
+# lease-driven stop as "operator". Origin is only safe to determine at the
+# moment it is actually consumed, which is here, never inside the trap
+# (unsafe I/O, and the state this checks has not necessarily settled yet).
+# By this point in cleanup, FD8 is still held (service_lease_release runs
+# after this), and service-control.sh's stop_locked() always writes the
+# `stopped` state before it sends TERM to the owner (service-state.sh's
+# generation record), so a lease that is still current here can only mean
+# this TERM came from somewhere else -- a real operator card-pull via
+# owner-event.sh's remove-driven TERM.
 # Args: none. Always returns zero to preserve the real exit code.
 signal_failure_led() {
 	case "$ERROR_TYPE" in
@@ -447,6 +514,13 @@ signal_failure_led() {
 		card_config) led_state_error 2 ;;
 		device_unknown) led_state_error 3 ;;
 		verify_failed) led_state_error 3 ;;
+		cancelled)
+			if service_lease_current; then
+				led_state_cancelled_operator
+			else
+				led_state_cancelled_lease
+			fi
+			;;
 		*) led_state_error 0 ;;
 	esac
 	return 0

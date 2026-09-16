@@ -459,7 +459,8 @@ case_p13_debounce_never_writes_within_a_segment_and_always_writes_across_a_bound
     assert_success 'P13 real rsync fixture starts through the real manager' \
         wait_for_effect led-rsync-start
     release_and_settle 1
-    assert_led_state "$TEST_ROOT/green" timer '' 100 100 'P13 percent=0 enters segment 1 (G1 fast-blink)'
+    assert_led_state "$TEST_ROOT/green" timer 0 100 100 \
+        'P13 percent=0 enters segment 1 (G1 fast-blink; brightness is stale 0 from the issue #43 scope-1 four-lamp reset at add start, never cleared by fast_blink)'
     seg1_trigger=$(cat "$TEST_ROOT/green2/trigger")
     printf '%s\n' SENTINEL-P13-S1-G1 > "$TEST_ROOT/green/trigger"
     printf '%s\n' SENTINEL-P13-S1-G2 > "$TEST_ROOT/green2/trigger"
@@ -537,15 +538,17 @@ case_p14_success_terminal_state_lights_all_three_greens_never_touches_red_and_pe
     assert_led_state "$TEST_ROOT/green2" none 1 '' '' 'P14 success terminal state lights G2 solid'
     assert_led_state "$TEST_ROOT/green3" none 1 '' '' \
         'P14 success terminal state flips G3 from the walking-lamp timer trigger to solid (Critical 1 regression guard: progress LEDs must be reclaimed at completion)'
-    assert_absent "$TEST_ROOT/red/trigger" \
-        'P14 successful completion never issues a single sysfs write against R (file absence, not brightness=0)'
+    assert_equal "$(cat "$TEST_ROOT/red/trigger")" none \
+        'P14 successful completion never re-touches R after the add-start reset (issue #43 scope 1: R is only ever turned off at add start, never re-written by a successful run)'
+    red_hash_after_completion="$(sha256sum "$TEST_ROOT/red/trigger" "$TEST_ROOT/red/brightness" | awk '{print $1}')"
     green_hash_after_completion="$(sha256sum "$TEST_ROOT/green/trigger" "$TEST_ROOT/green/brightness" "$TEST_ROOT/green2/trigger" "$TEST_ROOT/green2/brightness" "$TEST_ROOT/green3/trigger" "$TEST_ROOT/green3/brightness" | sha256sum | awk '{print $1}')"
     /bin/sleep 3
     assert_equal "$(sha256sum "$TEST_ROOT/green/trigger" "$TEST_ROOT/green/brightness" "$TEST_ROOT/green2/trigger" "$TEST_ROOT/green2/brightness" "$TEST_ROOT/green3/trigger" "$TEST_ROOT/green3/brightness" | sha256sum | awk '{print $1}')" \
         "$green_hash_after_completion" \
         'P14 the completion terminal state is genuinely terminal: nothing reverts it seconds later (no lingering auto-off job exists in production)'
-    assert_absent "$TEST_ROOT/red/trigger" \
-        'P14 R is still never written even after the settle window (confirms no delayed reclaim job touches it either)'
+    assert_equal "$(sha256sum "$TEST_ROOT/red/trigger" "$TEST_ROOT/red/brightness" | awk '{print $1}')" \
+        "$red_hash_after_completion" \
+        'P14 R is still never re-written even after the settle window (confirms no delayed reclaim job touches it either)'
 }
 
 main() {

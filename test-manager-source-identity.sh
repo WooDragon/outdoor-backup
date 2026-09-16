@@ -516,7 +516,12 @@ case_s09_prelock_probe_term_stops_before_lock() {
     run_cancelled_probe prelock
     ms_absent "$RUNTIME/var/lock/backup.lock" 'S09 pre-lock cancellation leaves no published lock'
     ms_failure 'S09 pre-lock cancellation never acquires a lock' grep -F -q 'Lock acquired' "$RUNTIME/log/backup.log"
-    ms_absent "$TEST_ROOT/green/trigger" 'S09 pre-lock cancellation never starts backup LED'
+    # The trigger file exists because of the issue #43 scope-1 four-lamp
+    # reset at add start (before lock acquisition), which now unconditionally
+    # turns G1 off; the real assertion of intent is that the backup/progress
+    # LED (fast-blink) was never reached before the pre-lock TERM.
+    ms_equal "$(cat "$TEST_ROOT/green/trigger" 2>/dev/null || :)" none \
+        'S09 pre-lock cancellation never starts backup LED'
     ms_absent "$SOURCE_MOUNT_STATE" 'S09 pre-lock cancellation never mounts source'
 }
 

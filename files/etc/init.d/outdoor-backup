@@ -10,6 +10,8 @@ STOP=10
 
 CONTROLLER=/opt/outdoor-backup/scripts/service-control.sh
 STATE_LIBRARY=/opt/outdoor-backup/scripts/service-state.sh
+LED_RESET=/opt/outdoor-backup/scripts/led-reset.sh
+BUSINESS_LOCK=/opt/outdoor-backup/var/lock/backup.lock
 
 # Invoke the controller with its reserved descriptor numbers clear of rc.common.
 controller_run() {
@@ -22,6 +24,23 @@ controller_run() {
 		exec 8>&-
 		"$CONTROLLER" "$1"
 	)
+}
+
+# Reset terminal/idle LEDs on start/restart, but only when no backup is in
+# progress (issue #43 scope 3). This never runs from stop(): a stopped
+# service must leave the operator-visible terminal state on the lamps for
+# the operator to read. This intentionally never config_load's inside this
+# rc.common process; led-reset.sh does that itself, in its own subprocess.
+# This existence check and the reset it guards are not atomic (PR #44 review
+# finding 6): a backup can start in the gap between this check and
+# led-reset.sh actually running, in which case this call still stomps on
+# that run's live LEDs. Best-effort against the common case, not a closed
+# guarantee -- closing it is a real synchronization change, out of scope
+# for a comment fix.
+led_reset_if_idle() {
+	if [ ! -e "$BUSINESS_LOCK" ] && [ ! -L "$BUSINESS_LOCK" ]; then
+		"$LED_RESET" || :
+	fi
 }
 
 # Start the lifecycle controller after preparing only private runtime paths.
@@ -38,6 +57,8 @@ start_service() {
 	mkdir -p /opt/outdoor-backup/log || return 1
 	chmod 755 /opt/outdoor-backup/scripts/*.sh || return 1
 	chmod 755 /etc/hotplug.d/block/90-outdoor-backup || return 1
+
+	led_reset_if_idle
 
 	controller_run "$controller_action"
 	controller_rc=$?
@@ -70,6 +91,7 @@ stop() {
 
 # Use the controller's single FD7 acquisition instead of rc.common's stop/start.
 restart() {
+	led_reset_if_idle
 	controller_run restart
 	controller_rc=$?
 	[ "$controller_rc" -eq 0 ] || return "$controller_rc"

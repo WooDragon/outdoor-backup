@@ -279,13 +279,16 @@ assert_guard_failure_observable() {
 }
 
 # guard_failure unconfigured -> led_state_unconfigured: G3 slow-blinks
-# (trigger=timer, no brightness write), G1/G2 stay off, R is left untouched
-# entirely (no write issued against it at all -- this is a configuration
-# state, not a device/anchor error; PR #41 review finding 3).
+# (trigger=timer, no brightness write), G1/G2 stay off, R is never actively
+# driven by this guard path -- this is a configuration state, not a
+# device/anchor error; PR #41 review finding 3. R's trigger file exists and
+# reads "none" only because of the issue #43 scope-1 four-lamp reset at add
+# start (before this guard even runs); the real assertion of intent is that
+# THIS guard path never re-touches R afterward.
 assert_guard_unconfigured_effects() {
     case_id=$1
     assert_guard_failure_common_effects "$case_id"
-    assert_absent "$TEST_ROOT/red/trigger" \
+    assert_equal "$(cat "$TEST_ROOT/red/trigger" 2>/dev/null || :)" none \
         "$case_id guard never wrote red LED for the unconfigured state"
     assert_equal "$(cat "$TEST_ROOT/green3/trigger")" timer \
         "$case_id guard sets G3 (LED_GREEN3) timer trigger for unconfigured state"
@@ -297,6 +300,32 @@ assert_guard_unconfigured_effects() {
 
 assert_guard_unconfigured_observable() {
     assert_guard_unconfigured_effects "$1"
+}
+
+# guard_failure unclassified -> led_state_error 0: R slow-blink, all three
+# green LEDs off (PR #44 review finding 3). target_prepare_root failing is
+# neither the device/anchor identity failure class (led_state_error 3: G3
+# solid) nor the unconfigured-UUID configuration state (R untouched) -- it
+# is its own distinct G0 shape, and must not be conflated with either.
+assert_guard_unclassified_effects() {
+    case_id=$1
+    assert_guard_failure_common_effects "$case_id"
+    assert_equal "$(cat "$TEST_ROOT/red/trigger")" timer \
+        "$case_id guard sets red LED timer trigger"
+    assert_equal "$(cat "$TEST_ROOT/red/delay_on")" 500 \
+        "$case_id guard sets red LED on delay"
+    assert_equal "$(cat "$TEST_ROOT/red/delay_off")" 500 \
+        "$case_id guard sets red LED off delay"
+    assert_equal "$(cat "$TEST_ROOT/green/brightness")" 0 \
+        "$case_id guard lights no green slot for its unclassified error class"
+    assert_equal "$(cat "$TEST_ROOT/green2/brightness")" 0 \
+        "$case_id guard lights no green slot for its unclassified error class"
+    assert_not_equal "$(cat "$TEST_ROOT/green3/brightness" 2>/dev/null || :)" 1 \
+        "$case_id guard does not light G3 (LED_GREEN3) solid for its unclassified error class"
+}
+
+assert_guard_unclassified_observable() {
+    assert_guard_unclassified_effects "$1"
 }
 
 wait_for_path() {

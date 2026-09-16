@@ -92,13 +92,16 @@ led_set() {
 # ---------------------------------------------------------------------------
 # Four-lamp state-machine primitives (issue #40)
 #
-# R (LED_RED, power) is touched only by the error primitive below; every
-# non-error primitive deliberately never writes to LED_RED -- "not touching R"
-# means literally issuing no write against it, matching the pre-existing
-# behavior of a successful run never touching the power LED. All six
-# functions are set-and-exit: they write the target sysfs node(s) once and
-# return, no fork, no sleep, no background job. The kernel "timer" trigger
-# keeps blinking on its own after the write returns.
+# R (LED_RED, power) is not touched by every primitive below -- see
+# CLAUDE.md's LED write-surface table for the authoritative list of which
+# composite states write it (led_state_error, led_state_reset_idle, and
+# led_state_cancelled_lease all do; led_state_cancelled_operator and
+# led_state_unconfigured deliberately never do). "Not touching R" means
+# literally issuing no write against it, matching the pre-existing behavior
+# of a successful run never touching the power LED. Every function here is
+# set-and-exit: it writes the target sysfs node(s) once and returns, no fork,
+# no sleep, no background job. The kernel "timer" trigger keeps blinking on
+# its own after the write returns.
 #
 # max_brightness on every real R5S LED is 1: "solid on" is brightness=1, not
 # 255 (issue #40 fact 1). An empty led_path is a legal "unconfigured slot"
@@ -216,6 +219,44 @@ led_state_unconfigured() {
 	led_state_off "$LED_GREEN"
 	led_state_off "$LED_GREEN2"
 	led_state_slow_blink "$LED_GREEN3"
+}
+
+# ---------------------------------------------------------------------------
+# Composite primitives (issue #43): none of these compose from anything but
+# the six atomic primitives above, whose internal sysfs write sequences are
+# unchanged by this addition.
+# ---------------------------------------------------------------------------
+
+# Full four-lamp reset to idle/off, including R (issue #43 scope 1). This is
+# the "next card insertion clears the previous terminal state" primitive and
+# is deliberately the only reset-style primitive that writes R: every other
+# non-error primitive in this file leaves R untouched by design.
+# Args: none.
+led_state_reset_idle() {
+	led_state_off "$LED_RED"
+	led_state_off "$LED_GREEN"
+	led_state_off "$LED_GREEN2"
+	led_state_off "$LED_GREEN3"
+}
+
+# Operator-cancel signalling (issue #43 scope 2, path A): the card was pulled
+# by the operator, so every lamp is turned off -- except R, which must not be
+# touched at all (no write issued against it, matching the "R untouched"
+# contract of led_state_unconfigured above). Args: none.
+led_state_cancelled_operator() {
+	led_state_off "$LED_GREEN"
+	led_state_off "$LED_GREEN2"
+	led_state_off "$LED_GREEN3"
+}
+
+# Lease-cancel signalling (issue #43 scope 2, path B): the service lease is no
+# longer current (service stop/restart/package upgrade while the card is still
+# inserted) -- R slow-blinks, G1 and G2 go solid, G3 goes off. Args: none.
+led_state_cancelled_lease() {
+	led_state_slow_blink "$LED_RED"
+	led_state_solid "$LED_GREEN"
+	led_state_solid "$LED_GREEN2"
+	led_state_off "$LED_GREEN3"
 }
 
 # Check if path is safe (prevent directory traversal)
