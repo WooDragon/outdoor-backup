@@ -191,6 +191,11 @@ EOF
 	mc_equal "$(readlink "$RUNTIME/var/lock/backup.lock")" "/proc/$holder_pid" 'C02 manager did not alter A owner lock'
 	mc_absent "$SOURCE_MOUNT_STATE" 'C02 waiting manager never mounted source media'
 	mc_absent "$RUNTIME/var/status.json" 'C02 waiting manager never published status'
+	# The issue #43 scope-1 four-lamp reset at add start skips entirely when
+	# the business lock is already held (production fix for the M28 race in
+	# test-target-manager.sh: a waiting manager must never touch another
+	# owner's live LEDs while it has not yet acquired the lock itself), so
+	# this file is genuinely never created here.
 	mc_absent "$TEST_ROOT/green/trigger" 'C02 waiting manager never starts success LED'
 	# A background shell often inherits ignored INT. The exec launcher resets it,
 	# so this is a real INT delivery test rather than a host-job-control fake.

@@ -279,13 +279,16 @@ assert_guard_failure_observable() {
 }
 
 # guard_failure unconfigured -> led_state_unconfigured: G3 slow-blinks
-# (trigger=timer, no brightness write), G1/G2 stay off, R is left untouched
-# entirely (no write issued against it at all -- this is a configuration
-# state, not a device/anchor error; PR #41 review finding 3).
+# (trigger=timer, no brightness write), G1/G2 stay off, R is never actively
+# driven by this guard path -- this is a configuration state, not a
+# device/anchor error; PR #41 review finding 3. R's trigger file exists and
+# reads "none" only because of the issue #43 scope-1 four-lamp reset at add
+# start (before this guard even runs); the real assertion of intent is that
+# THIS guard path never re-touches R afterward.
 assert_guard_unconfigured_effects() {
     case_id=$1
     assert_guard_failure_common_effects "$case_id"
-    assert_absent "$TEST_ROOT/red/trigger" \
+    assert_equal "$(cat "$TEST_ROOT/red/trigger" 2>/dev/null || :)" none \
         "$case_id guard never wrote red LED for the unconfigured state"
     assert_equal "$(cat "$TEST_ROOT/green3/trigger")" timer \
         "$case_id guard sets G3 (LED_GREEN3) timer trigger for unconfigured state"

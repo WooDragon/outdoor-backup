@@ -177,6 +177,18 @@ install_fixture() {
     chmod 755 /opt/outdoor-backup/scripts/*.sh || return 1
     cp "$SOURCE_INIT" "$INIT" || return 1
     cp "$REPO_ROOT/files/etc/config/outdoor-backup" /etc/config/outdoor-backup || return 1
+    # This bare container has no real /sys/class/leds/* paths, so the
+    # shipped config's default LED paths would make led-reset.sh's
+    # led_state_reset_idle (issue #43 scope 3, wired into start()/restart())
+    # log an led_set path-does-not-exist error on every start/restart --
+    # a fixture gap, not a production defect. "none" is the documented UCI
+    # sentinel for "no LED wired for this slot" (config_resolve_led_sentinel).
+    cat >> /etc/config/outdoor-backup <<'EOF'
+	option led_red 'none'
+	option led_green 'none'
+	option led_green2 'none'
+	option led_green3 'none'
+EOF
     cp "$REPO_ROOT/files/etc/hotplug.d/block/90-outdoor-backup" /etc/hotplug.d/block/90-outdoor-backup || return 1
     chmod 755 "$INIT"
     printf '%s\n' /etc/init.d/outdoor-backup > "$PACKAGE_INFO/outdoor-backup.list"

@@ -218,6 +218,44 @@ led_state_unconfigured() {
 	led_state_slow_blink "$LED_GREEN3"
 }
 
+# ---------------------------------------------------------------------------
+# Composite primitives (issue #43): none of these compose from anything but
+# the six atomic primitives above, whose internal sysfs write sequences are
+# unchanged by this addition.
+# ---------------------------------------------------------------------------
+
+# Full four-lamp reset to idle/off, including R (issue #43 scope 1). This is
+# the "next card insertion clears the previous terminal state" primitive and
+# is deliberately the only reset-style primitive that writes R: every other
+# non-error primitive in this file leaves R untouched by design.
+# Args: none.
+led_state_reset_idle() {
+	led_state_off "$LED_RED"
+	led_state_off "$LED_GREEN"
+	led_state_off "$LED_GREEN2"
+	led_state_off "$LED_GREEN3"
+}
+
+# Operator-cancel signalling (issue #43 scope 2, path A): the card was pulled
+# by the operator, so every lamp is turned off -- except R, which must not be
+# touched at all (no write issued against it, matching the "R untouched"
+# contract of led_state_unconfigured above). Args: none.
+led_state_cancelled_operator() {
+	led_state_off "$LED_GREEN"
+	led_state_off "$LED_GREEN2"
+	led_state_off "$LED_GREEN3"
+}
+
+# Lease-cancel signalling (issue #43 scope 2, path B): the service lease is no
+# longer current (service stop/restart/package upgrade while the card is still
+# inserted) -- R slow-blinks, G1 and G2 go solid, G3 goes off. Args: none.
+led_state_cancelled_lease() {
+	led_state_slow_blink "$LED_RED"
+	led_state_solid "$LED_GREEN"
+	led_state_solid "$LED_GREEN2"
+	led_state_off "$LED_GREEN3"
+}
+
 # Check if path is safe (prevent directory traversal)
 is_safe_path() {
 	local path="$1"

@@ -49,6 +49,13 @@ BACKUP_STATUS_LED_SEGMENT=""
 # Signal handlers only record the first cancellation. They never exit, clean up,
 # or kill children: the active runner must first prove its writers have stopped.
 BACKUP_CANCEL_CODE=0
+# First-wins origin of the sticky cancellation above (issue #43 scope 2):
+# "operator" when a raw INT/TERM was observed (card pulled), "lease" when the
+# service admission lease stopped being current while nothing signalled us
+# directly (service stop/restart/package upgrade with the card still
+# inserted). Captured once at first detection, alongside BACKUP_CANCEL_CODE,
+# so a later repeat call cannot misattribute the original cause.
+BACKUP_CANCEL_KIND=""
 
 # The remove sender must never load configuration or lifecycle dependencies:
 # a pulled card may already have erased sysfs, and cancellation is authorized
@@ -185,6 +192,10 @@ trap temporary_lease_cleanup EXIT
 #   unconfigured -> led_state_unconfigured (G3 slow-blink, R untouched):
 #     "target UUID is unconfigured" is a configuration state, not a device
 #     or anchor identity failure (PR #41 review finding 3).
+#   unclassified -> led_state_error 0 (R slow-blink, no green): target_prepare_root
+#     failing is neither a device/anchor identity failure nor a configuration
+#     state -- it is an unclassified backup-root problem (issue #43 scope 4),
+#     and must not be conflated with the device_unknown class below.
 #   anything else -> led_state_error 3 (G3 solid + R slow-blink): the real
 #     device/anchor validation failure class (device_unknown-equivalent).
 guard_failure() {
@@ -192,15 +203,42 @@ guard_failure() {
 	(
 		DEBUG=0
 		. "$SCRIPT_DIR/common.sh"
-		if [ "$1" = unconfigured ]; then
-			led_state_unconfigured
-		else
-			led_state_error 3
-		fi
+		case "$1" in
+			unconfigured) led_state_unconfigured ;;
+			unclassified) led_state_error 0 ;;
+			*) led_state_error 3 ;;
+		esac
+	) >/dev/null || :
+}
+
+# Reset all four lamps (including R) to off at the very start of an add event,
+# before any check that can fail (issue #43 scope 1). This is the agreed
+# "reset on next card insertion" design: a prior run's terminal error/complete
+# state must not persist visually once a new card is being processed, and this
+# is the only site outside the cancellation/error LED primitives that is ever
+# allowed to actively write to R. Runs in its own DEBUG=0 subshell so common.sh
+# stays confined here, matching guard_failure's existing sourcing pattern.
+reset_leds_for_new_card() {
+	# Skip when another manager instance currently holds the lock: this event
+	# has not acquired it yet, so blindly resetting here would stomp on that
+	# other instance's live progress/terminal LEDs -- the same race init.d's
+	# led_reset_if_idle already guards against for service start/restart
+	# (issue #43 scope 3). A stale (holder-dead) lock is deliberately treated
+	# the same as a live one here: acquire_lock's own stale-lock reclaim runs
+	# later and is the sole owner of that decision, so this reset simply
+	# defers rather than duplicating that judgment.
+	if [ -e "$LOCK_LINK" ] || [ -L "$LOCK_LINK" ]; then
+		return 0
+	fi
+	(
+		DEBUG=0
+		. "$SCRIPT_DIR/common.sh"
+		led_state_reset_idle
 	) >/dev/null || :
 }
 
 if [ "$ACTION" = "add" ]; then
+	reset_leds_for_new_card
 	# An unconfigured UUID is a configuration state, not a mount probe. Report it
 	# before touching an optional default mount path or any application resource.
 	if [ -z "$TARGET_UUID" ]; then
@@ -209,9 +247,12 @@ if [ "$ACTION" = "add" ]; then
 		exit 1
 	fi
 	if ! target_open "$TARGET_MOUNT" || \
-		! target_device_validate "$TARGET_DEVICE" "$TARGET_UUID" "$DEVNAME" || \
-		! target_prepare_root "$BACKUP_ROOT"; then
+		! target_device_validate "$TARGET_DEVICE" "$TARGET_UUID" "$DEVNAME"; then
 		guard_failure device_unknown
+		exit 1
+	fi
+	if ! target_prepare_root "$BACKUP_ROOT"; then
+		guard_failure unclassified
 		exit 1
 	fi
 fi
@@ -231,9 +272,13 @@ fi
 
 # Record only the first signal so repeated requests are idempotent and the
 # original operator intent (INT=130, TERM=143) survives cleanup.
+# Args: $1 exit code. $2 origin kind, "operator" or "lease"; omitted (the INT/
+# TERM trap call sites) defaults to "operator" -- a raw signal is definitionally
+# operator-driven, never a lease observation.
 record_cancel() {
 	[ "${BACKUP_CANCEL_CODE:-0}" -eq 0 ] || return 0
 	BACKUP_CANCEL_CODE=$1
+	BACKUP_CANCEL_KIND="${2:-operator}"
 	logger -t outdoor-backup -p daemon.warning "Cancellation requested (exit code $1)" 2>/dev/null || :
 	return 0
 }
@@ -251,7 +296,7 @@ check_cancel_request() {
 	[ "$lease_current_rc" -eq 0 ] && return 0
 	ERROR_TYPE=cancelled
 	printf '%s\n' 'outdoor-backup: service no longer current' >&2
-	record_cancel 143
+	record_cancel 143 lease
 	return 143
 }
 
@@ -440,6 +485,11 @@ write_failed_status() {
 # anchor/UUID failure (see verify_final_target), not a data-integrity check,
 # so it shares device_unknown's class (G3). lock_timeout has no dedicated
 # mapping in this PR and falls through to the unclassified slot (G0/none).
+# cancelled further branches on BACKUP_CANCEL_KIND (issue #43 scope 2): an
+# operator card-pull turns every lamp off without touching R at all, while a
+# lease no longer being current (service stop/restart/upgrade while the card
+# is still inserted) is its own distinct pattern (R slow-blink + G1/G2 solid)
+# that neither led_state_error nor led_state_unconfigured can express.
 # Args: none. Always returns zero to preserve the real exit code.
 signal_failure_led() {
 	case "$ERROR_TYPE" in
@@ -447,6 +497,13 @@ signal_failure_led() {
 		card_config) led_state_error 2 ;;
 		device_unknown) led_state_error 3 ;;
 		verify_failed) led_state_error 3 ;;
+		cancelled)
+			if [ "${BACKUP_CANCEL_KIND:-operator}" = lease ]; then
+				led_state_cancelled_lease
+			else
+				led_state_cancelled_operator
+			fi
+			;;
 		*) led_state_error 0 ;;
 	esac
 	return 0
