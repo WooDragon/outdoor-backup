@@ -106,6 +106,17 @@ outdoor-backup/
 - **文件**: `common.sh`
 - **职责**: LED 控制、日志函数、工具函数
 - **能力**: 别名管理、安全检查、UUID 生成
+- **LED 原语的写入面（写断言前必读）**：`led_set` 的每个 sysfs 字段都是「参数非空才写」，故各状态原语**只写自己声明的字段，其余字段一字节不碰**。四条原语的实际写入面：
+
+  | 原语 | trigger | brightness | delay_on/off |
+  |---|:---:|:---:|:---:|
+  | `led_state_off` | `none` | `0` | 不写 |
+  | `led_state_solid` | `none` | `1` | 不写 |
+  | `led_state_fast_blink` | `timer` | **不写** | `100`/`100` |
+  | `led_state_slow_blink` | `timer` | **不写** | `500`/`500` |
+
+  闪烁态不写 `brightness` 是有意设计：kernel timer trigger 自行接管亮度，userspace 再写会与 timer 相争。**闪烁态的 LED 断言只应覆盖 trigger 与 delay，断言 `brightness` 会得到空串而非 `0`。**（`test-target-manager.sh` 的 `assert_guard_failure_effects` 即只断言 R 的 trigger/delay，是既有正例）
+- **「不碰某盏灯」的验证纪律**：`led_state_cancelled_operator`、`led_state_unconfigured`、`led_state_progress` 等承诺「不碰 R」的原语，其契约是**不发出任何写**，不是「写 0」。证明「没写」必须用**文件缺席**（fixture 只 mkdir 灯目录、不预建字段文件，`led_set` 的 `echo > path` 一写即建）或生产绝不产生的哨兵值；**禁止用内容相等证明没写过**——重复写同一个值内容同样不变，两者分不开。序列化多盏灯做对比时，helper 必须把「文件缺席」映射成显式哨兵（如 `UNWRITTEN`）而非让 `cat` 报错。
 
 ### 4. 服务生命周期
 - **文件**: `/etc/init.d/outdoor-backup`、`service-control.sh`、`service-state.sh`
@@ -172,7 +183,7 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
     ↓
 [记录日志] → /mnt/ssd/SDMirrors/.logs/{UUID}.log
     ↓
-[LED 指示完成] → 绿灯常亮 30 秒
+[LED 指示完成] → 三绿静亮，保持至下次插卡复位（#40/#41 起无自动灭灯）
     ↓
 [释放锁并清理]
 ```
