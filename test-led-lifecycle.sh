@@ -276,6 +276,23 @@ case_cancelled_paths_differ() {
         "operator and lease cancellation LED snapshots differ"
 }
 
+case_manager_backup_root_failure_is_unclassified() {
+    begin_case L8 "target_prepare_root failure lights the unclassified (G0) error pattern, not device_unknown's G3"
+    reset_case || { fail "L8 fixture setup failed"; return; }
+    # An absolute, path-safe value that is disjoint from MOUNT_POINT (so it
+    # passes config_load's own config_paths_are_disjoint check) but is not
+    # nested under TARGET_MOUNT, so it only fails downstream at
+    # target_prepare_root's strict-child-of-mount check (PR #44 review
+    # finding 3's exact trigger).
+    set_config_value BACKUP_ROOT "$TEST_ROOT/not-under-target-mount"
+    if run_manager add sda1 /devices/mock > /dev/null 2> "$TEST_ROOT/l8-error"; then
+        fail "L8 illegal BACKUP_ROOT unexpectedly succeeded"
+    fi
+    assert_contains 'backup root must be a strict child of target mount' "$TEST_ROOT/l8-error" \
+        "L8 reports the real target_prepare_root rejection reason"
+    assert_guard_unclassified_observable L8
+}
+
 INIT=/etc/init.d/outdoor-backup
 INIT_ROOT=/opt/outdoor-backup
 INIT_SCRIPTS="$INIT_ROOT/scripts"
@@ -430,11 +447,12 @@ main() {
     case_cancelled_paths_differ
     case_init_led_lifecycle
     case_led_reset_ignores_optional_led_configuration
-    if [ "$CASES" -ne 7 ]; then
-        fail "all required LED lifecycle cases executed (expected=7, actual=$CASES)"
+    case_manager_backup_root_failure_is_unclassified
+    if [ "$CASES" -ne 8 ]; then
+        fail "all required LED lifecycle cases executed (expected=8, actual=$CASES)"
     fi
-    if [ "$ASSERTIONS" -ne 77 ]; then
-        fail "assertion count gate (expected=77, actual=$ASSERTIONS)"
+    if [ "$ASSERTIONS" -ne 91 ]; then
+        fail "assertion count gate (expected=91, actual=$ASSERTIONS)"
     fi
     if [ "$FAILED" -ne 0 ]; then
         printf 'cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"

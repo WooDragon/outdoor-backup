@@ -157,7 +157,7 @@ led_state_slow_blink(){ led_set "$1" "timer" "500" "500" ""; }
 
 | 状态 | R | G1 | G2 | G3 |
 |------|---|----|----|----|
-| 空闲/健康 | 不碰 | 灭 | 灭 | 灭 |
+| 空闲/健康（新卡插入时复位） | 灭（显式写） | 灭 | 灭 | 灭 |
 | 目标未配置 | 不碰 | 灭 | 灭 | 慢闪 |
 | 备份 0-33% | 不碰 | 快闪 | 灭 | 灭 |
 | 备份 34-66% | 不碰 | 静亮 | 快闪 | 灭 |
@@ -167,16 +167,26 @@ led_state_slow_blink(){ led_set "$1" "timer" "500" "500" ""; }
 | 错误：卡配置 | 慢闪 | 灭 | 静亮 | 灭 |
 | 错误：目标盘问题 | 慢闪 | 灭 | 灭 | 静亮 |
 | 错误：未分类 | 慢闪 | 灭 | 灭 | 灭 |
+| 取消：operator（拔卡） | 不碰 | 灭 | 灭 | 灭 |
+| 取消：lease 失效（服务侧停止） | 慢闪 | 静亮 | 静亮 | 灭 |
 
 快闪为 timer 100/100 ms，慢闪为 timer 500/500 ms；静亮/灭分别为
-`trigger=none`、brightness 1/0。“不碰 R”表示不向 R 的任何 sysfs 节点写入。
-完成态是终态，会保持到下次插卡；原语只写一次并退出，不 fork、sleep 或自动
-熄灭。空槽位仍由 `led_set` 静默跳过，其他非空失效路径则走 syslog 错误。
+`trigger=none`、brightness 1/0。“不碰 R”表示不向 R 的任何 sysfs 节点写入；
+空闲/健康态是 `led_state_reset_idle` 在新卡插入开局时的复位结果，是唯一显式
+把 R 写灭的非错误原语，与“不碰 R”的其它行不同。完成态是终态，会保持到下次
+插卡；原语只写一次并退出，不 fork、sleep 或自动熄灭。空槽位仍由 `led_set`
+静默跳过，其他非空失效路径则走 syslog 错误。
 
 `led_state_progress` 根据 segment 1、2、3 写入三盏绿灯的 walking-lamp 状态；
 `led_state_unconfigured` 让 G3 慢闪并保持 R 不动；`led_state_error` 让 R 慢闪，
-再按错误类别将 G1、G2 或 G3 之一静亮；`led_state_complete` 让三盏绿灯静亮。
-管理器负责在状态变化时调用这些原语，公共函数库不自行启动后台任务。
+再按错误类别将 G1、G2 或 G3 之一静亮（0 表示三绿灯均灭，即“未分类”）；
+`led_state_complete` 让三盏绿灯静亮。取消场景不复用 `led_state_error`：
+operator 拔卡（`led_state_cancelled_operator`）只熄灭三盏绿灯、不碰 R；lease
+不再current（`led_state_cancelled_lease`）则 R 慢闪 + G1/G2 静亮 + G3 灭，是
+独立于错误态的第三种终态模式。`target_prepare_root` 失败既非设备/锚点身份
+失败也非配置态，映射到“错误：未分类”（G0，三绿灯均灭），不与目标盘问题
+（G3）混淆。管理器负责在状态变化时调用这些原语，公共函数库不自行启动后台
+任务。
 
 # Get filesystem type of device
 get_fs_type() {

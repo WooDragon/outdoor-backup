@@ -302,6 +302,32 @@ assert_guard_unconfigured_observable() {
     assert_guard_unconfigured_effects "$1"
 }
 
+# guard_failure unclassified -> led_state_error 0: R slow-blink, all three
+# green LEDs off (PR #44 review finding 3). target_prepare_root failing is
+# neither the device/anchor identity failure class (led_state_error 3: G3
+# solid) nor the unconfigured-UUID configuration state (R untouched) -- it
+# is its own distinct G0 shape, and must not be conflated with either.
+assert_guard_unclassified_effects() {
+    case_id=$1
+    assert_guard_failure_common_effects "$case_id"
+    assert_equal "$(cat "$TEST_ROOT/red/trigger")" timer \
+        "$case_id guard sets red LED timer trigger"
+    assert_equal "$(cat "$TEST_ROOT/red/delay_on")" 500 \
+        "$case_id guard sets red LED on delay"
+    assert_equal "$(cat "$TEST_ROOT/red/delay_off")" 500 \
+        "$case_id guard sets red LED off delay"
+    assert_equal "$(cat "$TEST_ROOT/green/brightness")" 0 \
+        "$case_id guard lights no green slot for its unclassified error class"
+    assert_equal "$(cat "$TEST_ROOT/green2/brightness")" 0 \
+        "$case_id guard lights no green slot for its unclassified error class"
+    assert_not_equal "$(cat "$TEST_ROOT/green3/brightness" 2>/dev/null || :)" 1 \
+        "$case_id guard does not light G3 (LED_GREEN3) solid for its unclassified error class"
+}
+
+assert_guard_unclassified_observable() {
+    assert_guard_unclassified_effects "$1"
+}
+
 wait_for_path() {
     path=$1
     attempts=0

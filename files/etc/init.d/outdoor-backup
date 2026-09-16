@@ -31,6 +31,12 @@ controller_run() {
 # service must leave the operator-visible terminal state on the lamps for
 # the operator to read. This intentionally never config_load's inside this
 # rc.common process; led-reset.sh does that itself, in its own subprocess.
+# This existence check and the reset it guards are not atomic (PR #44 review
+# finding 6): a backup can start in the gap between this check and
+# led-reset.sh actually running, in which case this call still stomps on
+# that run's live LEDs. Best-effort against the common case, not a closed
+# guarantee -- closing it is a real synchronization change, out of scope
+# for a comment fix.
 led_reset_if_idle() {
 	if [ ! -e "$BUSINESS_LOCK" ] && [ ! -L "$BUSINESS_LOCK" ]; then
 		"$LED_RESET" || :

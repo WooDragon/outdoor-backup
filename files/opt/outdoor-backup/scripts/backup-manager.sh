@@ -49,13 +49,6 @@ BACKUP_STATUS_LED_SEGMENT=""
 # Signal handlers only record the first cancellation. They never exit, clean up,
 # or kill children: the active runner must first prove its writers have stopped.
 BACKUP_CANCEL_CODE=0
-# First-wins origin of the sticky cancellation above (issue #43 scope 2):
-# "operator" when a raw INT/TERM was observed (card pulled), "lease" when the
-# service admission lease stopped being current while nothing signalled us
-# directly (service stop/restart/package upgrade with the card still
-# inserted). Captured once at first detection, alongside BACKUP_CANCEL_CODE,
-# so a later repeat call cannot misattribute the original cause.
-BACKUP_CANCEL_KIND=""
 
 # The remove sender must never load configuration or lifecycle dependencies:
 # a pulled card may already have erased sysfs, and cancellation is authorized
@@ -227,6 +220,13 @@ reset_leds_for_new_card() {
 	# the same as a live one here: acquire_lock's own stale-lock reclaim runs
 	# later and is the sole owner of that decision, so this reset simply
 	# defers rather than duplicating that judgment.
+	# This existence check and the reset below are not atomic (PR #44 review
+	# finding 6): another instance can acquire the lock in the gap between
+	# this check and led_state_reset_idle actually running, in which case
+	# this call still stomps on that instance's live LEDs. This is a
+	# best-effort guard against the common case, not a closed guarantee --
+	# closing it would mean resetting only after acquiring the lock, which
+	# is a real design change out of scope here, not a comment fix.
 	if [ -e "$LOCK_LINK" ] || [ -L "$LOCK_LINK" ]; then
 		return 0
 	fi
@@ -272,13 +272,14 @@ fi
 
 # Record only the first signal so repeated requests are idempotent and the
 # original operator intent (INT=130, TERM=143) survives cleanup.
-# Args: $1 exit code. $2 origin kind, "operator" or "lease"; omitted (the INT/
-# TERM trap call sites) defaults to "operator" -- a raw signal is definitionally
-# operator-driven, never a lease observation.
+# Args: $1 exit code. There is no origin-kind argument (PR #44 review finding
+# 1): this guard's first-wins CODE freeze made a second kind argument unsafe
+# to trust anywhere but the moment it is actually consumed, so origin is
+# re-derived from service_lease_current at consumption time in
+# signal_failure_led instead of being captured here.
 record_cancel() {
 	[ "${BACKUP_CANCEL_CODE:-0}" -eq 0 ] || return 0
 	BACKUP_CANCEL_CODE=$1
-	BACKUP_CANCEL_KIND="${2:-operator}"
 	logger -t outdoor-backup -p daemon.warning "Cancellation requested (exit code $1)" 2>/dev/null || :
 	return 0
 }
@@ -296,7 +297,7 @@ check_cancel_request() {
 	[ "$lease_current_rc" -eq 0 ] && return 0
 	ERROR_TYPE=cancelled
 	printf '%s\n' 'outdoor-backup: service no longer current' >&2
-	record_cancel 143 lease
+	record_cancel 143
 	return 143
 }
 
@@ -480,16 +481,32 @@ write_failed_status() {
 }
 
 # Choose the operator-visible LED error state for an evidence-based failure
-# type, per the four-lamp state machine (issue #40). R always slow-blinks;
-# the green slot distinguishes the class. verify_failed is a target
-# anchor/UUID failure (see verify_final_target), not a data-integrity check,
-# so it shares device_unknown's class (G3). lock_timeout has no dedicated
-# mapping in this PR and falls through to the unclassified slot (G0/none).
-# cancelled further branches on BACKUP_CANCEL_KIND (issue #43 scope 2): an
-# operator card-pull turns every lamp off without touching R at all, while a
-# lease no longer being current (service stop/restart/upgrade while the card
-# is still inserted) is its own distinct pattern (R slow-blink + G1/G2 solid)
-# that neither led_state_error nor led_state_unconfigured can express.
+# type, per the four-lamp state machine (issue #40). The error slot's R
+# slow-blinks for every class except cancelled (see below); the green slot
+# distinguishes the class. verify_failed is a target anchor/UUID failure (see
+# verify_final_target), not a data-integrity check, so it shares
+# device_unknown's class (G3). lock_timeout has no dedicated mapping in this
+# PR and falls through to the unclassified slot (G0/none).
+# cancelled further branches on origin (issue #43 scope 2): an operator
+# card-pull turns every lamp off without touching R at all, while a lease no
+# longer being current (service stop/restart/upgrade while the card is still
+# inserted) is its own distinct pattern (R slow-blink + G1/G2 solid) that
+# neither led_state_error nor led_state_unconfigured can express.
+#
+# The origin is re-derived here from service_lease_current, never captured at
+# signal time (PR #44 review finding 1): record_cancel's first-wins CODE
+# guard means whichever of INT/TERM/check_cancel_request lands first would
+# also freeze any origin passed alongside it, so a raw signal recorded before
+# check_cancel_request's own cancellation could permanently misattribute a
+# lease-driven stop as "operator". Origin is only safe to determine at the
+# moment it is actually consumed, which is here, never inside the trap
+# (unsafe I/O, and the state this checks has not necessarily settled yet).
+# By this point in cleanup, FD8 is still held (service_lease_release runs
+# after this), and service-control.sh's stop_locked() always writes the
+# `stopped` state before it sends TERM to the owner (service-state.sh's
+# generation record), so a lease that is still current here can only mean
+# this TERM came from somewhere else -- a real operator card-pull via
+# owner-event.sh's remove-driven TERM.
 # Args: none. Always returns zero to preserve the real exit code.
 signal_failure_led() {
 	case "$ERROR_TYPE" in
@@ -498,10 +515,10 @@ signal_failure_led() {
 		device_unknown) led_state_error 3 ;;
 		verify_failed) led_state_error 3 ;;
 		cancelled)
-			if [ "${BACKUP_CANCEL_KIND:-operator}" = lease ]; then
-				led_state_cancelled_lease
-			else
+			if service_lease_current; then
 				led_state_cancelled_operator
+			else
+				led_state_cancelled_lease
 			fi
 			;;
 		*) led_state_error 0 ;;
