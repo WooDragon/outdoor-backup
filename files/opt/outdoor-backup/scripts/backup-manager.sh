@@ -694,6 +694,23 @@ mount_sdcard() {
 		log_error 'Source device changed or became unavailable; refusing mount'
 		return 1
 	fi
+	if ! SOURCE_MAJOR_MINOR=$(source_identity_snapshot_major_minor "$SOURCE_IDENTITY_SNAPSHOT"); then
+		ERROR_TYPE=device_unknown
+		log_error 'Source snapshot has no valid major:minor; refusing mount'
+		return 1
+	fi
+	if source_identity_major_minor_is_mounted "$SOURCE_MAJOR_MINOR"; then
+		ERROR_TYPE=device_unknown
+		log_error "Source major:minor $SOURCE_MAJOR_MINOR is already mounted; refusing mount"
+		return 1
+	else
+		source_mountinfo_rc=$?
+		if [ "$source_mountinfo_rc" -ne 1 ]; then
+			ERROR_TYPE=device_unknown
+			log_error 'Source mountinfo cannot be read or parsed; refusing mount'
+			return 1
+		fi
+	fi
 	check_cancel_request || return "$?"
 	mkdir -p "$MOUNT_POINT"
 	for fs in auto exfat ntfs3 ext4 ext3 ext2 vfat; do

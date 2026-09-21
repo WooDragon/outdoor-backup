@@ -309,6 +309,36 @@ make_premount_gate_mutant() {
     chmod 700 "$MUTANT_MANAGER"
 }
 
+make_premounted_source_gate_mutant() {
+    MUTANT_MANAGER="$SCRIPTS/backup-manager-premounted-source-mutant.sh"
+    sed 's/source_identity_major_minor_is_mounted "\$SOURCE_MAJOR_MINOR"/false/' \
+        "$SCRIPTS/backup-manager.sh" > "$MUTANT_MANAGER" || return 1
+    cmp -s "$SCRIPTS/backup-manager.sh" "$MUTANT_MANAGER" && return 1
+    chmod 700 "$MUTANT_MANAGER"
+}
+
+# Bypass exactly one later per-mount check in a delivery-file runtime copy.
+# Args: $1 mountinfo helper invocation number to bypass.
+make_post_unmount_mountinfo_gate_mutant() {
+    mountinfo_gate_call=$1
+    MUTANT_SOURCE_IDENTITY="$SCRIPTS/source-identity-mutant.sh"
+    rm -f "$SCRIPTS/source-identity.sh"
+    awk -v bypass_call="$mountinfo_gate_call" '
+        /^source_identity_major_minor_is_mounted\(\) \{/ {
+            definitions++
+            print
+            print "    source_identity_mountinfo_gate_calls=${source_identity_mountinfo_gate_calls:-0}"
+            print "    source_identity_mountinfo_gate_calls=$((source_identity_mountinfo_gate_calls + 1))"
+            print "    [ \"$source_identity_mountinfo_gate_calls\" -eq \"" bypass_call "\" ] && return 1"
+            next
+        }
+        { print }
+        END { exit(definitions == 1 ? 0 : 1) }
+    ' "$REPO_ROOT/files/opt/outdoor-backup/scripts/source-identity.sh" > "$MUTANT_SOURCE_IDENTITY" || return 1
+    chmod 700 "$MUTANT_SOURCE_IDENTITY" || return 1
+    ln -s "$MUTANT_SOURCE_IDENTITY" "$SCRIPTS/source-identity.sh"
+}
+
 case_s01_normal_three_four_and_diskseq_absence() {
     ms_case S01 'normal legacy and identity-bearing adds preserve snapshot semantics including old kernels'
     reset_case || { ms_fail 'S01 fixture setup failed'; return; }
@@ -612,6 +642,86 @@ case_s12_postmount_uuid_mismatch_and_read_failure_are_source_rejections() {
         'S12 post-mount read failure lights G3 (LED_GREEN3) solid for its device_unknown error class'
 }
 
+case_s13_preexisting_source_mount_rejects_and_gate_mutant_is_red() {
+    ms_case S13 'a source major:minor already mounted anywhere rejects before source side effects; bypass mutant completes'
+    reset_case || { ms_fail 'S13 production fixture setup failed'; return; }
+    prepare_existing_card
+    printf '77 1 8:1 / /external/source rw - vfat fixture rw\n' >> "$MOUNTINFO"
+    save_b_baseline
+    ms_success 'S13 existing source mount returns a manager failure' \
+        ms_manager_nonzero add sda1 /devices/mock/sda/sda1 41
+    ms_success 'S13 records the existing source major:minor refusal' \
+        grep -F -q 'Source major:minor 8:1 is already mounted; refusing mount' "$NOTICES"
+    assert_rejected_before_source_effects S13
+
+    reset_case || { ms_fail 'S13 mutant fixture setup failed'; return; }
+    prepare_existing_card
+    printf '77 1 8:1 / /external/source rw - vfat fixture rw\n' >> "$MOUNTINFO"
+    make_premounted_source_gate_mutant || { ms_fail 'S13 gate mutant generation failed'; return; }
+    MANAGER_SCRIPT="$MUTANT_MANAGER"
+    export MANAGER_SCRIPT
+    ms_success 'S13 bypassing only the pre-mounted-source gate reaches the unsafe source mount path' \
+        run_manager add sda1 /devices/mock/sda/sda1 41
+    unset MANAGER_SCRIPT
+    ms_failure 'S13 gate mutant turns the production no-source-mount assertion red' \
+        /bin/ash -c '! grep -F -q "mount mode=ro" "$1"' source-mount-assertion "$EFFECTS"
+    grep -F -q 'mount mode=ro' "$EFFECTS" && \
+        printf '%s\n' 'MUTANT_RED pre-mounted-source-gate-bypassed=yes' || \
+        ms_fail 'S13 mutant did not produce the expected unsafe source mount'
+}
+
+case_s14_post_initial_ro_mountinfo_rejects_rw_and_mutant_is_red() {
+    ms_case S14 'an external mount after initial RO blocks RW provisioning; bypassing only the RW gate turns the assertion red'
+    reset_case || { ms_fail 'S14 production fixture setup failed'; return; }
+    TEST_SOURCE_MOUNTINFO_INJECT_AFTER_UMOUNT=1
+    export TEST_SOURCE_MOUNTINFO_INJECT_AFTER_UMOUNT
+    ms_success 'S14 production initial-RO external mount fails manager' ms_manager_nonzero add sda1 /devices/mock
+    unset TEST_SOURCE_MOUNTINFO_INJECT_AFTER_UMOUNT
+    ms_equal "$(mount_effect_sequence)" ro,umount 'S14 external mount blocks RW before mount syscall'
+    ms_absent "$SOURCE_MOUNT/FieldBackup.conf" 'S14 external mount leaves blank source unconfigured'
+    ms_absent "$TARGET_MOUNT/backups/.card-identities" 'S14 external mount creates no identity record'
+    ms_absent /opt/outdoor-backup/conf/aliases.json 'S14 external mount creates no alias'
+    ms_failure 'S14 external mount starts no rsync' grep -F -q '^rsync' "$EFFECTS"
+    ms_failure 'S14 external mount reports no completion' grep -F -q 'Backup completed successfully' "$RUNTIME/log/backup.log"
+
+    reset_case || { ms_fail 'S14 mutant fixture setup failed'; return; }
+    TEST_SOURCE_MOUNTINFO_INJECT_AFTER_UMOUNT=1
+    export TEST_SOURCE_MOUNTINFO_INJECT_AFTER_UMOUNT
+    make_post_unmount_mountinfo_gate_mutant 2 || { ms_fail 'S14 RW gate mutant generation failed'; return; }
+    ms_success 'S14 RW gate mutant reaches the later restore gate' ms_manager_nonzero add sda1 /devices/mock
+    unset TEST_SOURCE_MOUNTINFO_INJECT_AFTER_UMOUNT
+    ms_failure 'S14 RW gate mutant turns the no-RW assertion red' \
+        /bin/ash -c '! grep -F -q "mount mode=rw" "$1"' rw-mount-assertion "$EFFECTS"
+    ms_success 'S14 RW gate mutant publishes before the remaining restore gate rejects' \
+        test -f "$SOURCE_MOUNT/FieldBackup.conf"
+}
+
+case_s15_post_rw_mountinfo_rejects_restore_and_mutant_is_red() {
+    ms_case S15 'an external mount after RW blocks RO restore; bypassing only the restore gate turns the assertion red'
+    reset_case || { ms_fail 'S15 production fixture setup failed'; return; }
+    TEST_SOURCE_MOUNTINFO_INJECT_AFTER_UMOUNT=2
+    export TEST_SOURCE_MOUNTINFO_INJECT_AFTER_UMOUNT
+    ms_success 'S15 production post-RW external mount fails manager' ms_manager_nonzero add sda1 /devices/mock
+    unset TEST_SOURCE_MOUNTINFO_INJECT_AFTER_UMOUNT
+    ms_equal "$(mount_effect_sequence)" ro,umount,rw,umount 'S15 external mount blocks RO restore before mount syscall'
+    ms_success 'S15 published config remains under the existing non-rollback boundary' test -f "$SOURCE_MOUNT/FieldBackup.conf"
+    ms_absent "$TARGET_MOUNT/backups/.card-identities" 'S15 external mount creates no identity record'
+    ms_absent /opt/outdoor-backup/conf/aliases.json 'S15 external mount creates no alias'
+    ms_failure 'S15 external mount starts no rsync' grep -F -q '^rsync' "$EFFECTS"
+    ms_failure 'S15 external mount reports no completion' grep -F -q 'Backup completed successfully' "$RUNTIME/log/backup.log"
+
+    reset_case || { ms_fail 'S15 mutant fixture setup failed'; return; }
+    TEST_SOURCE_MOUNTINFO_INJECT_AFTER_UMOUNT=2
+    export TEST_SOURCE_MOUNTINFO_INJECT_AFTER_UMOUNT
+    make_post_unmount_mountinfo_gate_mutant 3 || { ms_fail 'S15 restore gate mutant generation failed'; return; }
+    ms_success 'S15 restore gate mutant completes the formerly blocked path' run_manager add sda1 /devices/mock
+    unset TEST_SOURCE_MOUNTINFO_INJECT_AFTER_UMOUNT
+    ms_failure 'S15 restore gate mutant turns the single-RO assertion red' \
+        /bin/ash -c '[ "$(grep -F -c "mount mode=ro" "$1")" -eq 1 ]' ro-restore-assertion "$EFFECTS"
+    ms_equal "$(mount_effect_sequence)" ro,umount,rw,umount,ro,umount \
+        'S15 restore gate mutant performs the formerly blocked read-only restore'
+}
+
 assert_assertion_gate_is_live() {
     [ "${2:-}" = '--skip-assertion-mutant' ] && return 0
     mutant="$TEST_ROOT/assertion-count-mutant.sh"
@@ -632,8 +742,8 @@ assert_assertion_gate_is_live() {
     ms_success 'assertion-count mutant failed specifically at the MS_ASSERTIONS gate' \
         /bin/ash -c "grep -F -q \"\$1\" \"\$2\" && grep -F -q \"\$3\" \"\$4\"" \
         assertion-count-mutant \
-        'expected 257 base assertions, ran 256' "$TEST_ROOT/assertion-mutant.stderr" \
-        'RESULT cases=12 assertions=256 failed=1' "$TEST_ROOT/assertion-mutant.stdout"
+        'expected 287 base assertions, ran 286' "$TEST_ROOT/assertion-mutant.stderr" \
+        'RESULT cases=15 assertions=286 failed=1' "$TEST_ROOT/assertion-mutant.stdout"
 }
 
 main() {
@@ -650,8 +760,11 @@ main() {
     case_s10_afterlock_probe_term_stops_before_led
     case_s11_premount_probe_term_stops_before_rw
     case_s12_postmount_uuid_mismatch_and_read_failure_are_source_rejections
-    [ "$MS_CASES" -eq 12 ] || ms_fail "expected 12 cases, ran $MS_CASES"
-    [ "$MS_ASSERTIONS" -eq 257 ] || ms_fail "expected 257 base assertions, ran $MS_ASSERTIONS"
+    case_s13_preexisting_source_mount_rejects_and_gate_mutant_is_red
+    case_s14_post_initial_ro_mountinfo_rejects_rw_and_mutant_is_red
+    case_s15_post_rw_mountinfo_rejects_restore_and_mutant_is_red
+    [ "$MS_CASES" -eq 15 ] || ms_fail "expected 15 cases, ran $MS_CASES"
+    [ "$MS_ASSERTIONS" -eq 287 ] || ms_fail "expected 287 base assertions, ran $MS_ASSERTIONS"
     assert_assertion_gate_is_live "$@"
     printf 'RESULT cases=%s assertions=%s failed=%s\n' "$MS_CASES" "$MS_ASSERTIONS" "$MS_FAILED"
     [ "$MS_FAILED" -eq 0 ]

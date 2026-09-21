@@ -674,6 +674,9 @@ if [ "$umount_target" = "$TEST_SOURCE_MOUNT" ]; then
         exit 1
     fi
     rm -f "$TEST_SOURCE_MOUNT_STATE"
+    if [ "$umount_count" = "${TEST_SOURCE_MOUNTINFO_INJECT_AFTER_UMOUNT:-0}" ]; then
+        printf '77 1 8:1 / /external/source rw - vfat fixture rw\n' >> "$TEST_SOURCE_MOUNTINFO_FILE"
+    fi
     # Test-only controlled replacement immediately after the initial RO mount
     # closes. It models the observable re-open boundary without a production hook.
     if [ "$umount_count" = 1 ] && [ "${TEST_SOURCE_CHANGE_AFTER_UMOUNT:-0}" = 1 ] && \
@@ -926,6 +929,7 @@ run_manager_with_env() {
     TEST_EFFECTS="$EFFECTS" TEST_NOTICES="$NOTICES" \
         TARGET_TEST_BLOCK_NODE="$TARGET_TEST_BLOCK_NODE" \
         TARGET_SYSFS_ROOT="$SYSFS" TARGET_MOUNTINFO_FILE="$MOUNTINFO" \
+        SOURCE_IDENTITY_MOUNTINFO_FILE="$MOUNTINFO" \
         TEST_SYSFS="$SYSFS" TEST_TARGET_MM="$TEST_ROOT/target-mm" \
         TEST_TARGET_MOUNT="$TARGET_MOUNT" TEST_CAT_INJECT="${TEST_CAT_INJECT:-}" \
         TEST_RSYNC_ARGC="$RSYNC_ARGC" TEST_RSYNC_SOURCE="$RSYNC_SOURCE" \
@@ -961,6 +965,8 @@ run_manager_with_env() {
         TEST_MOUNT_INITIAL_FAILS="${TEST_MOUNT_INITIAL_FAILS:-0}" \
         TEST_SOURCE_UMOUNT_FAIL_ON="${TEST_SOURCE_UMOUNT_FAIL_ON:-0}" \
         TEST_SOURCE_UMOUNT_COUNT="$TEST_ROOT/source-umount-count" \
+        TEST_SOURCE_MOUNTINFO_FILE="$MOUNTINFO" \
+        TEST_SOURCE_MOUNTINFO_INJECT_AFTER_UMOUNT="${TEST_SOURCE_MOUNTINFO_INJECT_AFTER_UMOUNT:-0}" \
         TEST_SOURCE_CHANGE_AFTER_UMOUNT="${TEST_SOURCE_CHANGE_AFTER_UMOUNT:-0}" \
         TEST_SOURCE_UUID_AFTER_UMOUNT="${TEST_SOURCE_UUID_AFTER_UMOUNT:-}" \
         TEST_SOURCE_UUID_CHANGE_AFTER_RO="${TEST_SOURCE_UUID_CHANGE_AFTER_RO:-0}" \

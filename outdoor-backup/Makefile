@@ -8,8 +8,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=outdoor-backup
-PKG_VERSION:=1.2.0
-PKG_RELEASE:=14
+PKG_VERSION:=1.3.0
+PKG_RELEASE:=1
 
 PKG_MAINTAINER:=Your Name <your.email@example.com>
 PKG_LICENSE:=GPL-2.0-only
@@ -26,10 +26,10 @@ define Package/outdoor-backup
 endef
 
 define Package/outdoor-backup/description
-  Outdoor Backup - Automatic incremental backup system for SD cards on OpenWrt.
+  Outdoor Backup - Automatic incremental backup system for safe block partitions on OpenWrt.
   Designed for outdoor photography, drone flights, and field data collection.
 
-  Monitors SD card insertion via hotplug and performs automatic
+  Monitors block partition insertion via hotplug and performs automatic
   rsync-based backups to internal storage (SSD/HDD).
 
   Features:
@@ -37,7 +37,7 @@ define Package/outdoor-backup/description
   - Incremental rsync that updates changed files and preserves partial transfers
   - Reliable atomic backup status snapshots and LED status indication
   - Concurrent backup protection (atomic symlink lock)
-  - Configurable card reader whitelist (USB VID:PID / device path)
+  - Safe partition candidates are admitted by manager target and source checks
   - Read-only source card mount, with a bounded write window only for first-time card provisioning
   - Support for multiple filesystems (ext4/exFAT/NTFS/FAT32)
   - One-way automatic backup from SD card to SSD

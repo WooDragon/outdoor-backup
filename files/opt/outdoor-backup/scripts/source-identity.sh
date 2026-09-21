@@ -25,9 +25,9 @@ source_identity_valid_diskseq() {
     esac
     [ "${#source_identity_diskseq_candidate}" -lt 20 ] && return 0
     [ "${#source_identity_diskseq_candidate}" -eq 20 ] || return 1
-    # shellcheck disable=SC2071 # String order follows an equal-length decimal bound.
-    LC_ALL=C [ "$source_identity_diskseq_candidate" \< 18446744073709551615 ] || \
-        LC_ALL=C [ "$source_identity_diskseq_candidate" = 18446744073709551615 ]
+    # shellcheck disable=SC2071 # Equal-length decimal strings need lexical comparison.
+    (LC_ALL=C; [ "$source_identity_diskseq_candidate" \< 18446744073709551615 ]) || \
+        (LC_ALL=C; [ "$source_identity_diskseq_candidate" = 18446744073709551615 ])
 }
 
 # Read the gendisk diskseq, using null only when its attribute is absent.
@@ -170,4 +170,67 @@ source_identity_matches() {
         return 1
     }
     return 0
+}
+
+# Extract and validate the major:minor field from a source snapshot.
+# Args: $1 complete snapshot JSON. Output: canonical major:minor. Returns: 0 or 1.
+source_identity_snapshot_major_minor() {
+    [ "$#" -eq 1 ] || return 1
+    source_identity_snapshot_mm=$(printf '%s\n' "$1" | awk '
+        NR != 1 { invalid = 1; next }
+        {
+            if (!match($0, /"major_minor":"[0-9][0-9]*:[0-9][0-9]*"/)) {
+                invalid = 1
+                next
+            }
+            value = substr($0, RSTART, RLENGTH)
+            sub(/^"major_minor":"/, "", value)
+            sub(/"$/, "", value)
+        }
+        END {
+            if (NR != 1 || invalid || value == "")
+                exit 1
+            print value
+        }
+    ') || return 1
+    target_device_valid_major_minor "$source_identity_snapshot_mm" || return 1
+    printf '%s\n' "$source_identity_snapshot_mm"
+}
+
+# Check whether a device major:minor is already mounted in this mount namespace.
+# Args: $1 canonical major:minor. Returns: 0 mounted, 1 absent, 2 unreadable/malformed.
+source_identity_major_minor_is_mounted() {
+    [ "$#" -eq 1 ] || return 2
+    target_device_valid_major_minor "$1" || return 2
+    source_identity_mountinfo=${SOURCE_IDENTITY_MOUNTINFO_FILE:-/proc/$$/mountinfo}
+    [ -r "$source_identity_mountinfo" ] || return 2
+    awk -v expected="$1" '
+        /^[[:space:]]*$/ { invalid = 1; next }
+        {
+            separators = 0
+            separator_index = 0
+            for (field = 1; field <= NF; field++) {
+                if ($field == "-") {
+                    separators++
+                    separator_index = field
+                }
+            }
+            if (separators != 1 || separator_index < 7 || NF - separator_index < 3) {
+                invalid = 1
+                next
+            }
+            if ($1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+:[0-9]+$/ ||
+                $4 == "" || $5 == "" || $6 == "") {
+                invalid = 1
+                next
+            }
+            records++
+            if ($3 == expected) mounted = 1
+        }
+        END {
+            if (records == 0 || invalid)
+                exit 2
+            exit(mounted ? 0 : 1)
+        }
+    ' "$source_identity_mountinfo"
 }

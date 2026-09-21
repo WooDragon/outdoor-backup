@@ -374,6 +374,48 @@ case_s08_expected_is_data_and_exports_survive() {
     assert_equal "$TARGET_PHYSICAL_DISK" /dev/target-disk-sentinel 'S08 matches does not alter target disk export'
 }
 
+case_s09_snapshot_major_minor_and_mountinfo_gate() {
+    begin_case S09 'snapshot major:minor extraction and mountinfo detection fail closed'
+    reset_fixture
+    set_default_topology
+    saved_snapshot=$(snapshot sda1) || { fail 'S09 initial snapshot fails'; return; }
+    assert_equal "$(source_identity_snapshot_major_minor "$saved_snapshot")" 8:1 \
+        'S09 extracts source major:minor from the delivered snapshot'
+    assert_failure 'S09 malformed snapshot has no major:minor' \
+        source_identity_snapshot_major_minor '{}'
+
+    SOURCE_IDENTITY_MOUNTINFO_FILE="$TEST_ROOT/mountinfo"
+    export SOURCE_IDENTITY_MOUNTINFO_FILE
+    printf '1 0 179:2 / /rom ro - squashfs fixture ro\n77 1 8:1 / /external/source rw - vfat fixture rw\n' \
+        > "$SOURCE_IDENTITY_MOUNTINFO_FILE"
+    assert_success 'S09 matching source major:minor is detected at any path' \
+        source_identity_major_minor_is_mounted 8:1
+    assert_failure 'S09 unrelated mounted major:minor is not a source hit' \
+        source_identity_major_minor_is_mounted 8:2
+
+    : > "$SOURCE_IDENTITY_MOUNTINFO_FILE"
+    source_identity_major_minor_is_mounted 8:1
+    mountinfo_rc=$?
+    assert_equal "$mountinfo_rc" 2 'S09 empty mountinfo fails closed'
+    printf 'not mountinfo\n' > "$SOURCE_IDENTITY_MOUNTINFO_FILE"
+    source_identity_major_minor_is_mounted 8:1
+    mountinfo_rc=$?
+    assert_equal "$mountinfo_rc" 2 'S09 malformed mountinfo fails closed'
+    printf '1 0 179:2 / /rom rw -\n' > "$SOURCE_IDENTITY_MOUNTINFO_FILE"
+    source_identity_major_minor_is_mounted 8:1
+    mountinfo_rc=$?
+    assert_equal "$mountinfo_rc" 2 'S09 missing mountinfo post-separator triple fails closed'
+    printf '1 0 179:2 / /rom rw - squashfs fixture rw - extra\n' > "$SOURCE_IDENTITY_MOUNTINFO_FILE"
+    source_identity_major_minor_is_mounted 8:1
+    mountinfo_rc=$?
+    assert_equal "$mountinfo_rc" 2 'S09 repeated mountinfo separator fails closed'
+    printf '1 0 179:2 / /rom rw - squashfs\n' > "$SOURCE_IDENTITY_MOUNTINFO_FILE"
+    source_identity_major_minor_is_mounted 8:1
+    mountinfo_rc=$?
+    assert_equal "$mountinfo_rc" 2 'S09 incomplete mountinfo post-separator triple fails closed'
+    unset SOURCE_IDENTITY_MOUNTINFO_FILE
+}
+
 main() {
     if [ ! -r "$TARGET_DEVICE_SCRIPT" ] || [ ! -r "$CARD_IDENTITY_SCRIPT" ] || \
         [ ! -r "$SOURCE_IDENTITY_SCRIPT" ]; then
@@ -396,8 +438,9 @@ main() {
     case_s06_missing_topology_and_uuid_proof_reject
     case_s07_mixed_sample_rejects_before_output
     case_s08_expected_is_data_and_exports_survive
-    assert_equal "$CASES" 8 'all required cases executed'
-    assert_equal "$ASSERTIONS" 41 'all required assertions executed'
+    case_s09_snapshot_major_minor_and_mountinfo_gate
+    assert_equal "$CASES" 9 'all required cases executed'
+    assert_equal "$ASSERTIONS" 50 'all required assertions executed'
     if [ "$FAILED" -ne 0 ]; then
         printf 'cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"
         exit 1

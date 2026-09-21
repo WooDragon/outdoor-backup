@@ -6,7 +6,7 @@ Automatic SD card backup system for OpenWrt routers with internal storage (SSD/H
 
 ## Features
 
-- ✅ **Automatic Backup**: Hotplug-triggered backup on SD card insertion
+- ✅ **Automatic Backup**: Every `ACTION=add` block partition is a safe source candidate; the manager decides whether it may run
 - ✅ **Incremental Sync**: rsync updates files when size or modification time differs, preserves partial transfers, and does not delete target files
 - ✅ **Controlled Cancellation**: Before terminal publication, `SIGINT` or `SIGTERM` requests cancellation at a safe phase boundary; partial rsync data is preserved and accepted cancellation cannot report success
 - ✅ **Lifecycle Control**: A stopped service rejects new hotplug `add` events. A stop operation succeeds only after active admitted work becomes quiescent.
@@ -25,7 +25,8 @@ Automatic SD card backup system for OpenWrt routers with internal storage (SSD/H
 - BusyBox with the `setsid` applet. ImmortalWrt 24.10.6 includes it by default. OpenWrt 19.07.10 does not; use a custom image that enables it.
 - A compatible `flock` command. The service lifecycle requires it.
 - A user-configured target storage mount; `/mnt/ssd/` is the compatibility default
-- USB port for SD card reader
+- An `/etc/config/fstab` global setting with `anon_mount=0`; anonymous automounts make target ownership ambiguous and are unsupported
+- A block partition source such as a USB, MMC, or NVMe partition
 - Required kernel modules (auto-installed with package):
   - `kmod-usb-storage`
   - `kmod-fs-ext4`, `kmod-fs-exfat`, `kmod-fs-ntfs3`
@@ -157,6 +158,10 @@ The target UUID is a required user choice. The manager rejects an `add` event wh
    uci set fstab.outdoor_backup_target.uuid="$TARGET_UUID"
    uci set fstab.outdoor_backup_target.target="$TARGET_MOUNT"
    uci set fstab.outdoor_backup_target.enabled='1'
+
+   fstab_global=$(uci show fstab | sed -n "s/^fstab\.\([^.=]*\)=global$/\1/p" | sed -n '1p')
+   [ -n "$fstab_global" ] || { printf '%s\n' 'missing fstab global section' >&2; exit 1; }
+   uci set "fstab.$fstab_global.anon_mount=0"
    uci commit fstab
    block mount
    ```
@@ -277,82 +282,15 @@ To set a friendly name for an SD card, use the WebUI alias management feature in
 - `PRIMARY`: SD card → configured storage target. New card configurations use this value.
 - `REPLICA`: A legacy data value accepted by the reader for compatibility. Automatic backup does not restore from storage to the card. When the manager reads an existing `REPLICA` card, it returns an explicit error without running `rsync`, changing the card configuration or UUID, updating an alias, creating the target UUID directory, or creating a per-backup log.
 
-### Card Reader Whitelist (optional)
+### Safe partition source admission
 
-By default the system guesses which devices are SD cards/readers from their
-path, model string, and size (≤512GB). That heuristic mis-fires on 1TB+ cards
-and on readers with unusual sysfs paths. For reliable, unattended operation you
-can whitelist your exact reader.
+The hotplug trigger forwards every `ACTION=add` event with `DEVTYPE=partition` after it reads the running service generation and waits two seconds. It ignores whole-disk `add` events. It does not classify media by USB VID:PID, `DEVPATH`, model, size, filesystem extension, or reader whitelist. USB, MMC, NVMe, and other block partitions therefore use the same event path.
 
-The whitelist shares the same single config channel as everything else
-(`config.sh`): default < legacy `backup.conf` < the named UCI section
-`outdoor-backup.config`. The recommended way to set it is UCI:
+The manager remains the safety boundary. Before every source mount, it revalidates the captured source snapshot and extracts that source's `major:minor` value. It scans `/proc/<manager-pid>/mountinfo`. If any mount record has the same `major:minor`, the manager fails closed as `device_unknown` before it creates the source mount directory or calls `mount`. The manager does not claim ownership of that mount. It never unmounts an external mount automatically.
 
-```bash
-uci set outdoor-backup.config.card_reader_usb_ids='05e3:0749 14cd:1212'
-uci set outdoor-backup.config.card_reader_path_prefixes='/devices/platform/soc/usb1'
-uci set outdoor-backup.config.card_reader_heuristic_fallback='no'
-uci commit outdoor-backup
-```
+Remove the medium safely before reuse. If the system or another program already mounted the partition, unmount it through that owner and then remove and reinsert the medium. The mountinfo check only detects an existing mount in the manager namespace. It does not defend against malicious root or concurrent privileged mounts.
 
-An explicitly-present UCI option always wins over the legacy `backup.conf`
-value; `backup.conf` remains fully supported as the lower-priority layer, so
-existing setups that only edit `backup.conf` keep working unchanged:
-
-```bash
-# USB VID:PID whitelist (most precise), space-separated lowercase hex
-CARD_READER_USB_IDS="05e3:0749 14cd:1212"
-
-# Device-path prefix whitelist (when a reader has a stable path)
-CARD_READER_PATH_PREFIXES="/devices/platform/soc/usb1"
-
-# Keep heuristic as fallback (default "yes"); set "no" for strict whitelist-only
-CARD_READER_HEURISTIC_FALLBACK="yes"
-```
-
-**Finding your reader's VID:PID** — insert the reader and run:
-
-```bash
-lsusb
-# e.g. "Bus 001 Device 005: ID 05e3:0749 Genesys Logic, Inc. Card Reader"
-#                              ^^^^^^^^^ this is VID:PID
-
-# Or directly from sysfs:
-for d in /sys/bus/usb/devices/*; do
-    [ -r "$d/idVendor" ] && echo "$(cat "$d/idVendor"):$(cat "$d/idProduct")  $(cat "$d/product" 2>/dev/null)"
-done
-```
-
-A whitelist match is authoritative and checked first; the heuristic runs only
-when nothing matches (and `CARD_READER_HEURISTIC_FALLBACK="yes"`). An empty
-whitelist with fallback on behaves exactly like previous versions.
-
-**Value constraints and failure behavior**: `card_reader_usb_ids` must be
-space-separated `vvvv:pppp` hex tokens; `card_reader_path_prefixes` entries
-must be absolute paths with no glob characters (`*`, `?`, `[`), must not be
-the bare `/` (it would match every device path, i.e. disable the whitelist),
-and must not contain a `.` or `..` path segment; `card_reader_heuristic_fallback`
-must be `yes` or `no`.
-
-These three fields have exactly one consumer — the hotplug trigger — and it
-is the only thing that validates them. `config.sh`'s shared loader only
-assigns them; a value outside the constraints above does not make
-`backup-manager.sh`'s own config load fail, because the manager never reads
-`CARD_READER_*` in the first place. Concretely: an invalid whitelist does
-not make the backup manager reject an `add` event, and it does not stop a
-`remove` event's owner-aware cancellation from reaching the manager. The
-hotplug trigger records exactly which field and which token was invalid,
-then falls back to the built-in heuristic (equivalent to an empty whitelist
-with `card_reader_heuristic_fallback=yes`) and keeps working.
-
-`backup.conf` existing but being unreadable is a different, fail-closed
-situation: `config_load` returns an error and none of the caller's
-subsequent effects (mounting, backing up, or, on the hotplug side, reading
-the whitelist from that file) happen with default values silently
-substituted — the manager exits, and the hotplug trigger falls back to the
-built-in heuristic exactly as it does for an invalid whitelist. Fix the
-underlying config either way; the manager invocation will keep failing
-until you do.
+Old `CARD_READER_USB_IDS`, `CARD_READER_PATH_PREFIXES`, and `CARD_READER_HEURISTIC_FALLBACK` assignments in `backup.conf` are ignored. Existing UCI options with the corresponding lowercase names are also ignored. They do not cause `config_load` to fail. A malformed shell legacy file or malformed UCI file still fails configuration loading.
 
 ## Package Structure
 
