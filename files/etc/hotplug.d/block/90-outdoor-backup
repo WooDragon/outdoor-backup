@@ -1,264 +1,50 @@
 #!/bin/sh
 #
-# OpenWrt SD Card Backup - Hotplug Trigger
-# Triggered when block devices are added/removed
-# POSIX-compliant for ash shell
+# Outdoor Backup block hotplug trigger.
+# Every add partition is a source candidate. The manager owns the safety gates.
 #
 
-# Only handle block device events
-[ "$SUBSYSTEM" = "block" ] || exit 0
+[ "$SUBSYSTEM" = block ] || exit 0
 
-# Configuration
 BACKUP_MANAGER="/opt/outdoor-backup/scripts/backup-manager.sh"
-# Legacy card-reader config file, passed to config_load as its legacy-file
-# argument (see load_reader_config below). Same seam name/semantics as before
-# the UCI migration; the value it now feeds into differs.
-CONFIG_FILE="${OUTDOOR_BACKUP_CONFIG:-/opt/outdoor-backup/conf/backup.conf}"
-LOG_TAG="outdoor-backup-hotplug"
-# SYSFS_ROOT prefixes all /sys reads. Empty in production (real /sys); the test
-# suite points it at a fixture tree. No behavior change when unset.
-SYSFS_ROOT="${SYSFS_ROOT:-}"
-# CONFIG_SCRIPT locates the shared config loader. Empty->default in
-# production; the test suite points it at the repo copy. No behavior change
-# when unset.
-CONFIG_SCRIPT="${OUTDOOR_BACKUP_CONFIG_SCRIPT:-/opt/outdoor-backup/scripts/config.sh}"
-# SERVICE_STATE_SCRIPT is the installed lifecycle-state API. It is deliberately
-# consulted only by the add branch after card-reader detection; remove must keep
-# dispatching even when lifecycle state and config files have disappeared.
 SERVICE_STATE_SCRIPT="/opt/outdoor-backup/scripts/service-state.sh"
+LOG_TAG="outdoor-backup-hotplug"
 
-# Log function
 log_message() {
-	logger -t "$LOG_TAG" "$1"
+    logger -t "$LOG_TAG" "$1"
 }
-
-# Load card-reader whitelist settings (issue #2, folded into config.sh's
-# single config channel): default < legacy CONFIG_FILE < named
-# UCI section outdoor-backup.config. Deliberately called only from the add
-# branch below (not at file top level): removal must survive vanished sysfs
-# and a broken reader configuration so it can reach the manager's identity gate.
-#
-# Failure policy: add detection never aborts over a config problem. config_load
-# only assigns CARD_READER_* values; this trigger separately validates those
-# add-only fields and falls back to its built-in heuristic. The manager remains
-# the fail-closed gate for its own add configuration before it performs I/O.
-load_reader_config() {
-	# Degraded defaults: used when config.sh is missing (a partially removed
-	# package, say) and as the fallback when the loaded whitelist turns out
-	# to be invalid (see config_validate_card_reader below). config_load
-	# reassigns all three unconditionally whenever it runs; this is the
-	# baseline they fall back to when it either can't run or produced values
-	# that don't pass validation.
-	CARD_READER_USB_IDS=""
-	CARD_READER_PATH_PREFIXES=""
-	CARD_READER_HEURISTIC_FALLBACK="yes"
-
-	# `.` is a POSIX special builtin: in ash, sourcing a file that cannot be
-	# opened terminates the whole script, and `if ! . ...` does NOT catch it
-	# (verified on openwrt/rootfs:x86_64-24.10.8 -- the shell exits 2 and the
-	# next line never runs). Test readability first; a dead hotplug trigger
-	# would also lose the "remove" cleanup path.
-	if [ ! -r "$CONFIG_SCRIPT" ]; then
-		log_message "card-reader config script unavailable: $CONFIG_SCRIPT (falling back to the built-in heuristic)"
-		return 0
-	fi
-	# shellcheck disable=SC1090
-	. "$CONFIG_SCRIPT"
-	if ! config_load "$CONFIG_FILE"; then
-		log_message "card-reader configuration reload reported an error while loading; the whitelist fields may not reflect the intended value"
-	fi
-
-	# config_load (above) never validates CARD_READER_*; this trigger is the
-	# sole consumer of those fields, so it is the sole validator, run
-	# unconditionally regardless of whether config_load itself succeeded.
-	if ! config_validate_card_reader; then
-		log_message "card-reader whitelist is invalid; falling back to the built-in heuristic"
-		CARD_READER_USB_IDS=""
-		CARD_READER_PATH_PREFIXES=""
-		CARD_READER_HEURISTIC_FALLBACK="yes"
-	fi
-}
-
-# Resolve the USB VID:PID for the device behind a hotplug DEVPATH.
-# Walks up the sysfs tree from the block device to the first USB device node
-# that exposes idVendor/idProduct, and echoes "vvvv:pppp" (lowercase) or
-# nothing. Uses `readlink -f` (present in BusyBox/OpenWrt) to canonicalize the
-# device symlink; if it is ever unavailable the function returns empty, so a
-# VID:PID whitelist simply won't match (with FALLBACK=yes the heuristic still
-# runs; with FALLBACK=no nothing matches — document this for operators).
-get_usb_id_for_device() {
-	local dev_base="$1"
-	# /sys/block/<dev>/device resolves into the USB device chain.
-	local node="$SYSFS_ROOT/sys/block/$dev_base/device"
-	[ -e "$node" ] || return 0
-
-	# Canonicalize, then climb parents looking for idVendor + idProduct.
-	node=$(readlink -f "$node" 2>/dev/null) || node=""
-	while [ -n "$node" ] && [ "$node" != "/" ]; do
-		if [ -r "$node/idVendor" ] && [ -r "$node/idProduct" ]; then
-			local vid pid
-			vid=$(cat "$node/idVendor" 2>/dev/null)
-			pid=$(cat "$node/idProduct" 2>/dev/null)
-			if [ -n "$vid" ] && [ -n "$pid" ]; then
-				# Normalize to lowercase for stable comparison.
-				printf '%s:%s' "$vid" "$pid" | tr 'A-Z' 'a-z'
-				return 0
-			fi
-		fi
-		node=$(dirname "$node")
-	done
-	return 0
-}
-
-# Whitelist check: does this device match a configured reader? (issue #2)
-# Returns 0 on an explicit whitelist hit, 1 otherwise.
-is_card_reader_by_config() {
-	local dev_path="$1"
-	local dev_base="$2"
-	local matched=1
-
-	# Disable pathname expansion while iterating the config lists: the `for`
-	# loops split unquoted vars on whitespace (intended), but without `set -f`
-	# a stray glob char in a configured path prefix (e.g. "/sys/devices/*")
-	# would expand against the real filesystem. Restore globbing on exit.
-	set -f
-
-	# 1. USB VID:PID whitelist (most precise).
-	if [ -n "$CARD_READER_USB_IDS" ]; then
-		local usb_id
-		usb_id=$(get_usb_id_for_device "$dev_base")
-		if [ -n "$usb_id" ]; then
-			local want
-			for want in $CARD_READER_USB_IDS; do
-				# Compare case-insensitively against the normalized id.
-				if [ "$usb_id" = "$(printf '%s' "$want" | tr 'A-Z' 'a-z')" ]; then
-					matched=0
-					break
-				fi
-			done
-		fi
-	fi
-
-	# 2. Device-path prefix whitelist.
-	if [ "$matched" != "0" ] && [ -n "$CARD_READER_PATH_PREFIXES" ]; then
-		local prefix
-		for prefix in $CARD_READER_PATH_PREFIXES; do
-			case "$dev_path" in
-				"$prefix"*) matched=0; break ;;
-			esac
-		done
-	fi
-
-	set +f
-	return "$matched"
-}
-
-# Heuristic check: the original best-effort detection (path + model + size).
-# Kept as a fallback; see is_sdcard for the dispatch order.
-is_card_reader_by_heuristic() {
-	local dev_path="$1"
-	local dev_base="$2"
-
-	# 1. USB card reader pattern in device path
-	if echo "$dev_path" | grep -q "usb.*card\|reader\|SD\|mmc"; then
-		return 0
-	fi
-
-	# 2. Check device model
-	if [ -f "$SYSFS_ROOT/sys/block/$dev_base/device/model" ]; then
-		local model
-		model=$(cat "$SYSFS_ROOT/sys/block/$dev_base/device/model" 2>/dev/null)
-		if echo "$model" | grep -iq "card\|reader\|SD\|mmc"; then
-			return 0
-		fi
-	fi
-
-	# 3. Size check - SD cards typically ≤512GB
-	if [ -f "$SYSFS_ROOT/sys/block/$dev_base/size" ]; then
-		local size
-		size=$(cat "$SYSFS_ROOT/sys/block/$dev_base/size" 2>/dev/null)
-		# Size in 512-byte sectors, 512GB = 1073741824 sectors
-		if [ "$size" -le 1073741824 ] 2>/dev/null; then
-			return 0
-		fi
-	fi
-
-	return 1
-}
-
-# Check if device is an SD card / reader.
-# Order (issue #2): explicit whitelist first (authoritative), then the
-# heuristic as fallback unless the operator disabled it.
-is_sdcard() {
-	local dev_path="$1"
-	local dev_base="${DEVNAME%%[0-9]*}"
-
-	# 1. Whitelist match wins immediately.
-	if is_card_reader_by_config "$dev_path" "$dev_base"; then
-		return 0
-	fi
-
-	# 2. Heuristic fallback (default on; set CARD_READER_HEURISTIC_FALLBACK=no
-	#    to require an explicit whitelist match and ignore everything else).
-	if [ "$CARD_READER_HEURISTIC_FALLBACK" = "no" ]; then
-		return 1
-	fi
-
-	is_card_reader_by_heuristic "$dev_path" "$dev_base"
-}
-
-# Main logic.
-# Guard lets the test suite source this file to exercise the detection
-# functions without firing the hotplug action. Production is unchanged.
-if [ "${OUTDOOR_BACKUP_HOTPLUG_SOURCED:-0}" = "1" ]; then
-	return 0 2>/dev/null || exit 0
-fi
 
 case "$ACTION" in
-	add)
-		# Only process partitions, not whole disks
-		[ "$DEVTYPE" = "partition" ] || exit 0
-
-		load_reader_config
-
-		# Check if this is an SD card
-		if is_sdcard "$DEVPATH"; then
-			if [ ! -r "$SERVICE_STATE_SCRIPT" ]; then
-				log_message "service-state library unavailable: $SERVICE_STATE_SCRIPT; refusing add event"
-				exit 1
-			fi
-			# shellcheck disable=SC1090
-			. "$SERVICE_STATE_SCRIPT"
-			if ! service_state_read; then
-				log_message "service state read failed; refusing add event"
-				exit 1
-			fi
-			case "$SERVICE_STATE_MODE" in
-				running) service_generation=$SERVICE_STATE_GENERATION ;;
-				stopped) exit 0 ;;
-				*)
-					log_message "service state mode is invalid; refusing add event"
-					exit 1
-					;;
-			esac
-			log_message "SD card detected: $DEVNAME"
-
-			# Keep the add event's observed epoch across the settle delay. A restart
-			# during sleep must not turn this old event into a new-generation add.
-			(
-				sleep 2
-				OUTDOOR_BACKUP_SERVICE_GENERATION="$service_generation" \
-					exec "$BACKUP_MANAGER" "add" "$DEVNAME" "$DEVPATH" "${SEQNUM:-}"
-			) &
-		fi
-		;;
-
-	remove)
-		# A remove event is sent even when sysfs and reader configuration have
-		# disappeared. The manager is the single event validator and only it may
-		# authorize a signal to the current owner.
-		"$BACKUP_MANAGER" "remove" "$DEVNAME" "$DEVPATH" "${SEQNUM:-}" &
-		;;
+    add)
+        [ "$DEVTYPE" = partition ] || exit 0
+        if [ ! -r "$SERVICE_STATE_SCRIPT" ]; then
+            log_message "service-state library unavailable: $SERVICE_STATE_SCRIPT; refusing add event"
+            exit 1
+        fi
+        # shellcheck disable=SC1090
+        . "$SERVICE_STATE_SCRIPT"
+        if ! service_state_read; then
+            log_message 'service state read failed; refusing add event'
+            exit 1
+        fi
+        case "$SERVICE_STATE_MODE" in
+            running) service_generation=$SERVICE_STATE_GENERATION ;;
+            stopped) exit 0 ;;
+            *)
+                log_message 'service state mode is invalid; refusing add event'
+                exit 1
+                ;;
+        esac
+        log_message "source partition detected: $DEVNAME"
+        (
+            sleep 2
+            OUTDOOR_BACKUP_SERVICE_GENERATION="$service_generation" \
+                exec "$BACKUP_MANAGER" add "$DEVNAME" "$DEVPATH" "${SEQNUM:-}"
+        ) &
+        ;;
+    remove)
+        "$BACKUP_MANAGER" remove "$DEVNAME" "$DEVPATH" "${SEQNUM:-}" &
+        ;;
 esac
 
 exit 0

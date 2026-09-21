@@ -4,11 +4,9 @@
 # Defaults are overridden by the legacy root-managed file, then by explicitly
 # present options in the named UCI section outdoor-backup.config.
 #
-# config_load assigns and validates every field EXCEPT the three
-# CARD_READER_* whitelist fields, which it only assigns. Those three have a
-# single consumer (the hotplug trigger) and are validated separately by
-# config_validate_card_reader, called only from there -- see that function's
-# comment for why.
+# Unknown legacy assignments and unknown UCI options are intentionally ignored.
+# This preserves upgrade compatibility without allowing unrecognized values to
+# change manager behavior.
 #
 
 config_notice() {
@@ -210,15 +208,6 @@ config_apply_uci_option() {
         led_red)
             LED_RED=$(config_resolve_led_sentinel "$option_value")
             ;;
-        card_reader_usb_ids)
-            CARD_READER_USB_IDS="$option_value"
-            ;;
-        card_reader_path_prefixes)
-            CARD_READER_PATH_PREFIXES="$option_value"
-            ;;
-        card_reader_heuristic_fallback)
-            CARD_READER_HEURISTIC_FALLBACK="$option_value"
-            ;;
     esac
 }
 
@@ -240,9 +229,6 @@ config_load() {
     LED_GREEN2="/sys/class/leds/green:lan-1"
     LED_GREEN3="/sys/class/leds/green:lan-2"
     LED_RED="/sys/class/leds/red:power"
-    CARD_READER_USB_IDS=""
-    CARD_READER_PATH_PREFIXES=""
-    CARD_READER_HEURISTIC_FALLBACK="yes"
 
     # The legacy file is root-managed and remains the compatibility source for
     # options that this first UCI migration does not model. `.` is a POSIX
@@ -282,9 +268,6 @@ config_load() {
             config_apply_uci_option "$uci_dir" led_green2
             config_apply_uci_option "$uci_dir" led_green3
             config_apply_uci_option "$uci_dir" led_red
-            config_apply_uci_option "$uci_dir" card_reader_usb_ids
-            config_apply_uci_option "$uci_dir" card_reader_path_prefixes
-            config_apply_uci_option "$uci_dir" card_reader_heuristic_fallback
         fi
     fi
 
@@ -325,82 +308,4 @@ config_load() {
             ;;
     esac
     config_paths_are_disjoint "$BACKUP_ROOT" "$MOUNT_POINT"
-}
-
-# Validate the three card-reader whitelist fields: CARD_READER_USB_IDS,
-# CARD_READER_PATH_PREFIXES, CARD_READER_HEURISTIC_FALLBACK. Reads the
-# current values of those globals; does not take arguments and does not
-# reassign anything but CARD_READER_USB_IDS (lowercase-normalized on
-# success).
-#
-# Deliberately NOT called from config_load: these three fields have exactly
-# one consumer, the hotplug trigger (90-outdoor-backup), which is also the
-# only caller of this function. backup-manager.sh never reads them, so
-# folding their validation into the shared config_load would make an
-# invalid whitelist fail manager's own config_load call -- before its
-# `trap cleanup`, `main()`, or `remove`-event handling are even installed --
-# over a value the manager never consumes.
-#
-# Every return path, success or failure, restores `set -f`.
-config_validate_card_reader() {
-    case "$CARD_READER_HEURISTIC_FALLBACK" in
-        yes|no)
-            ;;
-        *)
-            config_error "card_reader_heuristic_fallback must be yes or no (got '$CARD_READER_HEURISTIC_FALLBACK')"
-            return 1
-            ;;
-    esac
-
-    if [ -n "$CARD_READER_USB_IDS" ]; then
-        local usb_id_token
-        set -f
-        for usb_id_token in $CARD_READER_USB_IDS; do
-            case "$usb_id_token" in
-                [0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f])
-                    ;;
-                *)
-                    set +f
-                    config_error "card_reader_usb_ids: invalid token '$usb_id_token' (must be a space-separated vvvv:pppp hex token)"
-                    return 1
-                    ;;
-            esac
-        done
-        set +f
-        CARD_READER_USB_IDS=$(printf '%s' "$CARD_READER_USB_IDS" | tr 'A-Z' 'a-z')
-    fi
-
-    if [ -n "$CARD_READER_PATH_PREFIXES" ]; then
-        local prefix_token
-        set -f
-        for prefix_token in $CARD_READER_PATH_PREFIXES; do
-            case "$prefix_token" in
-                /)
-                    set +f
-                    config_error "card_reader_path_prefixes: '/' is not a valid entry (it would match every device path)"
-                    return 1
-                    ;;
-                /*[*?[]*)
-                    set +f
-                    config_error "card_reader_path_prefixes: entry '$prefix_token' must not contain glob characters"
-                    return 1
-                    ;;
-                */.|*/..|*/./*|*/../*)
-                    set +f
-                    config_error "card_reader_path_prefixes: entry '$prefix_token' must not contain a '.' or '..' path segment"
-                    return 1
-                    ;;
-                /*)
-                    ;;
-                *)
-                    set +f
-                    config_error "card_reader_path_prefixes: entry '$prefix_token' must be an absolute path"
-                    return 1
-                    ;;
-            esac
-        done
-        set +f
-    fi
-
-    return 0
 }

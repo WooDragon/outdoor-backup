@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.3.0]
+
+### Changed
+- #47: The hotplug trigger now treats every `ACTION=add` block partition as a safe source candidate. It ignores whole-disk add events. It preserves the service-state generation and two-second settle boundary before dispatching the original `DEVNAME`, `DEVPATH`, and `SEQNUM` to the manager. The trigger no longer classifies a source by reader VID:PID, path, model, size, or media extension. The remove path remains an unconditional delegation to the manager.
+- #47: `CARD_READER_USB_IDS`, `CARD_READER_PATH_PREFIXES`, and `CARD_READER_HEURISTIC_FALLBACK` are no longer defaults, UCI mappings, or validated configuration. Existing legacy assignments and matching unknown UCI options are ignored. Malformed legacy shell or UCI syntax still fails `config_load`.
+- #47: Before every source mount, the manager reads the source `major:minor` from its existing snapshot and checks `/proc/<manager-pid>/mountinfo`. A matching existing mount or unreadable or malformed mountinfo fails closed as `device_unknown` before mount-side effects. The manager does not unmount an external mount. This check does not claim ownership, protection against malicious root, or protection against concurrent privileged mounts.
+- #47: The package version is `1.3.0-1`. The package has no new dependencies. Operators must set `anon_mount=0` on the actual `fstab` global section and safely remove a source that another owner mounted before reinserting it. The package records this prerequisite but does not migrate `fstab`; a later mCPE PR owns that migration.
+
 ### Fixed
 - #38: Renamed the `luci-app-outdoor-backup` rpcd ACL group from `outdoor-backup` to `luci-app-outdoor-backup` so the menu ACL dependency resolves; a stale menu index cache previously kept the new menu entry invisible even after the group was corrected, so `postinst` now also reloads `rpcd`. `test-luci-acl.sh` extracts the actual `postinst` block from the Makefile and asserts against its active (non-comment) lines only, covering `rpcd reload`, the `IPKG_INSTROOT` guard, and the `luci-indexcache` flush, plus a self-check fixture proving an all-commented block reads as not covered.
 - Corrected the four BusyBox `setsid` and `flock` CUSTOM/default conditions in `outdoor-backup/Makefile` from `+@` to `@+`. The former order leaked a negated `BUSYBOX_DEFAULT_*` condition into the installed IPK's runtime `Depends`; the corrected order remains a Kconfig-only select. `PKG_RELEASE` changes from `12` to `13`. The workflow now checks the selected BusyBox namespace in the actual SDK `.config` and rejects any `BUSYBOX_*` control dependency while retaining `rsync` and `jq`. Read [docs/component-implementation.md](docs/component-implementation.md) for the stripping-order cause and validation boundary.

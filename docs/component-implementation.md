@@ -2,7 +2,7 @@
 
 ## 1. 热插拔触发脚本
 
-运行时实现以 [`90-outdoor-backup`](../files/etc/hotplug.d/block/90-outdoor-backup) 为单一事实源。`add` 仅处理分区事件。它在读卡器识别后读取生命周期状态。运行态的 `add` 在 settle 前捕获 generation，并通过环境变量传给 manager。停止态的 `add` 不排队 manager。`remove` 绕过 service、configuration 和 reader gate，并传入原始事件参数 `DEVNAME`、`DEVPATH` 和 `SEQNUM`。
+运行时实现以 [`90-outdoor-backup`](../files/etc/hotplug.d/block/90-outdoor-backup) 为单一事实源。`add` 仅处理分区事件。它将每个 `ACTION=add` 和 `DEVTYPE=partition` 事件作为安全来源候选。它不读取 reader 配置，也不按 VID:PID、`DEVPATH`、model、size 或媒体扩展名分类。运行态的 `add` 在 settle 前捕获 generation，并通过环境变量传给 manager。停止态的 `add` 不排队 manager。`remove` 绕过 service 和 configuration gate，并传入原始事件参数 `DEVNAME`、`DEVPATH` 和 `SEQNUM`。
 
 ## 2. 备份管理器主脚本
 
@@ -10,7 +10,7 @@
 
 管理器先验证事件。它随后取得 FD 8 shared admission lease。它再通过 FD 9 运行目标守卫。目标守卫成功后，管理器才进入其余既有流程。管理器由 [`config.sh`](../files/opt/outdoor-backup/scripts/config.sh) 加载有效配置。有效值的顺序是 defaults < legacy `backup.conf` < 显式 UCI option。`TARGET_MOUNT` 的默认值为 `/mnt/ssd`。`TARGET_UUID` 的默认值为空。`add` 事件要求用户配置非空的目标 UUID。`remove` 事件不要求目标介质在场，仍进入清理路径。
 
-目标守卫在加载 `common.sh`、注册 cleanup trap、获取锁、挂载来源卡、读取别名和创建应用日志之前运行。管理器按以下顺序调用当前实现：
+目标守卫在加载 `common.sh`、注册 cleanup trap、获取锁、挂载来源卡、读取别名和创建应用日志之前运行。`/etc/config/fstab` 的实际 `config global` 必须设置 `anon_mount=0`。目标 named mount 不承载该全局选项。包只记录这一运行前提，不迁移 fstab。管理器按以下顺序调用当前实现：
 
 1. [`target.sh`](../files/opt/outdoor-backup/scripts/target.sh) 以 FD 9 打开目标挂载。它要求配置路径不是符号链接。它要求目录存在。它要求内核 `/proc/<manager-pid>/mountinfo` 中的挂载记录精确匹配该路径。它还要求 VFS 与文件系统级选项均为 `rw`。
 2. [`target-device.sh`](../files/opt/outdoor-backup/scripts/target-device.sh) 校验官方 `block info` 返回的 UUID。`target_device_read_block_uuid` 复用严格 token 解析。它输出唯一 UUID 字段的原始值。现有比较 wrapper 使用该读取结果。两者不决定来源卡身份。它用 sysfs 证明目标、来源卡和系统 backing disk 的物理盘不同。它接受 direct `sd`、`mmc`、`nvme`。系统 loop 仅在 backing file 明确指向 `/dev/` 分区时可追溯。unknown 或 deleted backing、file-backed loop、`dm` 与 `md` 均失败关闭。它解析 `block info` 的完整键值 token。`LABEL` 值内的同形文本不算 UUID。畸形引号会被拒绝。
@@ -32,7 +32,7 @@ After target validation and trap registration, every three-argument and four-arg
 
 The manager keeps this snapshot as an opaque baseline. It rechecks the baseline after acquiring the lock and before every `mount_sdcard` side effect, including the initial read-only mount and a blank card's read-only-to-read-write-to-read-only sequence. After the initial read-only mount, it reads the actual source filesystem UUID through `card_identity_read_source_uuid` and compares it exactly with the snapshot `filesystem_uuid`. The manager checks the sticky cancellation state after capture, after the post-lock recheck, and after each per-mount recheck. Thus, a `TERM` received while a probe runs prevents the later LED start or mount side effect. A capture, recheck, consumption read, or UUID comparison failure sets `ERROR_TYPE=device_unknown`; the manager performs no later source operation and never reports completion. The manager never replaces the baseline to accommodate a replacement medium. The post-read-only-mount `SOURCE_FS_UUID` read remains separate from snapshot storage: `card-identity.sh` uses the observed value for the existing card-binding record. This comparison does not claim a post-mount full-snapshot recheck or an atomic mount.
 
-The rechecks narrow substitution races but do not make mount atomic. A delayed `add` cannot identify media already replaced before snapshot capture. Another replacement can occur after a successful recheck and before mount. The snapshot is not a physical-card identifier: `diskseq` depends on Linux and driver media-change reporting, does not increase merely because a partition is rescanned, and must not be interpreted as proof that every reader swap increments it. A clone remains indistinguishable if all observed fields match and the kernel does not report a media change.
+`source-identity.sh` 同时从 opaque snapshot 中读取来源 `major:minor`。每次 `mount_sdcard` 的 source snapshot 复验成功后，管理器先扫描自身 `/proc/<manager-pid>/mountinfo` 的第三列。任意记录的 `major:minor` 与来源相同，或 mountinfo 无法读取或解析时，管理器均以 `device_unknown` 在 `mkdir` 和 `mount` 前失败。该检查只检测既有挂载，不声称所有权，不自动 unmount 外部挂载，也不防御恶意 root 或并发特权 mount。
 
 The manager validates `FieldBackup.conf` before it binds the loaded `SD_UUID`. It creates or reads `.card-identities/<SD_UUID>.json` below `TARGET_BACKUP_ROOT`, which is itself an FD 9 path. `target_prepare_directory` creates the relative identity directory. The v1 JSON object has exactly `version: 1`, `sd_uuid`, and normalized `fs_uuid`. `jq` validates the JSON object, key set, types, version, and card UUID. Shell validation checks the source UUID character set and lowercase normalization because the pinned OpenWrt `jq` lacks regex support.
 
@@ -62,7 +62,7 @@ LuCI 表单提供 `target_mount`、`target_uuid` 和 `backup_root` 说明。表�
 
 ### #16c：remove 事件的 owner 匹配
 
-hotplug 的 `add` 分支在 settle 后把原始 `SEQNUM` 作为第四个参数传给 manager。它仍执行读卡器识别。`remove` 分支不读取 sysfs、UCI 或读卡器白名单。它直接以引用保护的原始 `DEVNAME`、`DEVPATH` 和 `SEQNUM` 调用 `backup-manager.sh remove`。
+hotplug 的 `add` 分支在 settle 后把原始 `SEQNUM` 作为第四个参数传给 manager。它不做来源分类。`remove` 分支不读取 sysfs、UCI 或来源配置。它直接以引用保护的原始 `DEVNAME`、`DEVPATH` 和 `SEQNUM` 调用 `backup-manager.sh remove`。
 
 manager 只接受三参数或四参数的 `add` 和 `remove`。三参数 add 保持兼容，但不会建立可被自动 remove 取消的事件身份。三参数 remove 以 0 退出，并向 stderr 和 syslog 记录缺少身份。四参数 remove 先 source `target-device.sh` 的词法设备名校验和无状态 `owner-event.sh`；它不加载配置、目标、挂载、状态、传输、LED 或 cleanup 生命周期。
 
@@ -104,7 +104,7 @@ GitHub Actions 在 PR、main push、版本 tag 和手动触发时，先运行 `t
 
 manager 在目标守卫、来源 mount、LED、业务锁和其他备份副作用前取得 shared admission lease。hotplug 传入 generation 时，manager 只接受该 running generation。manager 在取消检查点复验 lease 仍对应当前 running generation。lease 失效会以取消路径退出。cleanup 显式释放 lease；仅原始 FD owner 可解锁，继承 FD 的子进程只能关闭已验证的副本。
 
-hotplug 的 `add` 分支在读卡器识别后读取状态。停止态直接退出而不排队 manager。运行态在 settle sleep 前捕获 generation，并以原始 `DEVNAME`、`DEVPATH` 和 `SEQNUM` 调用 manager；sleep 不会改写 argv。`remove` 分支绕过状态、配置和读卡器 gate，直接将原始事件槽位送入 manager 的 remove 验证路径。
+hotplug 的 `add` 分支先确认分区事件，再读取状态。停止态直接退出而不排队 manager。运行态在 settle sleep 前捕获 generation，并以原始 `DEVNAME`、`DEVPATH` 和 `SEQNUM` 调用 manager；sleep 不会改写 argv。`remove` 分支绕过状态和配置，直接将原始事件槽位送入 manager 的 remove 验证路径。
 
 [`/etc/init.d/outdoor-backup`](../files/etc/init.d/outdoor-backup) 只准备私有运行路径并逐字传播 controller 的退出状态。`PKG_UPGRADE=1` 时，init 只有在已解析的 `/etc/rc.d/SNNoutdoor-backup` 链接仍指向该 init 脚本时才 restart；禁用服务保持 stopped。`reload` 不改变生命周期状态。`outdoor-backup/Makefile` 是包元数据的权威来源，并按 BusyBox CUSTOM 条件选择 `flock`。`prerm` 只调用 controller stop，保留其失败状态，不执行广泛 `pkill`，不删除备份数据，也不自动删除无法验证的残留业务锁。因而失败的 stop 不保证 package wrapper 回滚。
 

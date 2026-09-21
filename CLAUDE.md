@@ -3,9 +3,9 @@
 ## 项目概述
 
 **项目名称**: Outdoor Backup
-**项目类型**: OpenWrt IPK 包 - SD 卡自动备份系统
+**项目类型**: OpenWrt IPK 包 - 安全分区自动备份系统
 **适用场景**: 户外摄影、无人机航拍、现场数据采集等需要可靠备份的场景
-**核心价值**: 利用 OpenWrt 路由器（如 NanoPi R5S）的内置存储，实现 SD 卡插入即自动备份
+**核心价值**: 利用 OpenWrt 路由器（如 NanoPi R5S）的内置存储，对安全准入的分区自动备份
 
 ## 技术栈
 
@@ -90,8 +90,8 @@ outdoor-backup/
 
 ### 1. Hotplug 触发器
 - **文件**: `/etc/hotplug.d/block/90-outdoor-backup`
-- **职责**: 监听块设备事件，识别 SD 卡，触发备份
-- **触发条件**: USB 存储设备插入，匹配 SD 卡特征
+- **职责**: 监听块设备事件；将每个 `add` 分区作为安全来源候选交给 manager
+- **触发条件**: `ACTION=add` 且 `DEVTYPE=partition`；whole-disk `add` 忽略
 
 ### 2. 备份管理器
 - **文件**: `backup-manager.sh`
@@ -132,7 +132,7 @@ outdoor-backup/
 2. **UCI 覆盖层**：`/etc/config/outdoor-backup` 的命名 section `outdoor-backup.config` 仅以显式 option 覆盖下层值。运行时只能通过 `uci` CLI 读取它，不应将 UCI 文件作为 shell 脚本 `source` 或 `eval`。
 3. **SD 卡配置**（`{SD_ROOT}/FieldBackup.conf`）：卡配置来自可移除介质，必须由 `card-config.sh` 按数据读取，绝不 `source` 或 `eval`。读取器为兼容既有数据接受 `REPLICA`，但自动备份只执行 `PRIMARY` 的 SD 卡到目标存储方向；管理器应明确拒绝既有 `REPLICA` 卡，绝不反向写卡或改成 `PRIMARY`。新卡配置只生成 `PRIMARY`。首次配置只可在正式文件缺失时打开受控读写窗口；正式文件必须由同目录临时文件完整写入后发布。来源卡限制、证据边界和用户可见恢复语义见 [README.md 的 Per-SD Card Configuration](README.md#per-sd-card-configuration) 与 [docs/component-implementation.md](docs/component-implementation.md)。
 
-目标存储的稳定约束：`TARGET_MOUNT` 默认 `/mnt/ssd`，`TARGET_UUID` 默认空；有效优先级始终为 defaults < legacy < UCI。`add` 事件只有在用户配置了非空目标 UUID 后才能进入备份。目标挂载必须已存在且精确匹配内核 mountinfo 中的配置路径，`BACKUP_ROOT` 必须是其严格子目录。管理器不猜测磁盘、不格式化磁盘、也不自行挂载目标介质。初始目标守卫失败只允许 stderr、error 级 syslog 和可选红灯；它不应进入来源挂载、`rsync`、别名、锁或应用日志生命周期。`enabled=0` 的 `add` 事件不应产生 LED 副作用。
+目标存储的稳定约束：`TARGET_MOUNT` 默认 `/mnt/ssd`，`TARGET_UUID` 默认空；有效优先级始终为 defaults < legacy < UCI。`add` 事件只有在用户配置了非空目标 UUID 后才能进入备份。`/etc/config/fstab` 的实际 `config global` 必须设置 `anon_mount=0`；目标 named mount 只定义其 UUID、target 和 enabled。包只检查这一运行前提，不迁移 fstab。管理器不猜测磁盘、不格式化磁盘、也不自行挂载目标介质。初始目标守卫失败只允许 stderr、error 级 syslog 和可选红灯；它不应进入来源挂载、`rsync`、别名、锁或应用日志生命周期。`enabled=0` 的 `add` 事件不应产生 LED 副作用。
 
 目标存储的配置命令和运维流程以 [README.md 的 Configuration 章节](README.md#configuration) 为权威入口。守卫拓扑、FD 锚定、LuCI 字段边界和已知限制见 [docs/component-implementation.md](docs/component-implementation.md)。来源身份记录固定在已锚定 `TARGET_BACKUP_ROOT/.card-identities/<SD_UUID>.json`，并只表示来源文件系统 UUID 的首次观察绑定，不表示物理卡身份。修改加载或守卫逻辑前，应读取 [config.sh](files/opt/outdoor-backup/scripts/config.sh)、[card-config.sh](files/opt/outdoor-backup/scripts/card-config.sh)、[target.sh](files/opt/outdoor-backup/scripts/target.sh)、[target-device.sh](files/opt/outdoor-backup/scripts/target-device.sh)、[card-identity.sh](files/opt/outdoor-backup/scripts/card-identity.sh)、[source-identity.sh](files/opt/outdoor-backup/scripts/source-identity.sh)、[backup-manager.sh](files/opt/outdoor-backup/scripts/backup-manager.sh) 及对应测试。
 
@@ -165,7 +165,7 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 ## 数据流
 
 ```
-[SD 卡插入]
+[安全分区候选插入]
     ↓
 [hotplug 检测] → /etc/hotplug.d/block/90-outdoor-backup
     ↓
@@ -175,7 +175,9 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
     ↓
 [获取符号链接锁] → /opt/outdoor-backup/var/lock/backup.lock
     ↓
-[挂载 SD 卡] → /mnt/sdcard/
+[验证来源 snapshot 与预挂载状态] → major:minor、mountinfo
+    ↓
+[挂载来源分区] → /mnt/sdcard/
     ↓
 [读取配置] → /mnt/sdcard/FieldBackup.conf
     ↓
@@ -198,11 +200,12 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 
 ### 数据安全
 - **目标身份守卫**：`add` 先验证目标 UUID、精确挂载和源卡、系统盘、目标盘三者的物理盘分离。
+- **来源预挂载守卫**：每次来源 mount 前，管理器应从 snapshot 读取来源 major:minor，并检查自身 mount namespace 的 `/proc/<manager-pid>/mountinfo`。已有任意同 major:minor 挂载时必须以 `device_unknown` 拒绝，不得自动卸载外部挂载。
 - **FD 锚定**：管理器通过 `/proc/<manager-pid>/fd/9` 使用已验证目标，目标卸载、替换或转为只读均不应视为成功。
 - **增量备份**：传输模块应直接调用 `rsync` 并保留真实退出码。它应使用 `--partial`，不应使用 `--ignore-existing`、`--append`、`--append-verify` 或 `--delete`。rsync 的 size/mtime quick check 不保证发现值相同的内容变化。
 - **状态单一来源**：`status.sh` 应使用 `jq` 原子替换唯一的 `status.json` 快照。它不得创建 `history.jsonl` 或手写 JSON。状态仅在守卫建立后写入，且只有 rsync、摘要写入、最终锚点健康和设备身份复验均成功时才可写 `completed`。
 - **空间守卫**：管理器应通过已锚定目标 FD 执行 `df`，而非扫描备份树计算空间。`MIN_FREE_SPACE` 的默认值为 1024 MB；合法非负整数 `0` 禁用余量，未知 `df` 值必须失败关闭。只有明确 ENOSPC 诊断可把 rsync 失败归类为满盘。
-- **错误恢复**：`remove` 不依赖目标存储、sysfs、UCI 或读卡器白名单。四参数 remove 只可向经过 owner 证据核验的管理器发送一次 `TERM`。hotplug `remove` 不取消 waiter；administrative stop 通过 generation-current gate 取消已准入 waiter。清理必须先确认本进程仍持有 `backup.lock`，再修改来源挂载、状态、LED 或锁。来源挂载只在本进程成功 mount 后可由 cleanup 卸载。持锁 cleanup 应在来源清理、目标 FD 关闭和 LED 终态后释放锁。崩溃残留挂载恢复仍由 #16 后续处理。
+- **错误恢复**：`remove` 不依赖目标存储、sysfs 或 UCI。四参数 remove 只可向经过 owner 证据核验的管理器发送一次 `TERM`。hotplug `remove` 不取消 waiter；administrative stop 通过 generation-current gate 取消已准入 waiter。清理必须先确认本进程仍持有 `backup.lock`，再修改来源挂载、状态、LED 或锁。来源挂载只在本进程成功 mount 后可由 cleanup 卸载。持锁 cleanup 应在来源清理、目标 FD 关闭和 LED 终态后释放锁。崩溃残留挂载恢复仍由 #16 后续处理。
 
 ### 路径安全
 - **目录遍历防护**: `is_safe_path()` 检查 `../`
