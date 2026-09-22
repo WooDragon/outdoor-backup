@@ -515,22 +515,43 @@ case_d13_anonymous_target_source_mapping() {
     set_default_topology
     assert_failure 'D13 rejects anonymous target without SOURCE' \
         validate 0:28 ABCD-1234 sda1
-    assert_success 'D13 reports untrustworthy anonymous SOURCE' \
-        grep -Fq 'anonymous target mount source is not a trustworthy block device' "$NOTICES"
+    assert_success 'D13 reports missing sysfs node after empty SOURCE' \
+        grep -Fq 'target major:minor has no trustworthy sysfs node' "$NOTICES"
 
     reset_fixture
     set_default_topology
     TARGET_RECORD_SOURCE=/tmp/x
     assert_failure 'D13 rejects non-device anonymous SOURCE' \
         validate 0:28 ABCD-1234 sda1
-    assert_success 'D13 reports non-device anonymous SOURCE' \
-        grep -Fq 'anonymous target mount source is not a trustworthy block device' "$NOTICES"
+    assert_success 'D13 reports missing sysfs node after non-device SOURCE' \
+        grep -Fq 'target major:minor has no trustworthy sysfs node' "$NOTICES"
 
     reset_fixture
     set_default_topology
     TARGET_RECORD_SOURCE=/dev/../sda1
     assert_failure 'D13 rejects unsafe anonymous SOURCE name' \
         validate 0:28 ABCD-1234 sda1
+    assert_success 'D13 reports unsafe anonymous SOURCE' \
+        grep -Fq 'anonymous target mount source is not a trustworthy block device' "$NOTICES"
+}
+
+case_d14_anonymous_tmpfs_falls_through_sysfs_stub() {
+    begin_case D14 'tmpfs-shaped 0:N with sysfs stub falls through without SOURCE mapping'
+    reset_fixture
+    set_default_topology
+    add_partition nvme0n1 nvme0n1p1 0:28
+    TARGET_RECORD_SOURCE=tmpfs
+    BLOCK_EXPECTED_NODE=/dev/nvme0n1p1
+    set_block_output '/dev/nvme0n1p1: UUID="ABCD-1234" TYPE="ext4"'
+    unset TARGET_DEVICE
+    assert_success 'D14 accepts tmpfs 0:N when sysfs stub matches' \
+        validate 0:28 ABCD-1234 sda1
+    assert_equal "$TARGET_PHYSICAL_DISK" /dev/nvme0n1 \
+        'D14 physical disk is nvme parent of the stub'
+    assert_equal "$TARGET_BLOCK_NODE" /dev/nvme0n1p1 \
+        'D14 block node is the stub partition'
+    assert_equal "${TARGET_DEVICE-}" '' \
+        'D14 does not rewrite global TARGET_DEVICE'
 }
 
 main() {
@@ -555,9 +576,10 @@ main() {
     case_d11_block_uuid_reader_preserves_parser_contract
     case_d12_overlay_loop_backing_without_dev_prefix
     case_d13_anonymous_target_source_mapping
+    case_d14_anonymous_tmpfs_falls_through_sysfs_stub
 
-    assert_equal "$CASES" 13 'all required cases executed'
-    assert_equal "$ASSERTIONS" 65 'all required assertions executed'
+    assert_equal "$CASES" 14 'all required cases executed'
+    assert_equal "$ASSERTIONS" 70 'all required assertions executed'
     if [ "$FAILED" -ne 0 ]; then
         printf 'cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"
         exit 1

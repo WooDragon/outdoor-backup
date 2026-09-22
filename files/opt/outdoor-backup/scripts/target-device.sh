@@ -126,10 +126,10 @@ target_device_loop_backing_major_minor() {
         "$target_device_backing_name"
 }
 
-# Map an anonymous target mount to its trusted block SOURCE identity.
+# Map only an anonymous target whose SOURCE claims /dev/<devname>.
 # No arguments; reads target_device_target_mm, target_device_root, and SOURCE.
-# Returns 0 for non-anonymous targets or a resolved major:minor; failure emits
-# one explicit notice and returns nonzero without changing TARGET_DEVICE.
+# Other 0:N values, including tmpfs/overlay and fixture stubs, fall through to
+# sysfs resolution; a claimed device SOURCE must resolve or fails closed.
 target_device_map_anonymous_target() {
     case "$target_device_target_mm" in
         0:*)
@@ -145,8 +145,7 @@ target_device_map_anonymous_target() {
             target_device_anon_name=${target_device_anon_source#/dev/}
             ;;
         *)
-            target_device_notice 'anonymous target mount source is not a trustworthy block device'
-            return 1
+            return 0
             ;;
     esac
     target_device_valid_devname "$target_device_anon_name" || {
