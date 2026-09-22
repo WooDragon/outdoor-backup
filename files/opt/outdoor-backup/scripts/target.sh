@@ -16,6 +16,8 @@ target_notice() {
 target_clear_state() {
     unset TARGET_FD_OPEN TARGET_MOUNT_ID TARGET_DEVICE TARGET_FS_TYPE
     unset TARGET_FD_ROOT TARGET_MOUNT_PATH TARGET_BACKUP_ROOT TARGET_BACKUP_PATH
+    unset TARGET_RECORD_ID TARGET_RECORD_DEVICE TARGET_RECORD_PATH TARGET_RECORD_FS
+    unset TARGET_RECORD_SOURCE TARGET_RECORD_VFS_OPTIONS TARGET_RECORD_SUPER_OPTIONS
 }
 
 # Reject a non-canonical configured mount path.
@@ -63,8 +65,9 @@ target_lookup_mount() {
         $1 == expected_id {
             for (field = 7; field <= NF; field++) {
                 if ($field == "-") {
+                    # Keep SOURCE separate: btrfs anon 0:N stores backing in the second post-hyphen field, not TARGET_DEVICE.
                     print $1 "\t" $3 "\t" decode($5) "\t" \
-                        $(field + 1) "\t" $6 "\t" $(field + 3)
+                        $(field + 1) "\t" $(field + 2) "\t" $6 "\t" $(field + 3)
                     exit
                 }
             }
@@ -73,7 +76,8 @@ target_lookup_mount() {
     [ -n "$target_mount_record" ] || return 1
 
     IFS='	' read -r TARGET_RECORD_ID TARGET_RECORD_DEVICE TARGET_RECORD_PATH \
-        TARGET_RECORD_FS TARGET_RECORD_VFS_OPTIONS TARGET_RECORD_SUPER_OPTIONS <<EOF
+        TARGET_RECORD_FS TARGET_RECORD_SOURCE TARGET_RECORD_VFS_OPTIONS \
+        TARGET_RECORD_SUPER_OPTIONS <<EOF
 $target_mount_record
 EOF
     [ "$TARGET_RECORD_ID" = "$target_lookup_id" ] || return 1

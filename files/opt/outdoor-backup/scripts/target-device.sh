@@ -118,11 +118,52 @@ target_device_loop_backing_major_minor() {
         "$target_device_node/loop/backing_file") || return 1
     case "$target_device_backing" in
         /dev/*) target_device_backing_name=${target_device_backing#/dev/} ;;
+        /*) target_device_backing_name=${target_device_backing#/} ;;
         *) return 1 ;;
     esac
     target_device_valid_devname "$target_device_backing_name" || return 1
     target_device_major_minor_for_name "$target_device_root" \
         "$target_device_backing_name"
+}
+
+# Map an anonymous target mount to its trusted block SOURCE identity.
+# No arguments; reads target_device_target_mm, target_device_root, and SOURCE.
+# Returns 0 for non-anonymous targets or a resolved major:minor; failure emits
+# one explicit notice and returns nonzero without changing TARGET_DEVICE.
+target_device_map_anonymous_target() {
+    case "$target_device_target_mm" in
+        0:*)
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+
+    target_device_anon_source=${TARGET_RECORD_SOURCE:-}
+    case "$target_device_anon_source" in
+        /dev/*)
+            target_device_anon_name=${target_device_anon_source#/dev/}
+            ;;
+        *)
+            target_device_notice 'anonymous target mount source is not a trustworthy block device'
+            return 1
+            ;;
+    esac
+    target_device_valid_devname "$target_device_anon_name" || {
+        target_device_notice 'anonymous target mount source is not a trustworthy block device'
+        return 1
+    }
+    target_device_mapped_mm=$(target_device_major_minor_for_name \
+        "$target_device_root" "$target_device_anon_name") || {
+        target_device_notice 'anonymous target mount source is not a trustworthy block device'
+        return 1
+    }
+    target_device_valid_major_minor "$target_device_mapped_mm" || {
+        target_device_notice 'anonymous target mount source is not a trustworthy block device'
+        return 1
+    }
+    target_device_target_mm=$target_device_mapped_mm
+    return 0
 }
 
 # Resolve a device to its physical whole disk without suffix manipulation.
@@ -352,6 +393,7 @@ target_device_validate() {
         target_device_notice 'sysfs block topology is unavailable'
         return 1
     }
+    target_device_map_anonymous_target || return 1
     command -v block >/dev/null 2>&1 || {
         target_device_notice 'official block CLI is unavailable'
         return 1

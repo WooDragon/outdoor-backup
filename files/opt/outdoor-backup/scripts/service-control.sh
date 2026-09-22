@@ -29,6 +29,29 @@ business_lock_absent() {
     [ ! -e "$BUSINESS_LOCK" ] && [ ! -L "$BUSINESS_LOCK" ]
 }
 
+# Reclaim only a dangling /proc/<pid> business-lock symlink whose cmdline is
+# unreadable. No arguments. Success means the lock was reclaimed; failure means
+# this object must not be touched.
+business_lock_reclaim_dangling() {
+    [ -L "$BUSINESS_LOCK" ] || return 1
+    lock_target=$(readlink "$BUSINESS_LOCK") || return 1
+    case "$lock_target" in
+        /proc/*/*) return 1 ;;
+    esac
+    pid=${lock_target#/proc/}
+    case "$pid" in
+        ''|*[!0-9]*|0|0[0-9]*) return 1 ;;
+    esac
+    [ -r "$BUSINESS_LOCK/cmdline" ] && return 1
+    stale="$BUSINESS_LOCK.stale.$$"
+    if mv "$BUSINESS_LOCK" "$stale" 2>/dev/null; then
+        rm -f "$stale"
+        controller_notice 'removed dangling business lock'
+        return 0
+    fi
+    return 1
+}
+
 # Print whole monotonic seconds from /proc/uptime, or return nonzero.
 monotonic_seconds() {
     IFS='. ' read -r uptime_seconds _ < /proc/uptime || return 1
@@ -165,9 +188,11 @@ start_locked() {
     }
     controller_abort_if_cancelled || return $?
     if ! business_lock_absent; then
-        controller_notice 'start rejected because business lock exists'
-        controller_release_lease || return 1
-        return 1
+        if ! business_lock_reclaim_dangling || ! business_lock_absent; then
+            controller_notice 'start rejected because business lock exists'
+            controller_release_lease || return 1
+            return 1
+        fi
     fi
     CONTROL_PREVIOUS_GENERATION=$SERVICE_STATE_GENERATION
     CONTROL_CANDIDATE_GENERATION=$((SERVICE_STATE_GENERATION + 1))

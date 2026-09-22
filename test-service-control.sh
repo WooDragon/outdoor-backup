@@ -70,7 +70,7 @@ CASES=0
 ASSERTIONS=0
 FAILED=0
 EXPECTED_CASES=16
-EXPECTED_ASSERTIONS=119
+EXPECTED_ASSERTIONS=122
 ACTIVE_PIDS=''
 
 fail() {
@@ -482,7 +482,7 @@ case_stop_start_and_cold_fallback() {
 }
 
 case_stopped_admission_and_start_rejections() {
-    begin_case C03 'stopped denies S admission and start refuses active lease or any lock path object'
+    begin_case C03 'stopped denies S admission and start refuses active lease or live/non-proc lock objects'
     prepare_case c03 || return
     install_control || return
     write_state "$RUNTIME_SERVICE" 'stopped:4'
@@ -503,6 +503,17 @@ case_stopped_admission_and_start_rejections() {
     rm -f "$BUSINESS_LOCK"; ln -s /missing/backup-owner "$BUSINESS_LOCK"
     assert_failure 'C03 dangling business link rejects start' run_control "$CASE_ROOT/link-lock.out" start
     assert_equal "$(read_state)" 'stopped:4' 'C03 lock rejections do not reopen state'
+    c03_dead_pid=65535
+    while [ -e "/proc/$c03_dead_pid" ]; do
+        c03_dead_pid=$((c03_dead_pid - 1))
+        [ "$c03_dead_pid" -gt 2 ] || { fail 'C03 cannot find unused pid'; return 1; }
+    done
+    rm -f "$BUSINESS_LOCK"
+    ln -s "/proc/$c03_dead_pid" "$BUSINESS_LOCK"
+    assert_success 'C03 dangling /proc pid lock is reclaimed on start' \
+        run_control "$CASE_ROOT/proc-lock.out" start
+    assert_absent "$BUSINESS_LOCK" 'C03 reclaim removes dangling /proc lock'
+    assert_equal "$(read_state)" 'running:5' 'C03 reclaim advances generation'
 }
 
 case_stop_waits_for_proven_owner_and_writer() {
