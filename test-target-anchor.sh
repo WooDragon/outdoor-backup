@@ -195,6 +195,10 @@ case_t03_open_tracks_exact_mount() {
     mount_tmpfs "$TEST_ROOT/target"
     expected_id=$(mount_id_for_path "$TEST_ROOT/target")
     assert_success 'T03 opens a rw tmpfs target' target_open "$TEST_ROOT/target/"
+    assert_equal "$TARGET_RECORD_SOURCE" tmpfs \
+        'T03 stores mountinfo source from the field after the hyphen'
+    assert_equal "$TARGET_DEVICE" "$TARGET_RECORD_DEVICE" \
+        'T03 TARGET_DEVICE remains mountinfo major:minor'
     assert_equal "$TARGET_MOUNT_PATH" "$TEST_ROOT/target" 'T03 normalizes trailing slash'
     assert_equal "$TARGET_MOUNT_ID" "$expected_id" 'T03 stores the mountinfo ID, not an ancestor ID'
     assert_equal "$TARGET_FS_TYPE" tmpfs 'T03 stores filesystem type'
@@ -427,8 +431,8 @@ main() {
     case_t13_target_overmount_and_unrelated_submounts
 
     assert_equal "$CASES" 16 'all required cases executed'
-    if [ "$ASSERTIONS" -ne 96 ]; then
-        fail "all required assertions executed (expected=96, actual=$ASSERTIONS)"
+    if [ "$ASSERTIONS" -ne 98 ]; then
+        fail "all required assertions executed (expected=98, actual=$ASSERTIONS)"
     fi
     if [ "$FAILED" -ne 0 ]; then
         printf 'cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"

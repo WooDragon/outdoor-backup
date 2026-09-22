@@ -137,7 +137,7 @@ reset_fixture() {
         printf '%s\n' "$*" >> "$TEST_NOTICES"
     }
     export TARGET_SYSFS_ROOT TARGET_MOUNTINFO_FILE TEST_NOTICES BLOCK_OUTPUT_FILE
-    unset TARGET_BLOCK_NODE TARGET_PHYSICAL_DISK BLOCK_STATUS
+    unset TARGET_BLOCK_NODE TARGET_PHYSICAL_DISK TARGET_RECORD_SOURCE TARGET_DEVICE BLOCK_STATUS
 }
 
 # Add a sysfs disk with realistic /sys/dev/block and /sys/class/block symlinks.
@@ -476,6 +476,84 @@ case_d11_block_uuid_reader_preserves_parser_contract() {
         target_device_uuid_matches_block /dev/nvme0n1p12 ''
 }
 
+case_d12_overlay_loop_backing_without_dev_prefix() {
+    begin_case D12 'ImmortalWrt overlay loop backing /mmcblk1p2 protects mmc parent'
+    reset_fixture
+    set_default_topology
+    add_disk mmcblk1 179:8
+    add_partition mmcblk1 mmcblk1p2 179:10
+    : > "$MOUNTINFO"
+    add_loop 7:0
+    printf '%s\n' /mmcblk1p2 > "$SYSFS/devices/mock/block/loop0/loop/backing_file"
+    add_mount / 0:1 overlay
+    add_mount /rom 179:10 squashfs
+    add_mount /overlay 7:0 f2fs
+    assert_success 'D12 resolves an overlay loop backing without /dev prefix' \
+        validate 259:12 ABCD-1234 sda1
+    BLOCK_EXPECTED_NODE=/dev/mmcblk1p2
+    set_block_output '/dev/mmcblk1p2: UUID="ABCD-1234" TYPE="ext4"'
+    assert_failure 'D12 rejects a target on the loop backing mmc parent' \
+        validate 179:10 ABCD-1234 sda1
+}
+
+case_d13_anonymous_target_source_mapping() {
+    begin_case D13 'btrfs anon 0:N maps /dev SOURCE locally without rewriting TARGET_DEVICE'
+    reset_fixture
+    set_default_topology
+    TARGET_RECORD_SOURCE=/dev/nvme0n1p12
+    unset TARGET_DEVICE
+    assert_success 'D13 maps anonymous target through mount SOURCE' \
+        validate 0:28 ABCD-1234 sda1
+    assert_equal "$TARGET_PHYSICAL_DISK" /dev/nvme0n1 \
+        'D13 resolves mapped target physical disk'
+    assert_equal "$TARGET_BLOCK_NODE" /dev/nvme0n1p12 \
+        'D13 resolves mapped target block node'
+    assert_equal "${TARGET_DEVICE-}" '' \
+        'D13 does not rewrite global TARGET_DEVICE'
+
+    reset_fixture
+    set_default_topology
+    assert_failure 'D13 rejects anonymous target without SOURCE' \
+        validate 0:28 ABCD-1234 sda1
+    assert_success 'D13 reports missing sysfs node after empty SOURCE' \
+        grep -Fq 'target major:minor has no trustworthy sysfs node' "$NOTICES"
+
+    reset_fixture
+    set_default_topology
+    TARGET_RECORD_SOURCE=/tmp/x
+    assert_failure 'D13 rejects non-device anonymous SOURCE' \
+        validate 0:28 ABCD-1234 sda1
+    assert_success 'D13 reports missing sysfs node after non-device SOURCE' \
+        grep -Fq 'target major:minor has no trustworthy sysfs node' "$NOTICES"
+
+    reset_fixture
+    set_default_topology
+    TARGET_RECORD_SOURCE=/dev/../sda1
+    assert_failure 'D13 rejects unsafe anonymous SOURCE name' \
+        validate 0:28 ABCD-1234 sda1
+    assert_success 'D13 reports unsafe anonymous SOURCE' \
+        grep -Fq 'anonymous target mount source is not a trustworthy block device' "$NOTICES"
+}
+
+case_d14_anonymous_tmpfs_falls_through_sysfs_stub() {
+    begin_case D14 'tmpfs-shaped 0:N with sysfs stub falls through without SOURCE mapping'
+    reset_fixture
+    set_default_topology
+    add_partition nvme0n1 nvme0n1p1 0:28
+    TARGET_RECORD_SOURCE=tmpfs
+    BLOCK_EXPECTED_NODE=/dev/nvme0n1p1
+    set_block_output '/dev/nvme0n1p1: UUID="ABCD-1234" TYPE="ext4"'
+    unset TARGET_DEVICE
+    assert_success 'D14 accepts tmpfs 0:N when sysfs stub matches' \
+        validate 0:28 ABCD-1234 sda1
+    assert_equal "$TARGET_PHYSICAL_DISK" /dev/nvme0n1 \
+        'D14 physical disk is nvme parent of the stub'
+    assert_equal "$TARGET_BLOCK_NODE" /dev/nvme0n1p1 \
+        'D14 block node is the stub partition'
+    assert_equal "${TARGET_DEVICE-}" '' \
+        'D14 does not rewrite global TARGET_DEVICE'
+}
+
 main() {
     if [ ! -r "$TARGET_SCRIPT" ]; then
         printf 'FAIL: target device library is absent: %s\n' "$TARGET_SCRIPT" >&2
@@ -496,9 +574,12 @@ main() {
     case_d09_parent_resolution_handles_multidigit_partitions
     case_d10_source_name_is_a_safe_basename
     case_d11_block_uuid_reader_preserves_parser_contract
+    case_d12_overlay_loop_backing_without_dev_prefix
+    case_d13_anonymous_target_source_mapping
+    case_d14_anonymous_tmpfs_falls_through_sysfs_stub
 
-    assert_equal "$CASES" 11 'all required cases executed'
-    assert_equal "$ASSERTIONS" 54 'all required assertions executed'
+    assert_equal "$CASES" 14 'all required cases executed'
+    assert_equal "$ASSERTIONS" 70 'all required assertions executed'
     if [ "$FAILED" -ne 0 ]; then
         printf 'cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"
         exit 1

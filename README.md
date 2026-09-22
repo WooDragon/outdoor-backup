@@ -399,7 +399,13 @@ SUBSYSTEM=block ACTION=add DEVNAME=sda1 DEVTYPE=partition \
 # Check the lock: it is a symlink pointing at the holder's /proc/<pid>
 ls -l /opt/outdoor-backup/var/lock/backup.lock
 cat /opt/outdoor-backup/var/lock/backup.lock/cmdline
+```
 
+`start` (`/etc/init.d/outdoor-backup start`) reclaims a symlink to a dead `/proc/<pid>` when that holder's `cmdline` is unreadable. `restart` still runs `stop` first. `stop` does not delete a lock that it cannot prove, so do not rely on `restart` or the LuCI restart button to clear a leftover dangling lock.
+
+Use `rm -f` only for an object that `start` still rejects, such as a regular file or a symlink outside `/proc`, and only after confirming that no backup is actually running.
+
+```bash
 # Force-clear a lock (only if you have confirmed no backup is really running)
 rm -f /opt/outdoor-backup/var/lock/backup.lock
 
