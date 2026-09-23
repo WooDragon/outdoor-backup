@@ -554,6 +554,35 @@ case_d14_anonymous_tmpfs_falls_through_sysfs_stub() {
         'D14 does not rewrite global TARGET_DEVICE'
 }
 
+case_d15_target_only_proof_keeps_source_validation_separate() {
+    begin_case D15 'target-only proof validates target and system without inventing a source'
+    reset_fixture
+    set_default_topology
+    assert_success 'D15 proves an independent physical target without source input' \
+        target_device_target_only 259:12
+    assert_equal "$TARGET_BLOCK_NODE" /dev/nvme0n1p12 \
+        'D15 exports the exact target block node'
+    assert_equal "$TARGET_PHYSICAL_DISK" /dev/nvme0n1 \
+        'D15 exports the target physical disk'
+    assert_equal "$TARGET_BLOCK_UUID" ABCD-1234 \
+        'D15 reads the strict target UUID'
+
+    reset_fixture
+    set_default_topology
+    BLOCK_EXPECTED_NODE=/dev/mmcblk0p2
+    set_block_output '/dev/mmcblk0p2: UUID="ABCD-1234" TYPE="ext4"'
+    assert_failure 'D15 rejects a target on the physical system disk' \
+        target_device_target_only 179:2
+
+    reset_fixture
+    set_default_topology
+    TARGET_RECORD_SOURCE=/dev/nvme0n1p12
+    assert_success 'D15 maps btrfs anonymous target source without a source disk argument' \
+        target_device_target_only 0:28
+    assert_equal "$TARGET_BLOCK_UUID" ABCD-1234 \
+        'D15 preserves the mapped target UUID'
+}
+
 main() {
     if [ ! -r "$TARGET_SCRIPT" ]; then
         printf 'FAIL: target device library is absent: %s\n' "$TARGET_SCRIPT" >&2
@@ -577,9 +606,10 @@ main() {
     case_d12_overlay_loop_backing_without_dev_prefix
     case_d13_anonymous_target_source_mapping
     case_d14_anonymous_tmpfs_falls_through_sysfs_stub
+    case_d15_target_only_proof_keeps_source_validation_separate
 
-    assert_equal "$CASES" 14 'all required cases executed'
-    assert_equal "$ASSERTIONS" 70 'all required assertions executed'
+    assert_equal "$CASES" 15 'all required cases executed'
+    assert_equal "$ASSERTIONS" 77 'all required assertions executed'
     if [ "$FAILED" -ne 0 ]; then
         printf 'cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"
         exit 1

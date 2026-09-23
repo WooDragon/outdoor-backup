@@ -40,7 +40,21 @@ A missing record uses a same-directory `mktemp` file, `jq` serialization, rename
 
 A legacy backup directory without a record receives a first-observation binding. This compatibility behavior preserves its directory, data, and aliases. It cannot prove the historical source of that data. A filesystem UUID identifies a filesystem, not a physical SD card. A clone remains indistinguishable only when every observed snapshot field is the same and the kernel does not report a media change.
 
-LuCI 表单提供 `target_mount`、`target_uuid` 和 `backup_root` 说明。表单在 `enabled=1` 时要求 UUID。表单在 `enabled=0` 时允许空 UUID。字段的合法值和路径检查不代表表单会自动挂载或格式化介质。
+### LuCI target storage selection
+
+CBI 配置页保留 `target_mount`、`target_uuid` 和 `backup_root` 三个手工字段。它新增的 **Target storage** 是虚拟选择器，默认值为 **Manual / keep current**。该默认值不选择第一块磁盘，也不改写现有手工配置。
+
+[`target-list.sh`](../files/opt/outdoor-backup/scripts/target-list.sh) 输出完整 JSON：`targets` 中的每项包含 `device`、`uuid`、`mount` 和 `fstype`，并包含当前 `target_mount` 与 `backup_root`。它只枚举已挂载、读写、direct physical、非系统盘且 UUID 有效并可验证的存储。它接受 USB SSD、NVMe 和已有匿名 Btrfs `0:N` 映射；它不按 rotational 属性推断 SSD。未挂载、只读、系统盘、非 direct physical 存储以及 UUID 缺失或不能验证的设备都不进入列表。
+
+[`target-device.sh`](../files/opt/outdoor-backup/scripts/target-device.sh) 提供最小的 target-only 设备提取。[`target.lua`](../luci-app-outdoor-backup/luasrc/model/outdoor-backup/target.lua) 是固定 helper。它读取脚本输出并验证 JSON。CBI 只使用该 helper 的已验证数据生成显示为 device、UUID、mount 和 filesystem type 的选项；容量和卷标不属于该选择器的显示数据。
+
+选择模式只生成 3 个 formvalues。唯一持久化路径仍是原 CBI `Map.parse()` 和 `Map.save()`。保存前，CBI 会重枚举，并按 UUID 与 mount 的组合复验选择。枚举失败、选择失效或 UUID/mount 不匹配时，CBI 不保存新的 target 值。manual 模式保持当前手工字段、继承和空 UUID 的 `rmempty` 行为。
+
+当选择有效新目标时，CBI 从有效旧配置计算 backup-root 后缀。有效旧配置按 defaults < legacy < UCI 的顺序加载，并进行路径正规化。CBI 将该后缀附加到新 mount；没有合法相对后缀时使用 `SDMirrors`。CBI 拒绝 target 外的 backup root，并拒绝与 SD source mount 相交的 target。运行时目标守卫仍是最终安全边界；状态信息不是锁。
+
+页面 reload 才刷新候选。该功能不自动格式化、挂载或修改 `fstab`，不迁移旧数据，不增加 API、ACL 或轮询。管理员应先通过现有 `fstab` 流程挂载存储。用户操作以 [README.md 的 Configuration 章节](../README.md#configuration) 为权威来源；WebUI 使用说明见 [WEBUI_USER_GUIDE.md](WEBUI_USER_GUIDE.md)。
+
+自动化覆盖入口为 `tests/test-target-list.sh` 和 `tests/test-luci-target-selection.sh`。后者使用真实 `Map.parse()`，并在隔离 UCI 环境中执行 save、commit 和 reload，不只 mock `validate`。现有 `test-target-device` 与 `test-luci-target-config` 继续回归。该证据不包括真机浏览器或 USB SSD/NVMe 的端到端验证；功能尚未部署。
 
 > **前置阅读**：目标存储的可执行配置、重试方法和用户可见限制，修改部署或运维行为前必须先读取：[README.md 的 Configuration 章节](../README.md#configuration)。
 

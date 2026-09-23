@@ -13,7 +13,7 @@ target_device_notice() {
 
 # Clear only state exported by target_device_validate. No arguments.
 target_device_clear_state() {
-    unset TARGET_BLOCK_NODE TARGET_PHYSICAL_DISK
+    unset TARGET_BLOCK_NODE TARGET_PHYSICAL_DISK TARGET_BLOCK_UUID
 }
 
 # Return the configurable sysfs root. Output: canonical directory, or failure.
@@ -289,9 +289,10 @@ target_device_is_pseudo_filesystem() {
     esac
 }
 
-# Resolve target/source physical disks from temporary state initialized by validate.
-# No arguments; returns 0 after resolving both disks, or 1 on failure.
-target_device_resolve_pair() {
+# Resolve the mounted target to a direct supported physical disk.
+# No arguments; reads target_device_root/target_device_target_mm and exports
+# target_device_target_name/target_device_target_disk on success.
+target_device_resolve_target() {
     target_device_node=$(target_device_node_for_major_minor \
         "$target_device_root" "$target_device_target_mm") || {
         target_device_notice 'target major:minor has no trustworthy sysfs node'
@@ -312,6 +313,13 @@ target_device_resolve_pair() {
         target_device_notice 'target has no supported physical parent disk'
         return 1
     }
+    return 0
+}
+
+# Resolve target/source physical disks from temporary state initialized by validate.
+# No arguments; returns 0 after resolving both disks, or 1 on failure.
+target_device_resolve_pair() {
+    target_device_resolve_target || return 1
     target_device_source_mm=$(target_device_major_minor_for_name \
         "$target_device_root" "$target_device_source_name") || {
         target_device_notice 'source device has no trustworthy sysfs identity'
@@ -329,9 +337,10 @@ target_device_resolve_pair() {
     return 0
 }
 
-# Exclude physical system backing disks using temporary state initialized by validate.
-# No arguments; returns 0 after exclusion, or 1 when no safe exclusion is proven.
-target_device_exclude_system_disks() {
+# Exclude the proven target disk from every proven physical system backing disk.
+# No arguments; reads target_device_root/target_device_target_disk and returns
+# nonzero when system backing cannot be proven or shares the target disk.
+target_device_exclude_target_system_disk() {
     target_device_mountinfo=${TARGET_MOUNTINFO_FILE:-/proc/$$/mountinfo}
     target_device_records=$(target_device_system_mount_records \
         "$target_device_mountinfo") || {
@@ -352,9 +361,8 @@ target_device_exclude_system_disks() {
             return 1
         }
         target_device_proven_system=1
-        if [ "$target_device_system_disk" = "$target_device_target_disk" ] || \
-            [ "$target_device_system_disk" = "$target_device_source_disk" ]; then
-            target_device_notice 'target or source shares a physical system disk'
+        if [ "$target_device_system_disk" = "$target_device_target_disk" ]; then
+            target_device_notice 'target shares a physical system disk'
             return 1
         fi
     done <<EOF
@@ -364,6 +372,52 @@ EOF
         target_device_notice 'no physical system backing disk was proven'
         return 1
     fi
+    return 0
+}
+
+# Exclude physical system backing disks using temporary state initialized by validate.
+# No arguments; returns 0 after exclusion, or 1 when no safe exclusion is proven.
+target_device_exclude_system_disks() {
+    target_device_exclude_target_system_disk || return 1
+    while IFS='	' read -r target_device_system_mm target_device_system_fs; do
+        [ -n "$target_device_system_mm" ] || continue
+        target_device_is_pseudo_filesystem "$target_device_system_fs" && continue
+        target_device_system_disk=$(target_device_physical_disk_for_major_minor \
+            "$target_device_root" "$target_device_system_mm" '') || return 1
+        if [ "$target_device_source_disk" = "$target_device_system_disk" ]; then
+            target_device_notice 'source shares a physical system disk'
+            return 1
+        fi
+    done <<EOF
+$target_device_records
+EOF
+    return 0
+}
+
+# Prove a mounted target is a safe physical non-system block device.
+# Argument: target major:minor. Success exports TARGET_BLOCK_NODE,
+# TARGET_PHYSICAL_DISK, and TARGET_BLOCK_UUID. It deliberately has no source
+# argument: callers that know a source must use target_device_validate instead.
+target_device_target_only() {
+    target_device_clear_state
+    unset TARGET_BLOCK_UUID
+    target_device_target_mm=$1
+
+    target_device_valid_major_minor "$target_device_target_mm" || return 1
+    target_device_root=$(target_device_sysfs_root) || return 1
+    target_device_map_anonymous_target || return 1
+    command -v block >/dev/null 2>&1 || return 1
+    target_device_resolve_target || return 1
+    target_device_block_node="/dev/$target_device_target_name"
+    target_device_block_uuid=$(target_device_read_block_uuid "$target_device_block_node") || return 1
+    case "$target_device_block_uuid" in
+        ''|*[!A-Za-z0-9-]*) return 1 ;;
+    esac
+    target_device_exclude_target_system_disk || return 1
+
+    TARGET_BLOCK_NODE=$target_device_block_node
+    TARGET_PHYSICAL_DISK=$target_device_target_disk
+    TARGET_BLOCK_UUID=$target_device_block_uuid
     return 0
 }
 
