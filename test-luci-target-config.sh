@@ -42,7 +42,14 @@ local function check(value, message)
 end
 
 function translate(value) return value end
-TypedSection, Flag, Value, DummyValue = "TypedSection", "Flag", "Value", "DummyValue"
+TypedSection, Flag, Value, ListValue, DummyValue = "TypedSection", "Flag", "Value", "ListValue", "DummyValue"
+package.preload["luci.model.outdoor-backup.target"] = function()
+    return {
+        list = function()
+            return { targets = {}, current = { target_mount = "/mnt/ssd", backup_root = "/mnt/ssd/SDMirrors" } }
+        end
+    }
+end
 
 function Map(config)
     local map = { config = config, submitted = {}, saved = {}, sections = {} }
@@ -60,6 +67,10 @@ function Map(config)
             end
             function option:cfgvalue(section_name)
                 return self.map.saved[section_name] and self.map.saved[section_name][self.option]
+            end
+            function option:value(key, label)
+                self.values = self.values or {}
+                self.values[#self.values + 1] = { key = key, label = label }
             end
             -- Match CBI's empty-value branch: rmempty permits removal without
             -- calling validate; non-empty values must pass the option validator.

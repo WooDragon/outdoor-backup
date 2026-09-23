@@ -155,10 +155,24 @@ Use this after backing up to NAS.
 | 配置项 | 说明 | 默认值 |
 |--------|------|--------|
 | **Enable Auto Backup** | 启用/禁用自动备份 | 启用 |
+| **Target storage** | 已挂载目标的选择器；`Manual / keep current` 保留手工字段 | Manual / keep current |
+| **Target Mount / Target UUID** | 手工目标字段；manual 模式不改变它们 | 继承现有配置 |
 | **Backup Root Directory** | 备份存储位置 | `/mnt/ssd/SDMirrors` |
 | **Debug Mode** | 调试日志开关 | 禁用 |
 
-**保存方式**：点击 "Save & Apply" 按钮
+#### 选择目标存储
+
+先通过既有 `fstab` 流程挂载目标存储。然后打开配置页并 reload。列表只显示当前可用的读写目标。每个选项显示设备、UUID、挂载点和文件系统类型。
+
+1. 选择目标 USB SSD 或 NVMe。未挂载的设备不会显示。
+2. 检查自动更新后的备份根目录。页面会保留旧根目录的有效相对后缀；没有有效后缀时使用 `SDMirrors`。
+3. 点击 **Save & Apply**。保存时页面会再次检查所选 UUID 是否仍挂载在同一路径。检查失败时页面不保存新的目标值。
+
+选择器不会格式化或挂载存储，不会修改 `fstab`，不会迁移已有备份，也不会自动选择第一块磁盘。选择 **Manual / keep current** 可继续使用当前 `target_mount`、`target_uuid` 和 `backup_root`。如需添加未显示的存储，先完成挂载，再 reload 页面。
+
+**保存方式**：点击 "Save & Apply" 按钮。
+
+> **前置阅读**：目标存储的完整挂载流程、排除条件和恢复边界，配置目标前必须先读取：[README.md 的 Configure target storage](../README.md#configure-target-storage)。
 
 #### 2.2 LED 设置
 

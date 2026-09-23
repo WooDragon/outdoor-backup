@@ -125,10 +125,27 @@ luci-app-outdoor-backup/
 | 文件 | 行数 | 功能 |
 |------|------|------|
 | `outdoor-backup.lua` | 470 | 页面路由、API 接口、业务逻辑 |
-| `config.lua` | 55 | UCI 配置表单（CBI） |
+| `config.lua` | — | UCI 配置表单（CBI），包括虚拟 Target storage 选择器 |
+| `target.lua` | — | 固定 helper，读取并验证 target-list JSON |
 | `status.htm` | 911 | 状态监控页面（HTML+JS） |
 | `log.htm` | 243 | 日志查看页面（HTML+JS） |
 | **总计** | **1679** | |
+
+---
+
+## Target storage CBI contract
+
+配置页的 **Target storage** 是 CBI 虚拟字段。它不是新 API，也不需要新 ACL，且页面不会轮询存储。页面 reload 时，`target.lua` 读取并验证 `target-list.sh` 的完整 JSON。候选项只显示 `device`、`uuid`、`mount` 和 `fstype`。
+
+`target-list.sh` 只返回已挂载、读写、direct physical、非系统盘且 UUID 有效并可验证的存储。USB SSD、NVMe 和匿名 Btrfs `0:N` 映射属于支持输入。rotational 属性不是 SSD 判据。未挂载或不符合这些条件的设备不能进入 CBI 选择器。
+
+manual 默认值为 `Manual / keep current`。它保留 `target_mount`、`target_uuid` 和 `backup_root` 的手工语义，包括 empty UUID 的 `rmempty` 行为。选择模式只产生 3 个 formvalues；现有 `Map.parse()` 和 `Map.save()` 仍是唯一的持久化路径。
+
+保存前，CBI 必须重新枚举，并以 UUID 加 mount 验证选择仍然有效。验证失败时不得保存新 target 值。有效选择会依据 defaults < legacy < UCI 和路径正规化，从旧 `backup_root` 保留合法相对后缀；无后缀时使用 `SDMirrors`。CBI 必须拒绝 target 外的 backup root，以及与 SD source mount 相交的 target。runtime target guard 仍是最终安全边界，不可把 status 当作锁。
+
+这项功能不自动格式化或挂载介质，不修改 `fstab`，不迁移旧数据。管理员应先按 [README.md 的 Configure target storage](../README.md#configure-target-storage) 挂载目标。完整组件边界、脚本入口和测试证据范围以 [component-implementation.md](component-implementation.md) 为权威来源。
+
+测试入口为 `tests/test-target-list.sh` 和 `tests/test-luci-target-selection.sh`。后者应使用真实 `Map.parse()` 和隔离 UCI 环境的 save、commit、reload，而不只 mock validate。现有 target-device 与 LuCI target-config 回归也应保持通过。当前证据不包括真机浏览器或真实 USB SSD/NVMe 的端到端运行，且功能尚未部署。
 
 ---
 

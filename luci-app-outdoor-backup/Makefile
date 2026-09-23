@@ -8,8 +8,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-outdoor-backup
-PKG_VERSION:=1.0.0
-PKG_RELEASE:=3
+PKG_VERSION:=1.1.0
+PKG_RELEASE:=1
 
 PKG_MAINTAINER:=Your Name <your.email@example.com>
 PKG_LICENSE:=GPL-2.0-only
@@ -47,6 +47,10 @@ define Package/luci-app-outdoor-backup/install
 	# Install CBI model
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/model/cbi/outdoor-backup
 	$(INSTALL_DATA) ./luasrc/model/cbi/outdoor-backup/*.lua $(1)/usr/lib/lua/luci/model/cbi/outdoor-backup/
+
+	# Install model helper
+	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/model/outdoor-backup
+	$(INSTALL_DATA) ./luasrc/model/outdoor-backup/*.lua $(1)/usr/lib/lua/luci/model/outdoor-backup/
 
 	# Install views
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/view/outdoor-backup

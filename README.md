@@ -140,9 +140,9 @@ The factory UCI conffile contains only `config outdoor-backup 'config'`. OpenWrt
 
 ### Configure target storage
 
-The target UUID is a required user choice. The manager rejects an `add` event while `target_uuid` is empty. It never guesses which disk is an SSD, formats a disk, or mounts a disk itself.
+The target UUID is a required administrator choice. The manager rejects an `add` event while `target_uuid` is empty. The package never guesses which disk is an SSD, formats a disk, mounts a disk, changes `fstab`, or migrates existing backup data.
 
-1. Read the block inventory. Identify the intended SSD line yourself and copy its UUID exactly. Do not use a shell expression that selects a disk by position or name.
+1. Read the block inventory. Identify the intended storage device yourself and copy its UUID exactly. Do not use a shell expression that selects a disk by position or name.
 
    ```sh
    block info
@@ -181,7 +181,21 @@ The target UUID is a required user choice. The manager rejects an `add` event wh
 
 `/mnt/ssd` is a compatibility default, not a requirement. For example, choose `/mnt/nvme`, mount the selected UUID there, and set both `target_mount` and `backup_root` to `/mnt/nvme` and `/mnt/nvme/SDMirrors`. A future firmware image can configure those values once for all devices. This package does not deploy PhotoPrism.
 
+#### Select an already mounted target in LuCI
+
+After the `fstab` entry is mounted, open **Services → Outdoor Backup → Configuration** and reload the page. The **Target storage** selector lists only eligible live mounts. Each option shows the device, UUID, mount point, and filesystem type. It does not show capacity or volume labels.
+
+1. Select the intended USB SSD or NVMe target. The selector supports the existing anonymous Btrfs `0:N` device mapping. It does not infer SSD status from a rotational flag.
+2. Confirm the displayed target values and the backup root. When you change the target, LuCI preserves a valid relative suffix from the previous backup root. For example, `/mnt/old/photos` becomes `/mnt/new/photos`. If no valid suffix exists, LuCI uses `SDMirrors`.
+3. Click **Save & Apply**. LuCI enumerates the mount again and accepts the choice only when the same UUID remains mounted at the same path. A changed or invalid choice is rejected and does not save new target values.
+
+The list excludes unmounted filesystems, read-only mounts, system storage, non-direct physical storage, and devices with an absent or unverifiable UUID. Mount a new target through the existing `fstab` procedure before returning to this page. The selector never selects the first disk automatically.
+
+Select **Manual / keep current** to retain the current manual `target_mount`, `target_uuid`, and `backup_root` fields. This mode preserves existing inheritance behavior. An empty UUID remains removable when auto backup is disabled. The selector rejects a backup root outside the target and rejects a target that overlaps the SD source mount. Reloading the configuration page refreshes candidates; it does not poll storage, call a new API, or alter existing storage.
+
 When a target-storage failure occurs, prepare the target storage first and then remove and reinsert the source SD card. Do not run `rsync` manually as a retry. This release does not provide an automatic SSD-ready queue or a coldplug retry mechanism.
+
+> **前置阅读**：LuCI 选择的实现边界、保存语义和测试范围，修改该页面或排查被拒绝选择时必须先读取：[docs/component-implementation.md](docs/component-implementation.md)。
 
 ### Target guard behavior and limits
 
