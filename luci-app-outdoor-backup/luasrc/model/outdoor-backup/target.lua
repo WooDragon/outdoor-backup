@@ -47,7 +47,8 @@ end
 -- Run the unparameterized helper and reject stdout from a failed command.
 -- Returns: document table, or nil plus a user-facing reason.
 function M.list()
-    local process = io.popen(TARGET_LIST, "r")
+    -- Reserve the helper's anchor FD without changing the caller's descriptors.
+    local process = io.popen(TARGET_LIST .. " 9>&-", "r")
     if not process then
         return nil, "Target discovery could not be started"
     end

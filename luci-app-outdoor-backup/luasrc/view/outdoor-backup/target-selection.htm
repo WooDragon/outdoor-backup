@@ -1,17 +1,11 @@
 <%+cbi/valueheader%>
-<div<%=attr("data-ui-widget", luci.util.serialize_json({
-    "Select", self:cfgvalue(section) or self.default, self:choices(), {
-        id = cbid,
-        name = cbid,
-        size = self.size,
-        sort = self.keylist,
-        widget = self.widget,
-        datatype = self.datatype,
-        optional = self.optional,
-        placeholder = self.placeholder
-    }
-}))%>></div>
-<div id="<%=pcdata(cbid)%>-selection-data" data-roots="<%=pcdata(luci.util.serialize_json(self.selection_roots))%>"></div>
+<% local selected = self:cfgvalue(section) or self.default %>
+<select class="cbi-input-select"<%=attr("id", cbid) .. attr("name", cbid)%>>
+<% for index, key in ipairs(self.keylist) do %>
+<option<%=attr("value", key) .. ifattr(key == selected, "selected", "selected")%>><%=pcdata(self.vallist[index])%></option>
+<% end %>
+</select>
+<div<%=attr("id", cbid .. "-selection-data") .. attr("data-roots", luci.util.serialize_json(self.selection_roots))%>></div>
 <p id="<%=pcdata(cbid)%>-selection-summary"></p>
 <script type="text/javascript">
 (function() {

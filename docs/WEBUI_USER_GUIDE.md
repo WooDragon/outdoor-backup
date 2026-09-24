@@ -168,7 +168,7 @@ Use this after backing up to NAS.
 2. 检查自动更新后的备份根目录。页面会保留旧根目录的有效相对后缀；没有有效后缀时使用 `SDMirrors`。
 3. 点击 **Save & Apply**。保存时页面会再次检查所选 UUID 是否仍挂载在同一路径。检查失败时页面不保存新的目标值。
 
-选择器不会格式化或挂载存储，不会修改 `fstab`，不会迁移已有备份，也不会自动选择第一块磁盘。选择 **Manual / keep current** 可继续使用当前 `target_mount`、`target_uuid` 和 `backup_root`。如需添加未显示的存储，先完成挂载，再 reload 页面。
+选择 **Manual / keep current** 时，页面显示 `target_mount`、`target_uuid` 和 `backup_root` 手工字段。该模式保留这些字段的当前值。选择 SSD 目标时，页面显示实际派生的备份根目录。页面同时隐藏手工字段。切回 Manual 时，字段值保持不变。即使没有 JavaScript，原生选择器和手工字段仍可使用。保存时，服务端会重新枚举候选。它会按 UUID 与 mount 复验所选目标。复验通过后，服务端会覆盖这三个目标字段。选择器不会自动挂载或格式化存储。它不会修改 `fstab`。它不会迁移已有备份。它不会自动选择第一块磁盘。如需添加未显示的存储，先完成挂载，再 reload 页面。
 
 **保存方式**：点击 "Save & Apply" 按钮。
 

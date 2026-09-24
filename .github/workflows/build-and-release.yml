@@ -41,6 +41,7 @@ jobs:
         run: |
           node --version
           node test-live-progress-ui.js
+          node test-target-selection-ui.js
 
       - name: Run pinned OpenWrt behavior suites
         run: bash tests/run-ci.sh "$GITHUB_WORKSPACE/evidence-$GITHUB_SHA"
