@@ -149,6 +149,27 @@ local function load_map(label, stored, page_output, parse_output)
     return map, root
 end
 
+local function render_target_template(contents, selector)
+    local template = require "luci.template"
+    local chunks = {}
+    local compiled = template.Template(nil, contents)
+    compiled.viewns = setmetatable({
+        write = function(chunk)
+            chunks[#chunks + 1] = chunk
+        end,
+        include = function(name)
+            assert(name == "cbi/valueheader" or name == "cbi/valuefooter", "unexpected template include: " .. tostring(name))
+        end
+    }, { __index = template.context.viewns })
+    compiled:render({
+        self = selector,
+        section = "config",
+        cbid = "cbid.outdoor-backup.config._target_selector",
+        luci = { util = require "luci.util" }
+    })
+    return table.concat(chunks)
+end
+
 local function submit(map, values)
     forms = { ["cbi.submit"] = "1" }
     for name, value in pairs(values) do
@@ -338,7 +359,7 @@ do
     local template = assert(io.open(luasrc .. "/view/outdoor-backup/target-selection.htm", "r"))
     local contents = template:read("*a")
     template:close()
-    check(contents:find('data-roots="<%=pcdata(luci.util.serialize_json(self.selection_roots))%>"', 1, true), "S14 root mapping is not HTML escaped")
+    check(contents:find('attr("data-roots", luci.util.serialize_json(self.selection_roots))', 1, true), "S14 root mapping does not use an escaped attribute")
     check(contents:find("summary.textContent", 1, true), "S14 selected root display is not text-only")
     check(not contents:find("innerHTML", 1, true), "S14 target template injects HTML")
     check(contents:find("row.style.display = manual ? '' : 'none'", 1, true), "S14 selected mode leaves manual inputs editable")
@@ -346,13 +367,82 @@ end
 
 begin("S15", "helper invocation is fixed and receives no browser input")
 for _, invocation in ipairs(helper_commands) do
-    check(invocation.command == "/opt/outdoor-backup/scripts/target-list.sh", "S15 helper command was not fixed")
+    check(invocation.command == "/opt/outdoor-backup/scripts/target-list.sh 9>&-", "S15 helper command was not fixed")
     check(invocation.mode == "r", "S15 helper was not opened read-only")
 end
 
-check(cases == 15, "all required cases executed")
-if assertions ~= 113 then
-    fail(string.format("all required assertions executed (expected=113, actual=%d)", assertions))
+begin("S16", "real LuCI template renders a native selector and escapes values")
+do
+    local page = json(one_target, "/mnt/target-one", "/mnt/target-one/SDMirrors")
+    local previous_invocations = #helper_commands
+    local map = load_map("runtime-template", base_values(), page)
+    local invocation = helper_commands[previous_invocations + 1]
+    check(invocation and invocation.command == "/opt/outdoor-backup/scripts/target-list.sh 9>&-",
+        "S16 helper command was not fixed")
+    check(invocation and invocation.mode == "r", "S16 helper was not opened read-only")
+    local selector
+    for _, candidate in ipairs(map.children[1].children) do
+        if candidate.option == "_target_selector" then
+            selector = candidate
+            break
+        end
+    end
+    assert(selector, "S16 Map has no real target selector")
+
+    local template_file = assert(io.open(luasrc .. "/view/outdoor-backup/target-selection.htm", "r"))
+    local contents = template_file:read("*a")
+    template_file:close()
+    local cbid = "cbid.outdoor-backup.config._target_selector"
+    local rendered = render_target_template(contents, selector)
+
+    check(rendered:find("<select", 1, true), "S16 rendered template has no native select")
+    check(rendered:find('id="' .. cbid .. '"', 1, true) and rendered:find('name="' .. cbid .. '"', 1, true), "S16 native select id/name are incorrect")
+    local manual_option
+    for option_tag in rendered:gmatch("<option[^>]*>") do
+        if option_tag:find('value="manual"', 1, true) then
+            manual_option = option_tag
+            break
+        end
+    end
+    check(manual_option and manual_option:find("selected", 1, true), "S16 Manual option is not selected")
+    check(rendered:find('value="7:SSD-ONE/mnt/target-one"', 1, true), "S16 current SSD option is missing")
+    check(not rendered:find("data-ui-widget", 1, true), "S16 rendered template retains the legacy widget")
+    check(not rendered:find(" style=", 1, true), "S16 template statically hides manual fields")
+
+    local load_listener = rendered:find("window.addEventListener('load', function()", 1, true)
+    local first_update = rendered:find("updateTargetFields();", 1, true)
+    local next_update = first_update and rendered:find("updateTargetFields();", first_update + 1, true)
+    check(rendered:find("var fieldNames = [ 'target_mount', 'target_uuid', 'backup_root' ]", 1, true)
+        and load_listener and first_update and first_update > load_listener and not next_update,
+        "S16 manual fields are not updated only by the load handler")
+
+    local hostile_label = [[' " & <img src=x>]]
+    local target_key = "7:SSD-ONE/mnt/target-one"
+    selector.vallist[2] = hostile_label
+    selector.selection_roots[target_key] = hostile_label
+    local escaped = render_target_template(contents, selector)
+    local escaped_option
+    for option_text in escaped:gmatch("<option[^>]*>.-</option>") do
+        if option_text:find('value="' .. target_key .. '"', 1, true) then
+            escaped_option = option_text
+            break
+        end
+    end
+    local xml = require "luci.xml"
+    local expected_label = xml.pcdata(hostile_label)
+    -- Compare with LuCI's encoding; valid numeric entities need not be named entities.
+    check(not escaped:find("<img", 1, true) and escaped_option
+        and expected_label ~= hostile_label
+        and escaped_option:find(expected_label, 1, true),
+        "S16 untrusted option label is not escaped by LuCI")
+    local expected_roots = xml.pcdata(require("luci.util").serialize_json(selector.selection_roots))
+    check(escaped:find('data-roots="' .. expected_roots .. '"', 1, true),
+        "S16 data-roots attribute differs from LuCI pcdata serialization")
+end
+
+check(cases == 16, "all required cases executed")
+if assertions ~= 125 then
+    fail(string.format("all required assertions executed (expected=125, actual=%d)", assertions))
 end
 if failed ~= 0 then
     print(string.format("cases=%d assertions=%d failed=%d", cases, assertions, failed))

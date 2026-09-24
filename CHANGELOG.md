@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- #53: The `luci-app-outdoor-backup` patch version is `1.1.1`. The core `outdoor-backup` package remains `1.4.0-1`.
+- #53: LuCI target discovery closes inherited FD 9 only in the fixed helper subprocess. The parent descriptor and shared target guard remain unchanged. The selector uses a native CBI `<select>`.
+- #53: `test-luci-target-fd.sh` uses real Lua `io.popen` to test parent/child FD inheritance and the core target guard.
+- #53: `test-luci-target-selection.sh` covers real CBI/UCI and template rendering.
+- #53: `test-target-selection-ui.js` runs the production UI script with a DOM double. It is not a real-device or browser E2E test.
+
 ## [1.3.0]
 
 ### Changed

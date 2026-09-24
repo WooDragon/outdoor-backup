@@ -141,11 +141,13 @@ luci-app-outdoor-backup/
 
 manual 默认值为 `Manual / keep current`。它保留 `target_mount`、`target_uuid` 和 `backup_root` 的手工语义，包括 empty UUID 的 `rmempty` 行为。选择模式只产生 3 个 formvalues；现有 `Map.parse()` 和 `Map.save()` 仍是唯一的持久化路径。
 
+选择器使用原生 `<select>`。它的 `id` 和 `name` 均遵循 CBI `cbid`。CBI 根据 `keylist` 和 `vallist` 渲染选项。`attr()` 转义 HTML 属性值。`pcdata()` 转义标签文本。实现不依赖 widget 内部 ID。JavaScript 只负责预览和字段显隐。保存时，服务端仍会重新枚举候选。它按 UUID 与 mount 匹配选择。
+
 保存前，CBI 必须重新枚举，并以 UUID 加 mount 验证选择仍然有效。验证失败时不得保存新 target 值。有效选择会依据 defaults < legacy < UCI 和路径正规化，从旧 `backup_root` 保留合法相对后缀；无后缀时使用 `SDMirrors`。CBI 必须拒绝 target 外的 backup root，以及与 SD source mount 相交的 target。runtime target guard 仍是最终安全边界，不可把 status 当作锁。
 
 这项功能不自动格式化或挂载介质，不修改 `fstab`，不迁移旧数据。管理员应先按 [README.md 的 Configure target storage](../README.md#configure-target-storage) 挂载目标。完整组件边界、脚本入口和测试证据范围以 [component-implementation.md](component-implementation.md) 为权威来源。
 
-测试入口为 `tests/test-target-list.sh` 和 `tests/test-luci-target-selection.sh`。后者应使用真实 `Map.parse()` 和隔离 UCI 环境的 save、commit、reload，而不只 mock validate。现有 target-device 与 LuCI target-config 回归也应保持通过。当前证据不包括真机浏览器或真实 USB SSD/NVMe 的端到端运行，且功能尚未部署。
+测试入口为 [`test-target-list.sh`](../test-target-list.sh)、[`test-luci-target-fd.sh`](../test-luci-target-fd.sh)、[`test-luci-target-selection.sh`](../test-luci-target-selection.sh) 和 [`test-target-selection-ui.js`](../test-target-selection-ui.js)。`test-luci-target-fd.sh` 使用真实 Lua `io.popen` 验证父子 FD 继承和核心目标守卫。`test-luci-target-selection.sh` 使用真实 `Map`、UCI 和模板引擎；测试隔离外层未改动的 chrome include。`test-target-selection-ui.js` 运行生产脚本和 DOM double，不是真机或浏览器 E2E。现有 target-device 与 LuCI target-config 回归也应保持通过。
 
 ---
 

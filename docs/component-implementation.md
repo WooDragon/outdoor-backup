@@ -54,7 +54,9 @@ CBI 配置页保留 `target_mount`、`target_uuid` 和 `backup_root` 三个手�
 
 页面 reload 才刷新候选。该功能不自动格式化、挂载或修改 `fstab`，不迁移旧数据，不增加 API、ACL 或轮询。管理员应先通过现有 `fstab` 流程挂载存储。用户操作以 [README.md 的 Configuration 章节](../README.md#configuration) 为权威来源；WebUI 使用说明见 [WEBUI_USER_GUIDE.md](WEBUI_USER_GUIDE.md)。
 
-自动化覆盖入口为 `tests/test-target-list.sh` 和 `tests/test-luci-target-selection.sh`。后者使用真实 `Map.parse()`，并在隔离 UCI 环境中执行 save、commit 和 reload，不只 mock `validate`。现有 `test-target-device` 与 `test-luci-target-config` 继续回归。该证据不包括真机浏览器或 USB SSD/NVMe 的端到端验证；功能尚未部署。
+LuCI 发现流程只在固定 helper 子进程中关闭继承的 FD 9。父进程描述符和共用目标守卫保持不变。目标锚点仍拒绝将其他组件持有的描述符用作目标描述符。发现与选择不会挂载存储。它们不会写入备份数据。它们不会更改正在进行的备份。
+
+自动化覆盖入口为 [`test-target-list.sh`](../test-target-list.sh)、[`test-luci-target-selection.sh`](../test-luci-target-selection.sh) 和 [`test-luci-target-fd.sh`](../test-luci-target-fd.sh)。`test-luci-target-selection.sh` 使用真实 `Map.parse()`，并在隔离 UCI 环境中执行 save、commit 和 reload，不只 mock `validate`。现有 `test-target-device` 与 `test-luci-target-config` 继续回归。该证据不包括真机浏览器或 USB SSD/NVMe 的端到端验证；功能尚未部署。
 
 > **前置阅读**：目标存储的可执行配置、重试方法和用户可见限制，修改部署或运维行为前必须先读取：[README.md 的 Configuration 章节](../README.md#configuration)。
 
