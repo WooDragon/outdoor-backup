@@ -867,7 +867,7 @@ function formatBytes(bytes) {
 
 <!-- 4. 注释：简洁清晰 -->
 <!-- Modal: Edit Alias -->
-<div id="alias-modal" class="modal">
+<div id="alias-modal" class="outdoor-backup-modal">
     <!-- ... -->
 </div>
 ```
@@ -965,6 +965,14 @@ function testAliasUpdate() {
 
 testAliasUpdate();
 ```
+
+### 状态页弹框样式与交互契约
+
+`status.htm` 的四个弹框应使用 `outdoor-backup-modal`、`outdoor-backup-modal-content`、`outdoor-backup-modal-header` 和 `outdoor-backup-modal-body` 专属 class，不依赖 LuCI 主题的通用 `modal*` class。移动端规则也应使用专属 class。
+
+别名编辑、清理预览和清理确认弹框还应使用 `outdoor-backup-modal-close` 与 `outdoor-backup-modal-footer`。进度弹框没有关闭控件或 footer，必须保持该结构。四个弹框共用遮罩点击关闭行为。点击弹框内容不应关闭弹框。弹框 ID、显示/关闭方式及清理确认流程应保持原样。
+
+`node test-status-modal.js` 直接执行页面脚本并检查 CSS 隔离与交互。该测试不验证真实 LuCI 主题的视觉效果。真实主题下的视觉验收和真机浏览器 E2E 尚未执行。
 
 ---
 

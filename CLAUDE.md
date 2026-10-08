@@ -320,6 +320,7 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
 - [docs/WEBUI_USER_GUIDE.md](docs/WEBUI_USER_GUIDE.md) - 用户手册
 - [docs/WEBUI_DEVELOPER_GUIDE.md](docs/WEBUI_DEVELOPER_GUIDE.md) - 开发者文档（含 API 完整规范）
 - [docs/webui-design.md](docs/webui-design.md) - 设计文档
+- WebUI 样式、交互与前端测试契约以开发者文档为准；本文件只提供导航，不复制实现步骤。
 
 ## 开发工作流（必读）
 
