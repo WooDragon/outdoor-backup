@@ -3,7 +3,7 @@
 <!-- CSS Styles -->
 <style>
 /* Modal Base Styles */
-.modal {
+.outdoor-backup-modal {
     display: none;
     position: fixed;
     z-index: 1000;
@@ -15,7 +15,7 @@
     overflow-y: auto;
 }
 
-.modal-content {
+.outdoor-backup-modal-content {
     background-color: #fefefe;
     margin: 5% auto;
     padding: 0;
@@ -26,7 +26,7 @@
     box-shadow: 0 4px 8px rgba(0,0,0,0.2);
 }
 
-.modal-header {
+.outdoor-backup-modal-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -36,12 +36,12 @@
     border-radius: 5px 5px 0 0;
 }
 
-.modal-header h3 {
+.outdoor-backup-modal-header h3 {
     margin: 0;
     font-size: 1.2em;
 }
 
-.modal-close {
+.outdoor-backup-modal-close {
     cursor: pointer;
     font-size: 28px;
     font-weight: bold;
@@ -50,15 +50,15 @@
     transition: color 0.2s;
 }
 
-.modal-close:hover {
+.outdoor-backup-modal-close:hover {
     color: #000;
 }
 
-.modal-body {
+.outdoor-backup-modal-body {
     padding: 20px;
 }
 
-.modal-footer {
+.outdoor-backup-modal-footer {
     display: flex;
     justify-content: flex-end;
     gap: 10px;
@@ -320,7 +320,7 @@
 
 /* Responsive Design */
 @media (max-width: 768px) {
-    .modal-content {
+    .outdoor-backup-modal-content {
         width: 90%;
         margin: 10% auto;
     }
@@ -399,7 +399,7 @@ function closeModal(modalId) {
 
 // Close modal when clicking outside
 window.onclick = function(event) {
-    if (event.target.classList.contains('modal')) {
+    if (event.target.classList.contains('outdoor-backup-modal')) {
         event.target.style.display = 'none';
     }
 }
@@ -790,13 +790,13 @@ document.addEventListener('DOMContentLoaded', function() {
 </div>
 
 <!-- Alias Edit Modal -->
-<div id="alias-modal" class="modal">
-    <div class="modal-content">
-        <div class="modal-header">
+<div id="alias-modal" class="outdoor-backup-modal">
+    <div class="outdoor-backup-modal-content">
+        <div class="outdoor-backup-modal-header">
             <h3><%:Edit Card Alias%></h3>
-            <span class="modal-close" onclick="closeModal('alias-modal')">&times;</span>
+            <span class="outdoor-backup-modal-close" onclick="closeModal('alias-modal')">&times;</span>
         </div>
-        <div class="modal-body">
+        <div class="outdoor-backup-modal-body">
             <div class="form-group">
                 <label><%:UUID%>:</label>
                 <div id="alias-uuid" style="font-family: monospace; color: #666;">N/A</div>
@@ -817,7 +817,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 <strong>Note:</strong> Deleting the alias mapping will NOT delete backup data. To clean up backup data, use the "Batch Cleanup" feature.
             </div>
         </div>
-        <div class="modal-footer">
+        <div class="outdoor-backup-modal-footer">
             <button class="btn btn-primary" onclick="saveAlias()"><%:Save Alias%></button>
             <button class="btn btn-danger" onclick="deleteAlias()"><%:Delete Mapping%></button>
             <button class="btn btn-secondary" onclick="closeModal('alias-modal')"><%:Cancel%></button>
@@ -826,13 +826,13 @@ document.addEventListener('DOMContentLoaded', function() {
 </div>
 
 <!-- Batch Cleanup Preview Modal (Step 1) -->
-<div id="cleanup-preview-modal" class="modal">
-    <div class="modal-content">
-        <div class="modal-header">
+<div id="cleanup-preview-modal" class="outdoor-backup-modal">
+    <div class="outdoor-backup-modal-content">
+        <div class="outdoor-backup-modal-header">
             <h3>⚠️ <%:Batch Cleanup - Preview%></h3>
-            <span class="modal-close" onclick="closeModal('cleanup-preview-modal')">&times;</span>
+            <span class="outdoor-backup-modal-close" onclick="closeModal('cleanup-preview-modal')">&times;</span>
         </div>
-        <div class="modal-body">
+        <div class="outdoor-backup-modal-body">
             <div class="alert-warning">
                 <strong>Warning:</strong> This operation will delete all backup data!
             </div>
@@ -864,7 +864,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 ✗ Cannot be undone
             </div>
         </div>
-        <div class="modal-footer">
+        <div class="outdoor-backup-modal-footer">
             <button class="btn btn-danger" onclick="showCleanupConfirm()"><%:Next Step%></button>
             <button class="btn btn-secondary" onclick="closeModal('cleanup-preview-modal')"><%:Cancel%></button>
         </div>
@@ -872,13 +872,13 @@ document.addEventListener('DOMContentLoaded', function() {
 </div>
 
 <!-- Batch Cleanup Confirm Modal (Step 2) -->
-<div id="cleanup-confirm-modal" class="modal">
-    <div class="modal-content">
-        <div class="modal-header">
+<div id="cleanup-confirm-modal" class="outdoor-backup-modal">
+    <div class="outdoor-backup-modal-content">
+        <div class="outdoor-backup-modal-header">
             <h3>⚠️ <%:Final Confirmation - Batch Cleanup%></h3>
-            <span class="modal-close" onclick="closeModal('cleanup-confirm-modal')">&times;</span>
+            <span class="outdoor-backup-modal-close" onclick="closeModal('cleanup-confirm-modal')">&times;</span>
         </div>
-        <div class="modal-body">
+        <div class="outdoor-backup-modal-body">
             <div class="alert-danger">
                 <strong>Last Warning:</strong> This operation CANNOT be undone!
             </div>
@@ -910,7 +910,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 <strong>Note:</strong> The "Confirm Cleanup" button will be enabled only after typing the correct text and checking the box.
             </div>
         </div>
-        <div class="modal-footer">
+        <div class="outdoor-backup-modal-footer">
             <button class="btn btn-danger" id="execute-cleanup-btn" onclick="executeCleanup()" disabled><%:Confirm Cleanup%></button>
             <button class="btn btn-secondary" onclick="closeModal('cleanup-confirm-modal')"><%:Cancel%></button>
         </div>
@@ -918,12 +918,12 @@ document.addEventListener('DOMContentLoaded', function() {
 </div>
 
 <!-- Batch Cleanup Progress Modal (Step 3) -->
-<div id="cleanup-progress-modal" class="modal">
-    <div class="modal-content">
-        <div class="modal-header">
+<div id="cleanup-progress-modal" class="outdoor-backup-modal">
+    <div class="outdoor-backup-modal-content">
+        <div class="outdoor-backup-modal-header">
             <h3><%:Cleaning Up...%></h3>
         </div>
-        <div class="modal-body">
+        <div class="outdoor-backup-modal-body">
             <div id="cleanup-status-text" style="text-align: center; font-size: 1.1em; margin: 20px 0;">
                 Initializing cleanup...
             </div>
