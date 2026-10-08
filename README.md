@@ -273,11 +273,11 @@ The implementation uses full unmount and mount transitions rather than `remount`
 
 The manager reads an existing formal file as data. It never `source`s or `eval`s the file. It rejects a symbolic link or another non-regular object at that name.
 
-Before an alias update or `rsync`, it checks the anchored target record `.card-identities/<SD_UUID>.json`. The v1 record contains only `version`, `sd_uuid`, and normalized `fs_uuid`. The record path is below the active `/proc/<manager-pid>/fd/9` backup root.
+Before an alias update or `rsync`, the manager checks the anchored target record `.card-identities/<SD_UUID>.json`. The v1 record contains only `version`, `sd_uuid`, and normalized `fs_uuid`. The record path is below the active `/proc/<manager-pid>/fd/9` backup root.
 
 When the record is missing, the manager creates it through a same-directory temporary file, `jq`, rename, `sync`, and final anchor validation. An existing record must be a non-link regular file with the exact v1 schema and the current values. A malformed object, a link, a directory, or a different source filesystem UUID rejects the backup. The manager does not replace the record, update the alias, run `rsync`, or report a successful status after that rejection.
 
-Existing backup directories without a record use first observation to establish this binding. This preserves their directory names, aliases, and data. This trust-on-first-use rule cannot prove the historical origin of existing data. A filesystem UUID identifies a filesystem rather than a physical SD card. A block-level clone with the same filesystem UUID remains indistinguishable.
+A modern `SD_UUID` card can establish a first-observation binding for an existing backup directory. A legacy `SD_NAME` fallback card cannot establish that binding when its UUID leaf already exists without a record, including a dangling leaf link. The manager rejects that ambiguous historical claim before it updates aliases or runs `rsync`. This rule preserves existing data but cannot prove its historical origin. A filesystem UUID identifies a filesystem rather than a physical SD card. A block-level clone with the same filesystem UUID remains indistinguishable.
 
 Batch data cleanup retains `.card-identities`, independently of the alias-retention option. Removing backup data does not reset a card binding. A rejected record may be malformed or may belong to another source filesystem; inspect the record and verify the source before any manual repair. Do not delete an identity record merely to bypass a rejection: the next insertion would establish a new first-observation binding to the existing UUID directory.
 
@@ -288,7 +288,7 @@ BACKUP_MODE="PRIMARY"                # Generated automatic-backup mode
 CREATED_AT="2024-01-15 10:30:00"
 ```
 
-The reader exports only `SD_UUID`, `BACKUP_MODE`, `CREATED_AT`, and the legacy `SD_NAME`. It ignores other syntactically valid assignments. It rejects malformed records, duplicate recognized fields, an absent UUID, or an invalid UUID. On rejection, it does not rewrite the existing card file or replace the in-memory card identity. `BACKUP_MODE` defaults to `PRIMARY` when absent.
+The reader accepts modern `SD_UUID` metadata and legacy `SD_NAME` plus `SD_REPLICA` metadata as data only. It uses `SD_NAME` as `SD_UUID` only when the `SD_UUID` field is absent. `SD_REPLICA=NO` maps to `PRIMARY`; `SD_REPLICA=YES` maps to `REPLICA`. A conflicting explicit `BACKUP_MODE`, duplicate recognized field, malformed record, absent identity, or invalid UUID rejects the file. On rejection, it does not rewrite the existing card file or replace the in-memory card identity. `BACKUP_MODE` defaults to `PRIMARY` when absent.
 
 To set a friendly name for an SD card, use the WebUI alias management feature instead of editing this file.
 

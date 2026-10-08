@@ -1889,6 +1889,72 @@ case_m27_identity_publish_failure_follows_initial_card_configuration() {
         'M27 identity publication failure creates no backup-root data entries'
 }
 
+case_m31_legacy_primary_binds_without_rewriting_source() {
+    begin_case M31 'a legacy primary card binds its SD_NAME identity without a writable source mount'
+    reset_case || { fail 'M31 fixture setup failed'; return; }
+    cat > "$SOURCE_MOUNT/FieldBackup.conf" <<EOF
+# FieldBackup legacy card configuration
+SD_NAME=$CARD_UUID
+SD_REPLICA=NO
+EOF
+    card_hash_before=$(sha256sum "$SOURCE_MOUNT/FieldBackup.conf" | awk '{print $1}')
+    assert_success 'M31 legacy primary backup succeeds' run_manager add sda1 /devices/mock
+    assert_contains "mount mode=ro target=[$SOURCE_MOUNT]" "$EFFECTS" \
+        'M31 legacy primary mounts the source read-only'
+    assert_not_contains 'mount mode=rw' "$EFFECTS" \
+        'M31 legacy primary never opens a writable source mount'
+    assert_success 'M31 legacy UUID leaf is created at the SD_NAME UUID' \
+        test -d "$TARGET_MOUNT/backups/$CARD_UUID"
+    assert_success 'M31 legacy primary publishes its identity record' \
+        test -f "$TARGET_MOUNT/backups/.card-identities/$CARD_UUID.json"
+    assert_equal "$(sha256sum "$SOURCE_MOUNT/FieldBackup.conf" | awk '{print $1}')" "$card_hash_before" \
+        'M31 leaves the legacy source configuration byte-for-byte unchanged'
+}
+
+case_m32_legacy_replica_rejects_without_source_write_or_binding() {
+    begin_case M32 'a legacy replica card is rejected before binding or synchronization'
+    reset_case || { fail 'M32 fixture setup failed'; return; }
+    cat > "$SOURCE_MOUNT/FieldBackup.conf" <<EOF
+SD_NAME=$CARD_UUID
+SD_REPLICA=YES
+EOF
+    card_hash_before=$(sha256sum "$SOURCE_MOUNT/FieldBackup.conf" | awk '{print $1}')
+    assert_failure 'M32 legacy replica fails manager' run_manager add sda1 /devices/mock
+    assert_not_contains 'mount mode=rw' "$EFFECTS" \
+        'M32 legacy replica never opens a writable source mount'
+    assert_not_contains rsync "$EFFECTS" 'M32 legacy replica never reaches rsync'
+    assert_absent "$TARGET_MOUNT/backups/$CARD_UUID" 'M32 legacy replica creates no UUID leaf'
+    assert_absent "$TARGET_MOUNT/backups/.card-identities/$CARD_UUID.json" \
+        'M32 legacy replica creates no identity record'
+    assert_equal "$(sha256sum "$SOURCE_MOUNT/FieldBackup.conf" | awk '{print $1}')" "$card_hash_before" \
+        'M32 leaves legacy replica configuration byte-for-byte unchanged'
+}
+
+case_m33_legacy_recordless_or_linked_leaf_refuses_claim() {
+    begin_case M33 'a legacy card cannot claim a historical directory without an identity record'
+    reset_case || { fail 'M33 directory fixture setup failed'; return; }
+    printf 'SD_NAME=%s\nSD_REPLICA=NO\n' "$CARD_UUID" > "$SOURCE_MOUNT/FieldBackup.conf"
+    mkdir -p "$TARGET_MOUNT/backups/$CARD_UUID"
+    printf '%s\n' historical-data > "$TARGET_MOUNT/backups/$CARD_UUID/data"
+    data_hash_before=$(sha256sum "$TARGET_MOUNT/backups/$CARD_UUID/data" | awk '{print $1}')
+    assert_failure 'M33 recordless historical directory rejects legacy card' run_manager add sda1 /devices/mock
+    assert_not_contains rsync "$EFFECTS" 'M33 recordless historical directory never reaches rsync'
+    assert_equal "$(sha256sum "$TARGET_MOUNT/backups/$CARD_UUID/data" | awk '{print $1}')" "$data_hash_before" \
+        'M33 recordless historical directory remains unchanged'
+    assert_absent "$TARGET_MOUNT/backups/.card-identities/$CARD_UUID.json" \
+        'M33 does not TOFU-bind a legacy card to historical data'
+
+    reset_case || { fail 'M33 dangling-link fixture setup failed'; return; }
+    printf 'SD_NAME=%s\nSD_REPLICA=NO\n' "$CARD_UUID" > "$SOURCE_MOUNT/FieldBackup.conf"
+    mkdir -p "$TARGET_MOUNT/backups"
+    assert_success 'M33 fixture creates a dangling historical leaf' \
+        ln -s "$TARGET_MOUNT/missing-historical-leaf" "$TARGET_MOUNT/backups/$CARD_UUID"
+    assert_failure 'M33 dangling historical leaf rejects legacy card' run_manager add sda1 /devices/mock
+    assert_not_contains rsync "$EFFECTS" 'M33 dangling historical leaf never reaches rsync'
+    assert_absent "$TARGET_MOUNT/backups/.card-identities/$CARD_UUID.json" \
+        'M33 dangling historical leaf does not gain an identity record'
+}
+
 case_m05_detach_or_readonly_during_rsync_fails_without_naked_writes() {
     begin_case M05 'detach and read-only injections after rsync start cannot report success or leak'
     reset_case || { fail 'M05 detach fixture setup failed'; return; }
@@ -2249,6 +2315,9 @@ main() {
     case_m25_unknown_source_stops_before_rw_configuration_window
     case_m26_newline_identity_record_rejects_before_alias_or_transfer
     case_m27_identity_publish_failure_follows_initial_card_configuration
+    case_m31_legacy_primary_binds_without_rewriting_source
+    case_m32_legacy_replica_rejects_without_source_write_or_binding
+    case_m33_legacy_recordless_or_linked_leaf_refuses_claim
     case_m05_detach_or_readonly_during_rsync_fails_without_naked_writes
     case_m05b_summary_failure_and_post_summary_detach_fail
     case_m07_transfer_failures_preserve_exit_and_classify_evidence
@@ -2260,9 +2329,9 @@ main() {
     case_m06_remove_ignores_unmounted_target
     assert_success 'M06 completion timer releases before test exit' settle_led_fixture
     assert_no_async_led_stderr
-    assert_equal "$CASES" 40 'all required cases executed'
-    if [ "$ASSERTIONS" -ne 389 ]; then
-        fail "all required assertions executed (expected=389, actual=$ASSERTIONS)"
+    assert_equal "$CASES" 43 'all required cases executed'
+    if [ "$ASSERTIONS" -ne 409 ]; then
+        fail "all required assertions executed (expected=409, actual=$ASSERTIONS)"
     fi
     if [ "$FAILED" -ne 0 ]; then
         replay_async_stderr
