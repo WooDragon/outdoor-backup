@@ -5,14 +5,16 @@
 # inert when sourced; card_config_load is the only entry point.
 #
 
-# Load the four supported card fields from a data-only configuration file.
+# Load modern and legacy card metadata from a data-only configuration file.
 # Args: $1 = readable FieldBackup.conf path.
-# Returns: 0 after atomically assigning SD_UUID, BACKUP_MODE, CREATED_AT and
-# SD_NAME; 1 for unreadable, malformed, duplicate, or invalid card metadata.
+# Returns: 0 after atomically assigning card metadata and CARD_ID_SOURCE;
+# 1 for unreadable, malformed, duplicate, conflicting, or invalid data.
 card_config_load() {
     local config_path=$1
     local parsed parsed_key parsed_value
-    local parsed_uuid='' parsed_mode='' parsed_created_at='' parsed_name=''
+    local parsed_uuid='' parsed_uuid_seen=0 parsed_mode='' parsed_mode_seen=0
+    local parsed_replica='' parsed_replica_seen=0
+    local parsed_created_at='' parsed_name='' parsed_source='' legacy_mode=''
 
     [ -r "$config_path" ] || {
         printf 'outdoor-backup: cannot read card configuration: %s\n' "$config_path" >&2
@@ -57,7 +59,7 @@ card_config_load() {
 
             records++
             if (key == "SD_UUID" || key == "BACKUP_MODE" || \
-                key == "CREATED_AT" || key == "SD_NAME")
+                key == "CREATED_AT" || key == "SD_NAME" || key == "SD_REPLICA")
                 emit(key, value)
         }
         END {
@@ -70,9 +72,15 @@ card_config_load() {
         case "$parsed_key" in
             SD_UUID)
                 parsed_uuid=$parsed_value
+                parsed_uuid_seen=1
                 ;;
             BACKUP_MODE)
                 parsed_mode=$parsed_value
+                parsed_mode_seen=1
+                ;;
+            SD_REPLICA)
+                parsed_replica=$parsed_value
+                parsed_replica_seen=1
                 ;;
             CREATED_AT)
                 parsed_created_at=$parsed_value
@@ -89,9 +97,35 @@ card_config_load() {
 $parsed
 EOF
 
-    if [ -z "$parsed_uuid" ] || ! is_valid_uuid "$parsed_uuid"; then
-        printf '%s\n' 'outdoor-backup: invalid or missing card UUID' >&2
-        return 1
+    if [ "$parsed_uuid_seen" -eq 1 ]; then
+        if [ -z "$parsed_uuid" ] || ! is_valid_uuid "$parsed_uuid"; then
+            printf '%s\n' 'outdoor-backup: invalid or missing card UUID' >&2
+            return 1
+        fi
+        parsed_source=modern
+    else
+        if [ -z "$parsed_name" ] || ! is_valid_uuid "$parsed_name"; then
+            printf '%s\n' 'outdoor-backup: invalid or missing card UUID' >&2
+            return 1
+        fi
+        parsed_uuid=$parsed_name
+        parsed_source=legacy
+    fi
+
+    if [ "$parsed_replica_seen" -eq 1 ]; then
+        case "$parsed_replica" in
+            NO) legacy_mode=PRIMARY ;;
+            YES) legacy_mode=REPLICA ;;
+            *)
+                printf '%s\n' 'outdoor-backup: invalid legacy card replica mode' >&2
+                return 1
+                ;;
+        esac
+        if [ "$parsed_mode_seen" -eq 1 ] && [ "$parsed_mode" != "$legacy_mode" ]; then
+            printf '%s\n' 'outdoor-backup: conflicting card backup modes' >&2
+            return 1
+        fi
+        parsed_mode=$legacy_mode
     fi
     if [ -z "$parsed_mode" ]; then
         parsed_mode=PRIMARY
@@ -100,7 +134,7 @@ EOF
         PRIMARY|REPLICA)
             ;;
         *)
-            printf 'outdoor-backup: invalid card backup mode\n' >&2
+            printf '%s\n' 'outdoor-backup: invalid card backup mode' >&2
             return 1
             ;;
     esac
@@ -109,5 +143,6 @@ EOF
     BACKUP_MODE=$parsed_mode
     CREATED_AT=$parsed_created_at
     SD_NAME=$parsed_name
+    CARD_ID_SOURCE=$parsed_source
     return 0
 }

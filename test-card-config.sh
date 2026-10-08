@@ -37,6 +37,7 @@ assert_absent() {
 write_card() { printf '%s\n' "$1" > "$CARD_FILE"; }
 set_runtime_sentinels() {
     SD_UUID=old-uuid BACKUP_MODE=OLD CREATED_AT=old-created SD_NAME=old-name
+    CARD_ID_SOURCE=old-source
     TARGET_FD_ROOT=/proc/sentinel/fd/9
     TARGET_BACKUP_ROOT=/proc/sentinel/fd/9/backups
     TARGET_UUID=TARGET-OLD TARGET_SYSFS_ROOT=/sentinel/sys
@@ -66,6 +67,7 @@ PATH=/attacker/bin
 IFS=attacker"
     assert_success 'C01 loads valid data-only card' card_config_load "$CARD_FILE"
     assert_equal "$SD_UUID" "$VALID_UUID" 'C01 returns unquoted UUID'
+    assert_equal "$CARD_ID_SOURCE" modern 'C01 marks explicit UUID as modern'
     assert_equal "$BACKUP_MODE" PRIMARY 'C01 returns single-quoted mode'
     assert_equal "$CREATED_AT" '2026-09-09 12:34:56' 'C01 returns quoted timestamp'
     assert_equal "$SD_NAME" 'old card name' 'C01 returns legacy name'
@@ -77,10 +79,12 @@ case_c02_defaults_optional_fields() {
     write_card "# historical minimal card
 
 SD_UUID=\"$VALID_UUID\"
+BACKUP_MODE=\"\"
 SD_NAME=\"\""
     assert_success 'C02 accepts minimal historical card' card_config_load "$CARD_FILE"
     assert_equal "$SD_UUID" "$VALID_UUID" 'C02 returns UUID'
     assert_equal "$BACKUP_MODE" PRIMARY 'C02 defaults mode'
+    assert_equal "$CARD_ID_SOURCE" modern 'C02 marks modern UUID source'
     assert_equal "$CREATED_AT" '' 'C02 clears absent timestamp'
     assert_equal "$SD_NAME" '' 'C02 accepts empty quoted legacy name'
 }
@@ -91,6 +95,7 @@ case_c03_replica() {
 BACKUP_MODE=REPLICA"
     assert_success 'C03 accepts REPLICA' card_config_load "$CARD_FILE"
     assert_equal "$BACKUP_MODE" REPLICA 'C03 returns REPLICA unchanged'
+    assert_equal "$CARD_ID_SOURCE" modern 'C03 marks modern UUID source'
 }
 case_c04_inert_execution_like_data() {
     begin_case C04 'quoted unknown shell-looking values stay inert'
@@ -155,6 +160,78 @@ case_c09_bad_file() {
     rm -f "$CARD_FILE"; assert_failure 'C09 rejects absent card' card_config_load "$CARD_FILE"
     assert_equal "$SD_UUID" old-uuid 'C09 keeps prior identity'
 }
+case_c10_legacy_fieldbackup_primary() {
+    begin_case C10 'the original-size legacy FieldBackup primary card maps its name to UUID'
+    set_runtime_sentinels
+    legacy_config='##
+# Field Backup with RAVPower FileHub Plus
+# https://github.com/xyu/FieldBackup
+##
+
+# Name of dir to backup this card to
+SD_NAME="550e8400-e29b-41d4-a716-446655440000"
+
+# When set to YES will replicate from USB drive to card
+SD_REPLICA="NO"'
+    write_card "$legacy_config"
+    assert_equal "$(wc -c < "$CARD_FILE")" 243 'C10 fixture preserves the 243-byte legacy configuration'
+    assert_success 'C10 loads legacy primary data without executing it' card_config_load "$CARD_FILE"
+    assert_equal "$SD_UUID" "$VALID_UUID" 'C10 uses SD_NAME as legacy UUID only when SD_UUID is absent'
+    assert_equal "$BACKUP_MODE" PRIMARY 'C10 maps SD_REPLICA=NO to PRIMARY'
+    assert_equal "$CARD_ID_SOURCE" legacy 'C10 marks the fallback identity as legacy'
+}
+case_c11_legacy_rejections_are_atomic() {
+    begin_case C11 'legacy flags reject invalid duplicate injected and conflicting data atomically'
+    set_runtime_sentinels
+    write_card "SD_NAME=$VALID_UUID
+SD_REPLICA=MAYBE"
+    assert_failure 'C11 rejects invalid SD_REPLICA value' card_config_load "$CARD_FILE"
+    assert_equal "$CARD_ID_SOURCE" old-source 'C11 invalid value preserves prior source state'
+    set_runtime_sentinels
+    write_card "SD_NAME=$VALID_UUID
+SD_REPLICA=\"\""
+    assert_failure 'C11 rejects explicit empty SD_REPLICA' card_config_load "$CARD_FILE"
+    assert_equal "$SD_UUID" old-uuid 'C11 empty legacy flag preserves prior UUID'
+    assert_equal "$CARD_ID_SOURCE" old-source 'C11 empty legacy flag preserves prior source state'
+    set_runtime_sentinels
+    write_card "SD_NAME=$VALID_UUID
+BACKUP_MODE=\"\"
+SD_REPLICA=YES"
+    assert_failure 'C11 rejects explicit empty BACKUP_MODE with SD_REPLICA' card_config_load "$CARD_FILE"
+    assert_equal "$SD_UUID" old-uuid 'C11 empty modern mode preserves prior UUID'
+    assert_equal "$CARD_ID_SOURCE" old-source 'C11 empty modern mode preserves prior source state'
+    set_runtime_sentinels
+    write_card "SD_NAME=$VALID_UUID
+SD_REPLICA=NO
+SD_REPLICA=NO"
+    assert_failure 'C11 rejects duplicate SD_REPLICA' card_config_load "$CARD_FILE"
+    assert_equal "$SD_UUID" old-uuid 'C11 duplicate legacy flag preserves prior UUID'
+    set_runtime_sentinels
+    write_card "SD_NAME=$VALID_UUID
+SD_REPLICA=NO;touch $TEST_ROOT/legacy-marker"
+    assert_failure 'C11 rejects injected SD_REPLICA value' card_config_load "$CARD_FILE"
+    assert_absent "$TEST_ROOT/legacy-marker" 'C11 does not execute legacy flag injection'
+    set_runtime_sentinels
+    write_card "SD_NAME=$VALID_UUID
+SD_REPLICA=NO
+BACKUP_MODE=REPLICA"
+    assert_failure 'C11 rejects conflicting legacy and modern mode fields' card_config_load "$CARD_FILE"
+    assert_equal "$BACKUP_MODE" OLD 'C11 mode conflict preserves prior mode'
+}
+case_c12_explicit_uuid_never_falls_back() {
+    begin_case C12 'an explicit empty or invalid SD_UUID cannot fall back to SD_NAME'
+    set_runtime_sentinels
+    write_card "SD_UUID=\"\"
+SD_NAME=$VALID_UUID
+SD_REPLICA=NO"
+    assert_failure 'C12 rejects explicit empty SD_UUID' card_config_load "$CARD_FILE"
+    assert_equal "$SD_UUID" old-uuid 'C12 explicit empty UUID preserves prior value'
+    write_card "SD_UUID=bad-uuid
+SD_NAME=$VALID_UUID
+SD_REPLICA=NO"
+    assert_failure 'C12 rejects explicit malformed SD_UUID' card_config_load "$CARD_FILE"
+    assert_equal "$CARD_ID_SOURCE" old-source 'C12 malformed UUID preserves prior source state'
+}
 
 main() {
     trap 'rm -rf "$TEST_ROOT"' EXIT INT TERM; mkdir -p "$TEST_ROOT"
@@ -165,8 +242,10 @@ main() {
     case_c01_literals_and_unknowns; case_c02_defaults_optional_fields; case_c03_replica
     case_c04_inert_execution_like_data; case_c05_duplicate_is_atomic; case_c06_bad_identity
     case_c07_bad_mode_and_known_payload; case_c08_shell_syntax_and_controls; case_c09_bad_file
-    assert_equal "$CASES" 9 'all required cases executed'
-    [ "$ASSERTIONS" -eq 48 ] || fail "all required assertions executed (expected=48, actual=$ASSERTIONS)"
+    case_c10_legacy_fieldbackup_primary; case_c11_legacy_rejections_are_atomic
+    case_c12_explicit_uuid_never_falls_back
+    assert_equal "$CASES" 12 'all required cases executed'
+    [ "$ASSERTIONS" -eq 74 ] || fail "all required assertions executed (expected=74, actual=$ASSERTIONS)"
     [ "$FAILED" -eq 0 ] || { printf 'cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"; exit 1; }
     printf 'cases=%s assertions=%s failed=0\n' "$CASES" "$ASSERTIONS"
 }

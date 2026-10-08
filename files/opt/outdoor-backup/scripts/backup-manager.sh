@@ -848,9 +848,25 @@ read_source_identity() {
 	return 0
 }
 
+# Reject a legacy card from claiming a pre-existing unbound backup leaf. Args: none.
+# Returns: zero when the leaf is absent, recorded, or the card is modern.
+legacy_card_leaf_is_safe_to_bind() {
+	[ "${CARD_ID_SOURCE:-modern}" = legacy ] || return 0
+	target_anchor_healthy || return 1
+	legacy_card_leaf="$TARGET_BACKUP_ROOT/$SD_UUID"
+	legacy_card_record="$TARGET_BACKUP_ROOT/.card-identities/$SD_UUID.json"
+	if { [ -e "$legacy_card_leaf" ] || [ -L "$legacy_card_leaf" ]; } && \
+		! { [ -e "$legacy_card_record" ] || [ -L "$legacy_card_record" ]; }; then
+		log_error 'Legacy card UUID matches an unbound backup leaf; refusing historical claim'
+		return 1
+	fi
+	return 0
+}
+
 # Bind the loaded card metadata before aliases or backup files change. Args: none.
 # Returns: zero after a matching or newly published record, otherwise nonzero.
 bind_card_identity() {
+	legacy_card_leaf_is_safe_to_bind || return 1
 	card_identity_bind "$SD_UUID" "$SOURCE_FS_UUID" || return 1
 	if [ -n "$INITIAL_CARD_ALIAS" ]; then
 		update_alias_last_seen "$SD_UUID" "$INITIAL_CARD_ALIAS" || \
