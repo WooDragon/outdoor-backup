@@ -461,9 +461,56 @@ for index, boundary in ipairs({
     check(saved_config(root) == "", id .. " unauthorized form wrote savedir")
 end
 
-check(cases == 19, "all required cases executed")
-if assertions ~= 137 then
-    fail(string.format("all required assertions executed (expected=137, actual=%d)", assertions))
+-- The source mount is runtime-owned: saving must not require or create it.
+for index, mode in ipairs({ "manual", "selected" }) do
+    local id = "S" .. tostring(19 + index)
+    begin(id, mode .. " saves a safe source path that does not exist")
+    local values = base_values()
+    local map, root = load_map("missing-source-" .. mode, values,
+        json(one_target, values.target_mount, values.backup_root))
+    local source = root .. "/not-created-sdcard"
+    local fs = require "nixio.fs"
+    check(not fs.lstat(source), id .. " source fixture already exists")
+    local submitted = base_values()
+    submitted.mount_point = source
+    submitted._target_selector = mode == "manual" and "manual" or "7:SSD-ONE/mnt/target-one"
+    submit(map, submitted)
+    check(map.save, id .. " nonexistent safe source rejected")
+    check(reloaded(root, "mount_point") == source, id .. " source path not saved")
+    check(reloaded(root, "target_mount") == (mode == "manual" and values.target_mount or "/mnt/target-one"),
+        id .. " wrong target mount saved")
+    check(reloaded(root, "target_uuid") == (mode == "manual" and values.target_uuid or "SSD-ONE"),
+        id .. " wrong target UUID saved")
+    check(reloaded(root, "backup_root") == (mode == "manual" and values.backup_root or "/mnt/target-one/CustomMirrors"),
+        id .. " wrong backup root saved")
+    check(not fs.lstat(source), id .. " save created the source directory")
+    check(reloaded(root, "_target_selector") == nil, id .. " virtual selector saved")
+end
+
+for index, source in ipairs({
+    "", "relative/sdcard", "/", "/mnt//sdcard", "/mnt/./sdcard", "/mnt/../sdcard",
+    "/mnt/sdcard/.", "/mnt/sdcard/..", "/mnt/sdcard\nunsafe", "/mnt/sdcard\tunsafe"
+}) do
+    local id = "S" .. tostring(21 + index)
+    begin(id, "manual rejects unsafe source path partition " .. index .. " without saving UCI")
+    local values = base_values()
+    local map, root = load_map("unsafe-source-" .. index, values,
+        json(one_target, values.target_mount, values.backup_root))
+    local submitted = base_values()
+    submitted._target_selector = "manual"
+    submitted.mount_point = source
+    submitted.debug = "1"
+    submit(map, submitted)
+    check(not map.save, id .. " unsafe source accepted")
+    check(saved_config(root) == "", id .. " invalid submission wrote savedir")
+    for _, name in ipairs({ "enabled", "target_mount", "target_uuid", "backup_root", "mount_point", "debug" }) do
+        check(reloaded(root, name) == values[name], id .. " changed stored " .. name)
+    end
+end
+
+check(cases == 31, "all required cases executed")
+if assertions ~= 246 then
+    fail(string.format("all required assertions executed (expected=246, actual=%d)", assertions))
 end
 if failed ~= 0 then
     print(string.format("cases=%d assertions=%d failed=%d", cases, assertions, failed))
