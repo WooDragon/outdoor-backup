@@ -20,7 +20,7 @@
     {"id":"M48","given":"route rename succeeded and subsequent sync failed","when":"task stopped and retried","then":"no transfer on failed publication; retain visible complete route; strict admission on retry"},
     {"id":"M50","given":"manual quick/checksum, subsequent automatic add, invalid comparison","when":"manager starts","then":"four-argument manual snapshot only; automatic always quick; invalid rejected before writes; no comparison UCI option"},
     {"id":"ADMIN_INITIALIZE","given":"root initialize DEVNAME DEVPATH with full source snapshot","when":"explicit initialization","then":"same admission/owner/lease; PRIMARY new-card config only; existing card not overwritten; no rsync/alias/identity/route registration"},
-    {"id":"FS_PROBE","given":"empty direct date root on ext4/f2fs or unsupported target filesystem","when":"initialization","then":"FD9 and owner-locked private real case/Unicode/sameFS-rename probe; unsupported filesystem refused; no production bypass"},
+    {"id":"FS_PROBE","given":"empty direct date root on ext4/btrfs or unsupported target filesystem","when":"initialization","then":"FD9 and owner-locked private real case/Unicode/sameFS-rename probe; unsupported filesystem refused; no production bypass"},
     {"id":"SPACE_GATE","given":"candidate snapshot and existing formal/partial/replaced files","when":"before one actual media transfer","then":"minimum space and conservative metadata-only cost estimate; no media hash/all-library du/second content comparer"}
   ]
 }

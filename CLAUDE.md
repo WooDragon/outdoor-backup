@@ -134,7 +134,7 @@ outdoor-backup/
 - routes 只记录固定位置，不证明文件已完成。未知状态、历史路径冲突及需改变固定路由的旁车关联应失败关闭，不自动迁移或重分类。
 - 默认 quick 不构成逐字审计；manual checksum 只覆盖本次来源对应目标。旧 cleanup 只接受已准入的当前镜像根，磁盘日期状态不能靠切模式或 force 绕过。
 
-修改日期相关代码前应先读取 [docs/media-date-library-implementation.md](docs/media-date-library-implementation.md)：适用于独立 date 根、可选 Perl helper 和固定 routes 的源码/接口导航。执行初始化、manual 或清理前应先读取 [docs/media-date-library-operations.md](docs/media-date-library-operations.md)：适用于 root CLI、已挂载 ext4/f2fs 目标和受管清理。产品规则以 [docs/media-date-library-design.md](docs/media-date-library-design.md) 为准；设计与实现评审轮次以 [docs/media-date-library-review.md](docs/media-date-library-review.md) 为准。测试数字和短期修订状态不写入本入口。
+修改日期相关代码前应先读取 [docs/media-date-library-implementation.md](docs/media-date-library-implementation.md)：适用于独立 date 根、可选 Perl helper 和固定 routes 的源码/接口导航。执行初始化、manual 或清理前应先读取 [docs/media-date-library-operations.md](docs/media-date-library-operations.md)：适用于 root CLI、已挂载 ext4/btrfs 目标和受管清理。产品规则以 [docs/media-date-library-design.md](docs/media-date-library-design.md) 为准；设计与实现评审轮次以 [docs/media-date-library-review.md](docs/media-date-library-review.md) 为准。测试数字和短期修订状态不写入本入口。
 
 ## 配置系统
 
@@ -420,7 +420,7 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
   - 区分历史设计闭环与本地实现评审；设计评审不等于实现验收
 - **[docs/media-date-library-implementation.md](docs/media-date-library-implementation.md)**: 独立 date 根与可选 Perl helper 的现行实现
   - 配置/manager 接口、固定 routes、owner/FD 9 与未验收边界
-- **[docs/media-date-library-operations.md](docs/media-date-library-operations.md)**: root CLI 与已挂载 ext4/f2fs 目标的操作
+- **[docs/media-date-library-operations.md](docs/media-date-library-operations.md)**: root CLI 与已挂载 ext4/btrfs 目标的操作
   - 独立 initialize、单次 manual、受管 mirror cleanup 与恢复限制
 - **[docs/technical-research.md](docs/technical-research.md)**: 技术调研
   - 待验证技术点、硬件兼容性

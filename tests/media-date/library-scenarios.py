@@ -88,13 +88,18 @@ mv() {{ printf '%s\n' rename "rename-path:$*" >> "$BASE_DIR/events"; [ "${{FAIL_
 card_identity_bind_original() {{ :; }}
 . "$SCRIPT_DIR/media-date.sh"
 media_date_helper() {{ media_date_run "$MEDIA_DATE_WORK/helper.json" perl '{ROOT}/tests/media-date/library-helper.pl' "$@"; }}
-# APFS host cannot model ext4. Orchestration seam only, never a production flag.
-# Loaded modules redefine this function during prepare, so inject at helper probe.
+# Host fixtures do not qualify ext4/btrfs targets. Replace only the filesystem
+# tool action after prepare loads it; keep the delivered probe and other modes.
 media_date_helper() {{
     if [ "$1" = probe ] && [ "${{REAL_CAPABILITY:-0}}" = 0 ]; then
-        media_date_probe_filesystem() {{
-            [ "${{CAPABILITY_FAILURE:-0}}" = 0 ] || {{ media_date_fail filesystem_capability_failed; return 1; }}
-            case "$TARGET_FS_TYPE" in ext4|f2fs) media_date_guard ;; *) media_date_fail unsupported_filesystem ;; esac
+        media_date_tool() {{
+            if [ "$1" = filesystem ]; then
+                printf '%s\n' "filesystem:$2" >> "$BASE_DIR/events"
+                [ -d "$2" ] && [ ! -L "$2" ] || return 1
+                [ "${{CAPABILITY_FAILURE:-0}}" = 0 ]
+                return "$?"
+            fi
+            media_date_run "$MEDIA_DATE_WORK/tools.json" perl -I "$SCRIPT_DIR/../lib" "$MEDIA_DATE_WORK/tools.pl" "$@"
         }}
     fi
     if [ "$1" = namespace-empty ] && [ "${{NAMESPACE_FAILURE:-0}}" = 1 ]; then
@@ -158,6 +163,24 @@ def initialized(base, root, outcome):
     check('sync' in events[:route_publish], 'empty route not pre-synced before rename')
     work = pathlib.Path(outcome.split('work=')[1].split()[0])
     check(work.stat().st_mode & 0o777 == 0o700, 'work permissions')
+
+
+def filesystem_admission(base, root, outcome, admitted, capability_called):
+    """Check publication and private capability actions at the real probe boundary."""
+    if admitted:
+        initialized(base, root, outcome)
+    else:
+        no_claim(base, root, outcome)
+        check(not (root / '.outdoor-backup/library.json').exists(), 'library published on rejected filesystem')
+        check(not (root / '.outdoor-backup/routes' / f'{SID}.json').exists(), 'route published on rejected filesystem')
+    events = (base / 'events').read_text().splitlines()
+    probes = [event.split(':', 1)[1] for event in events if event.startswith('filesystem:')]
+    check(len(probes) == int(capability_called), 'unexpected filesystem capability tool calls')
+    for probe in probes:
+        check(pathlib.Path(probe).parent == base / 'target', 'probe not on anchored fixture target')
+        check(pathlib.Path(probe).name.startswith('.media-date-probe.'), 'probe not a private child')
+        check(not pathlib.Path(probe).exists(), 'private probe not cleaned')
+    check(not list((base / 'target').glob('.media-date-probe.*')), 'private probe left behind')
 
 
 run_case('G01 missing library initializes empty root', after=initialized)
@@ -295,6 +318,9 @@ run_case('G43 cancelled owner can cleanup after drain', action='media_date_prepa
 run_case('G44 symlink marker refused', setup=lambda b,r:(r/'.outdoor-backup').symlink_to(b/'foreign'), success=False, error='invalid_metadata_directory', after=no_claim)
 for assignment, reason in [('SD_UUID=invalid','invalid_source_id'),('SOURCE_FS_UUID=ABCD-1234','invalid_source_uuid')]:
     run_case(f'G45 invalid caller identifier {assignment}', success=False, shell_extra=assignment, error=reason, after=no_claim)
-check(ran == 74, f'expected 74 cases, got {ran}')
-print(f'ran={ran} passed={passed} failed={failed} blocked=2 assertions={assertions}; synthetic only; blocked=OpenWrt-toolchain,ext4/f2fs-target', flush=True)
+run_case('G46 btrfs initializes only after capability probe', shell_extra='TARGET_FS_TYPE=btrfs', after=lambda b,r,o: filesystem_admission(b,r,o,True,True))
+run_case('G47 f2fs refused without capability tool or initialization', shell_extra='TARGET_FS_TYPE=f2fs', success=False, error='unsupported_filesystem', after=lambda b,r,o: filesystem_admission(b,r,o,False,False))
+run_case('G48 btrfs capability failure leaves no claim', shell_extra='TARGET_FS_TYPE=btrfs; CAPABILITY_FAILURE=1', success=False, error='filesystem_capability_failed', after=lambda b,r,o: filesystem_admission(b,r,o,False,True))
+check(ran == 77, f'expected 77 cases, got {ran}')
+print(f'ran={ran} passed={passed} failed={failed} blocked=2 assertions={assertions}; synthetic only; blocked=OpenWrt-toolchain,ext4/btrfs-target', flush=True)
 sys.exit(1 if failed else 0)

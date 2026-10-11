@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Given/When/Then: delivered manager/modules, synthetic devices and transport.
 No production algorithm is copied. Real route/result/task validators run. Capability
-and media transport doubles are explicitly not ext4/f2fs or real-rsync acceptance.
+and media transport doubles are explicitly not ext4/btrfs or real-rsync acceptance.
 """
 import json
 import os

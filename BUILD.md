@@ -8,7 +8,7 @@
 
 `outdoor-backup/Makefile` 同时定义 core 与可选 `outdoor-backup-media-date`。core 安装 shell runtime，镜像安装不引入 Perl。可选包安装 `media-date-plan.pl` 和 `lib/OutdoorBackup/MediaDate/` 下九个 `.pm`。其依赖为 core、外部 `exiftool` provider、`perl` 以及 recipe 声明的 `perlbase-essential/findbin/json-pp/digest/encode/fcntl/time/cwd/b/storable`。应核对目标 feed 的真实模块归属，不用宿主 Perl 的“核心模块”判断替代目标依赖。
 
-ExifTool provider 应提供完整 `Image::ExifTool` 与 `File` 模块树，CLI 存在不充分。现有 guest 的 ExifTool 13.59 是经过 source hash 核验的源码模块加载证据，不是实际 provider IPK 安装或 SDK 交付。stock SDK 没有该外部 provider 时，可选 date 包构建仍 blocked；core mirror 包不因此拉入 Perl。provider 的真实 IPK/SDK 与 R5S rsync 3.4.1、目标 ext4/f2fs 和资源验收仍需独立证据。
+ExifTool provider 应提供完整 `Image::ExifTool` 与 `File` 模块树，CLI 存在不充分。现有 guest 的 ExifTool 13.59 是经过 source hash 核验的源码模块加载证据，不是实际 provider IPK 安装或 SDK 交付。stock SDK 没有该外部 provider 时，可选 date 包构建仍 blocked；core mirror 包不因此拉入 Perl。provider 的真实 IPK/SDK 与 R5S rsync 3.4.1、目标 ext4/btrfs 和资源验收仍需独立证据。
 
 在已注册本 feed 且外部 provider 可发现的 OpenWrt 构建树中，可核对以下形状。此文档任务没有执行它们。
 
