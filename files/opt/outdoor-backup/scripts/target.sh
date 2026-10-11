@@ -306,6 +306,15 @@ target_prepare_root() {
         target_notice 'backup root must be a strict child of target mount'
         return 1
     }
+    # Inspect disk state only after bounding the root to the configured target,
+    # and before mkdir, including when UCI has switched back to mirror.
+    if ! command -v library_layout_mirror_admit >/dev/null 2>&1; then
+        . "${SCRIPT_DIR:-/opt/outdoor-backup/scripts}/library-layout.sh"
+    fi
+    library_layout_mirror_admit "$target_configured_root" || {
+        target_notice 'mirror root intersects date state or an unsafe ancestor'
+        return 1
+    }
     TARGET_BACKUP_PATH=$target_configured_root
     if ! target_prepare_directory "$target_root_relative"; then
         unset TARGET_BACKUP_PATH
@@ -313,4 +322,27 @@ target_prepare_root() {
     fi
     TARGET_BACKUP_ROOT=$TARGET_FD_ROOT/$target_root_relative
     return 0
+}
+
+# Prepare only a direct date-library child, allowing its own existing marker.
+# Args: configured absolute root. Returns 0/1; marker/schema admission is the
+# date module's responsibility. Mirror's existing gate/creation is unchanged.
+target_prepare_date_root() {
+    target_date_root=$(target_normalize_path "$1") || return 1
+    target_anchor_healthy || return 1
+    if ! command -v library_layout_date_admit >/dev/null 2>&1; then
+        . "${SCRIPT_DIR:-/opt/outdoor-backup/scripts}/library-layout.sh"
+    fi
+    library_layout_date_admit "$target_date_root" "$TARGET_MOUNT_PATH" || {
+        target_notice 'date root must be a direct child with clear ancestors'
+        return 1
+    }
+    target_date_relative=${target_date_root#"$TARGET_MOUNT_PATH"/}
+    TARGET_BACKUP_PATH=$target_date_root
+    target_prepare_directory "$target_date_relative" || {
+        unset TARGET_BACKUP_PATH
+        return 1
+    }
+    TARGET_BACKUP_ROOT=$TARGET_FD_ROOT/$target_date_relative
+    target_anchor_healthy
 }

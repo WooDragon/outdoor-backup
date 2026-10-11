@@ -117,6 +117,41 @@ $1
 EOF
 }
 
+# Validate the optional versioned task channel. No raw metadata or path warnings.
+# Args: JSON object or null. Output: canonical JSON. Returns 0/1.
+status_task() {
+    # null is a valid legacy omission; jq -e would incorrectly reject it.
+    if "$STATUS_JQ" -c '
+        def count: . == null or (type == "number" and . >= 0 and floor == .);
+        def warning_code:
+          . == "xml_too_large" or . == "metadata_parse_failed" or
+          . == "metadata_parse_warning" or . == "metadata_candidate_limit" or
+          . == "ambiguous_date_semantics" or . == "ambiguous_recording_identity" or
+          . == "unverified_time_profile" or . == "ambiguous_pairing" or
+          . == "primary_not_present" or . == "no_capture_date" or
+          . == "conflicting_capture_date";
+        if . == null then null
+        elif type == "object" and
+             (keys | sort) == ["archive","comparison_mode","layout","phase","replaced","version","warnings"] and
+             .version == 1 and (.layout == "mirror" or .layout == "date") and
+             (.phase == "planning" or .phase == "transferring" or .phase == "finalizing") and
+             (.comparison_mode == "quick" or .comparison_mode == "checksum") and
+             (.archive | type == "object" and
+               (keys | sort) == ["excluded_total","files_total","routes_total","undated_total"] and
+               all(.[]; count)) and
+             (.warnings | type == "array" and all(.[];
+               type == "object" and (keys | sort) == ["code","count"] and
+               (.code | type == "string" and warning_code) and
+               (.count | type == "number" and . >= 0 and floor == .))) and
+             (.replaced | type == "object" and (keys | sort) == ["files_count","path"] and
+               (.files_count | count) and (.path == null or (.path | type == "string")))
+        then . else error("invalid versioned task") end
+    ' <<EOF
+$1
+EOF
+    then return 0; else return 1; fi
+}
+
 # Produce a current_backup object only for a running backup.
 # Args: normalized status values plus optional validated live progress. Output: compact JSON.
 status_current_backup() {
@@ -186,7 +221,9 @@ write_status() {
     local phase uuid name device now started_at progress files_total files_done
     local bytes_total bytes_done speed storage_probe backup_path error_message display_root live_progress
     local prior_history history current_backup storage_kib storage_total storage_used storage_free
-    local status_dir temp_file
+    local status_dir temp_file task
+    [ "$#" -ge 14 ] && [ "$#" -le 17 ] || return 1
+    task=$(status_task "${17:-null}") || return 1
     phase=$1
     uuid=$2
     name=$3
@@ -229,10 +266,13 @@ write_status() {
     if ! "$STATUS_JQ" -n --arg root "$display_root" --argjson updated "$now" \
         --argjson total "$storage_total" --argjson used "$storage_used" \
         --argjson free "$storage_free" --argjson current "$current_backup" \
-        --argjson history "$history" '
+        --argjson history "$history" --argjson task "$task" --arg phase "$phase" '
             {version: "1.0", last_update: $updated,
              storage: {root: $root, total_bytes: $total, used_bytes: $used, free_bytes: $free},
-             current_backup: $current, history: $history}
+             current_backup: (if $current == null or $task == null then $current
+                              else $current + {task: $task} end),
+             history: (if $task != null and ($phase == "completed" or $phase == "failed")
+                       then $history | .[0] += {task: $task} else $history end)}
         ' > "$temp_file"; then
         rm -f "$temp_file"
         return 1

@@ -94,12 +94,48 @@ function extractModalMarkup(modalId) {
     return pageSource.slice(start, end === -1 ? pageSource.length : end);
 }
 
+// Parse rendered history anchors into stable nodes so production event bindings
+// survive later queries. Markup is data only; inline JavaScript is never executed.
+// markup: rendered HTML string; returns nodes exposing the index attribute.
+function historyLinksFromMarkup(markup) {
+    var links = [];
+    var anchorPattern = /<a\b([^>]*)>/g;
+    var match;
+
+    while ((match = anchorPattern.exec(markup)) !== null) {
+        var indexAttribute = match[1].match(/\bdata-history-index="([^"]*)"/);
+        if (!indexAttribute) continue;
+        links.push({
+            historyIndex: indexAttribute[1],
+            getAttribute: function(name) {
+                return name === 'data-history-index' ? this.historyIndex : null;
+            }
+        });
+    }
+    return links;
+}
+
 function createElement(classNames) {
     var tokens = (classNames || '').split(/\s+/).filter(Boolean);
     var text = '';
+    var markup = '';
+    var historyLinks = [];
 
     return {
-        innerHTML: '',
+        get innerHTML() {
+            return markup;
+        },
+        set innerHTML(value) {
+            markup = String(value);
+            historyLinks = historyLinksFromMarkup(markup);
+        },
+        // Only the delivered history selector is supported; unknown selectors fail loud.
+        querySelectorAll: function(selector) {
+            if (selector !== '[data-history-index]') {
+                throw new Error('Unsupported DOM double selector: ' + selector);
+            }
+            return historyLinks.slice();
+        },
         innerText: '',
         style: {},
         value: '',
@@ -128,6 +164,21 @@ function createElement(classNames) {
 function modalClass(modalId) {
     var match = pageSource.match(new RegExp('<div id="' + modalId + '" class="([^"]*)">'));
     return match ? match[1] : '';
+}
+
+var fixtureCsrfToken = 'modal-fixture-csrf-token';
+
+// Validate the XHR.post(url, formObject, callback) boundary used by cleanup.
+// Returns normally only for the fixed cleanup schema; rejects fixture drift.
+function validateCleanupPost(url, data, callback) {
+    if (url !== '<%=url("admin/services/outdoor-backup/api/cleanup/execute")%>' ||
+        !data || typeof data !== 'object' || Array.isArray(data) ||
+        Object.keys(data).sort().join(',') !== 'confirm_text,token' ||
+        typeof data.token !== 'string' || data.token !== fixtureCsrfToken ||
+        typeof data.confirm_text !== 'string' || data.confirm_text !== '清空备份数据' ||
+        typeof callback !== 'function') {
+        throw new Error('XHR.post double requires cleanup URL, token/confirm_text form object and callback');
+    }
 }
 
 function createPage() {
@@ -159,7 +210,8 @@ function createPage() {
                     });
                 }
             },
-            post: function(url, data) {
+            post: function(url, data, callback) {
+                validateCleanupPost(url, data, callback);
                 postCalls.push({url: url, data: data});
             },
             poll: function() {}
@@ -170,6 +222,7 @@ function createPage() {
         encodeURIComponent: encodeURIComponent
     };
 
+    document.getElementById('outdoor-backup-token').value = fixtureCsrfToken;
     sandbox.window = sandbox;
     vm.runInNewContext(scriptMatch[1], sandbox, {filename: pagePath});
     return {context: sandbox, document: document, postCalls: postCalls};
@@ -244,9 +297,14 @@ function caseHistoryEditOpensAliasModal() {
         bytes_total: 0,
         status: 'completed'
     }]);
-    action = history.innerHTML.match(/onclick="([^"]+)"/);
-    assert(!!action, 'history table renders an Edit action');
-    if (action) vm.runInNewContext(action[1], page.context, {filename: pagePath});
+    var links = history.querySelectorAll('[data-history-index]');
+    action = links[0];
+    assert(links.length === 1, 'history table renders one indexed Edit action');
+    assertExcludes(history.innerHTML, 'onclick=', 'history Edit markup contains no inline JavaScript handler');
+    assert(!!action && action.getAttribute('data-history-index') === '0',
+        'rendered Edit action exposes the actual history index');
+    assert(!!action && typeof action.onclick === 'function', 'production binds the rendered Edit action');
+    if (action && typeof action.onclick === 'function') action.onclick();
 
     assert(page.document.getElementById('alias-input').value === 'Edited Card', 'Edit preserves the alias input value');
     assert(page.document.getElementById('alias-notes').value === '', 'Edit initializes the notes input');
@@ -297,7 +355,12 @@ function caseCleanupFlowAndBackdropBehaviorRemain() {
     assert(page.postCalls.length === 1, 'correct confirmation sends exactly one cleanup request');
     assert(page.postCalls.length === 1 && page.postCalls[0].url.indexOf('/api/cleanup/execute') !== -1,
         'cleanup request targets the execute endpoint');
-    var requestBody = page.postCalls.length === 1 ? JSON.parse(page.postCalls[0].data) : {};
+    var requestBody = page.postCalls.length === 1 ? page.postCalls[0].data : {};
+    assert(requestBody !== null && typeof requestBody === 'object' && !Array.isArray(requestBody),
+        'cleanup passes a form object to the real XHR.post interface, not serialized JSON');
+    assert(Object.keys(requestBody).sort().join(',') === 'confirm_text,token',
+        'cleanup form contains exactly the fixed token and confirm_text keys');
+    assert(requestBody.token === fixtureCsrfToken, 'cleanup form preserves the CSRF token from the page field');
     assert(requestBody.confirm_text === '清空备份数据', 'cleanup request carries the exact confirmation text');
 
     confirmationInput.value = 'incorrect confirmation';
@@ -331,8 +394,9 @@ if (cases !== 3) {
     console.error('FAIL: expected 3 cases, ran ' + cases);
     process.exitCode = 1;
 }
-if (assertions !== 66) {
-    console.error('FAIL: expected 66 assertions, ran ' + assertions);
+// Six new assertions cover indexed event binding and the real POST form contract.
+if (assertions !== 72) {
+    console.error('FAIL: expected 72 assertions, ran ' + assertions);
     process.exitCode = 1;
 }
 if (failures !== 0) process.exitCode = 1;

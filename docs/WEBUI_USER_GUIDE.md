@@ -62,7 +62,11 @@ LuCI 主页 → Services（服务） → Outdoor Backup
 - 开始时间
 - `active` 运行状态
 
-运行中快照不提供实时百分比、文件数、传输字节数、速率或 ETA。对应字段为 `0`，表示未知而非零传输。状态页面可以按既有页面刷新频率重读快照，但刷新不会使运行时具备实时进度 writer 能力。
+运行中快照先报告未知值。transferring 阶段可从 manager 的同步 wait loop 采样 rsync 条目、普通传输文件、字节与速率；未知值不能当作零传输。条目包含目录，不是完整文件数或字节完成率。日期 planning 显示分析素材，finalizing 显示同步、摘要与最终检查，二者没有 ETA。增量传输也没有可靠 ETA。页面刷新只读取同一快照，不新建 writer。
+
+日期 task 可显示本次 layout、comparison_mode、archive、warnings 和 replaced。completed 不表示历史全库逐字核验。默认 quick 可能漏掉同 size/mtime 内容变化；mtime-only 更新可保留同内容旧文件。manual checksum 与独立 initialize 是 root CLI，没有 WebUI trigger 或队列。
+
+**前置阅读**：启用日期模式或处理其警告前，应先读取 [media-date-library-implementation.md](media-date-library-implementation.md)。执行 root CLI 前，应先读取 [media-date-library-operations.md](media-date-library-operations.md)。主体本地实现与定向验证已闭合，有限范围复核 APPROVED；修后未重跑全量，不能发布。浏览器/full CGI auth 及真机端到端尚未验收。
 
 备份完成后，history 的文件数和字节数来自成功 rsync 的 `--stats` 输出。管理器只会在 rsync、摘要写入、最终目标锚点健康检查和目标身份复验均成功后记录 `completed`。
 
@@ -157,7 +161,10 @@ Use this after backing up to NAS.
 | **Enable Auto Backup** | 启用/禁用自动备份 | 启用 |
 | **Target storage** | 已挂载目标的选择器；`Manual / keep current` 保留手工字段 | Manual / keep current |
 | **Target Mount / Target UUID** | 手工目标字段；manual 模式不改变它们 | 继承现有配置 |
-| **Backup Root Directory** | 备份存储位置 | `/mnt/ssd/SDMirrors` |
+| **Backup Root Directory** | 镜像根，date 不将它作为媒体根 | `/mnt/ssd/SDMirrors` |
+| **Backup Layout** | 默认 mirror；显式 date 需实际 helper 能力检查 | mirror |
+| **Date Library Root** | 独立目标直接子目录；不与镜像根或来源相交 | 未配置保留空 intent，date 可派生 MediaLibrary |
+| **Fixed Archive Offset** | 新库显式固定分钟偏移；既有 policy 不在线改变 | 新库无隐式值 |
 | **Debug Mode** | 调试日志开关 | 禁用 |
 
 #### 选择目标存储
@@ -218,7 +225,7 @@ red:power  green:wan  green:lan-1  green:lan-2
 - 管理器不会更新别名、创建目标 UUID 叶目录或创建单次备份日志。
 - 管理器可在读取卡前创建已配置的 `BACKUP_ROOT`，并将拒绝写入应用错误日志。
 
-`FieldBackup.conf` 是来自卡的纯数据。管理器不会执行其内容，也不会将 `REPLICA` 自动改成 `PRIMARY`。稳态只读挂载限制用户态写入，但不是取证写保护；ext4 的脏日志仍可能重放。首次初始化要求没有正式配置，使用短暂读写挂载写入临时文件并发布正式文件。读写挂载或实际写入失败都表示不能初始化。恢复只读后的重读只检查流程，不能证明介质持久性或卡身份。失败时管理器不会启动 `rsync`。
+`FieldBackup.conf` 是来自卡的纯数据。管理器不会执行其内容，也不会将 `REPLICA` 自动改成 `PRIMARY`。稳态只读挂载限制用户态写入，但不是取证写保护；ext4 的脏日志仍可能重放。mirror 首次初始化或显式 root CLI initialize 要求没有正式配置，使用短暂读写挂载写入临时文件并发布正式文件。date 自动任务缺配置时只读拒绝，不打开该窗口。读写挂载或实际写入失败都表示不能初始化。恢复只读后的重读只检查流程，不能证明介质持久性或卡身份。失败时管理器不会启动 `rsync`。
 
 ---
 
@@ -243,7 +250,7 @@ red:power  green:wan  green:lan-1  green:lan-2
 | 按钮 | 功能 | 说明 |
 |------|------|------|
 | **Refresh** | 刷新日志 | 重新加载最后 100 行 |
-| **Download Full Log** | 下载完整日志 | 下载 `backup.log` 文件 |
+| **Download Full Log** | 下载当前已授权显示文本 | 标签保留旧名称；仅生成文本 Blob，不暴露原始文件 URL 或全日志下载端点 |
 | **Auto Refresh (10s)** | 自动刷新 | 每 10 秒刷新一次 |
 
 #### 3.3 日志过滤
@@ -306,14 +313,16 @@ red:power  green:wan  green:lan-1  green:lan-2
 
 ### 操作 2：批量清理备份数据
 
-**场景**：路由器存储空间不足，需要清理所有已备份到 NAS 的数据。
+**场景**：mirror 布局且已核验外部备份，需要清理当前受管镜像根的允许删除集合。date 不能使用此流程。
 
 **重要提示**：
 - ⚠️ 此操作不可撤销
 - ✅ 别名映射会保留（aliases.json）
 - ✅ 配置文件会保留
 - ✅ 日志文件会保留
-- ❌ 所有备份数据会被删除
+- 删除范围仅为一级 UUID 的非 hidden child 子树；根级及 UUID 级 hidden 项、UUID 目录与 identity 保留。
+- date 根/bucket、force 调用及切回 mirror 后的日期状态都由后端拒绝。应先读取 [现行清理合同](media-date-library-operations.md#6-镜像清理的现行入口)。
+- 预览和执行分别取得 manager 租约与 owner，并复验目标 FD 9；预览大小为 du 估算，不保证实际释放字节。
 
 **步骤**：
 
@@ -378,15 +387,15 @@ red:power  green:wan  green:lan-1  green:lan-2
    ```
 
 2. **等待清理完成**
-   - 通常需要 10-30 秒（取决于数据量）
+   - 页面等待同步后端返回，不承诺固定时限；显示的进度不是已删除字节采样。
 
 3. **自动关闭并刷新页面**
    - 存储空间显示更新
-   - 备份历史表格清空（别名保留）
+   - 清理不保证清空备份 history；应读取新状态，不能把旧历史条目当作媒体仍存在的证明。
 
 #### 取消操作
 
-在任何步骤中点击 "Cancel" 或关闭对话框可以取消操作（不会删除数据）。
+执行提交前，Cancel 或关闭对话框只撤销本次界面确认，不删除数据。提交后关闭弹框不等于取消 manager，也不能承诺未发生删除。
 
 ---
 
@@ -420,11 +429,8 @@ red:power  green:wan  green:lan-1  green:lan-2
    - 备份数据保留
 
 6. **如需删除备份数据**
-   - 使用 SSH 手动删除：
-     ```bash
-     rm -rf /mnt/ssd/SDMirrors/550e8400-*
-     ```
-   - 或使用批量清理功能
+   - mirror 应使用受管批量清理，先读取 [清理操作与拒绝边界](media-date-library-operations.md#6-镜像清理的现行入口)。
+   - 旧 UUID 通配符裸删除示例不是现行协议。date 不提供旧清理或逐卡删除入口。
 
 ---
 
@@ -539,8 +545,8 @@ ps | grep cleanup-all.sh
 # 2. 查看系统日志
 logread | grep outdoor-backup
 
-# 3. 手动执行清理脚本（调试）
-/opt/outdoor-backup/scripts/cleanup-all.sh --force /mnt/ssd/SDMirrors 1
+# 3. 本节不自动重试破坏性清理。
+# 人工核验后按 media-date-library-operations.md 的 exact-current-root 流程操作。
 
 # 4. 如果卡死，刷新浏览器页面
 ```
@@ -663,8 +669,8 @@ uci commit outdoor-backup
 
 | 组件 | 刷新频率 | 说明 |
 |------|---------|------|
-| **backup-manager.sh** | 生命周期转换时 | 原子写入 running、completed 或 failed 快照；运行中计数为未知的 0 |
-| **WebUI 前端** | 既有页面刷新频率 | 读取快照；刷新不产生实时进度或速率 |
+| **backup-manager.sh** | 阶段转换及同步 wait loop 采样时 | 唯一 writer；未知计数、实际采样和终态分开，planning/finalizing 无 ETA |
+| **WebUI 前端** | 既有页面刷新频率 | 读取快照及 text-safe task/history；不创建 writer |
 | **日志页面** | 手动或自动（可选） | 用户控制 |
 
 ### 浏览器兼容性
@@ -732,12 +738,14 @@ uci show outdoor-backup > /tmp/uci.txt
 
 ### B. API 端点索引
 
+**前置阅读**：调用接口前应先读取 [WEBUI_DEVELOPER_GUIDE.md](WEBUI_DEVELOPER_GUIDE.md#api-接口文档) 的会话权限、POST 表单与 token 合同。以下路径均相对于现有 LuCI Outdoor Backup 路由。
+
 | 端点 | 方法 | 功能 |
 |------|------|------|
 | `/api/status` | GET | 获取状态信息 |
 | `/api/aliases` | GET | 获取所有别名 |
 | `/api/alias/update` | POST | 创建/更新别名 |
-| `/api/alias/delete` | DELETE | 删除别名 |
+| `/api/alias/delete` | POST | 表单 uuid/token，删除别名 |
 | `/api/cleanup/preview` | GET | 预览批量清理 |
 | `/api/cleanup/execute` | POST | 执行批量清理 |
 

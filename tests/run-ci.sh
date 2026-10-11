@@ -12,15 +12,9 @@ fail() {
 }
 
 main() {
-    [ "$#" -eq 1 ] || fail "usage: $0 ABSOLUTE_EVIDENCE_DIR"
+    [ "$#" -eq 1 ] || fail "usage: $0 ABSOLUTE_EVIDENCE_DIR|--list"
 
     local evidence_root=$1
-    case $evidence_root in
-        /*) ;;
-        *) fail "evidence directory must be absolute: $evidence_root" ;;
-    esac
-    [ ! -e "$evidence_root" ] && [ ! -L "$evidence_root" ] || fail "evidence directory already exists: $evidence_root"
-    mkdir -- "$evidence_root" || fail "cannot create evidence directory: $evidence_root"
 
     local script_path repo_root suite suite_name suite_evidence suite_rc
     local -a suites
@@ -31,6 +25,21 @@ main() {
     suites=("$repo_root"/test-*.sh)
     shopt -u nullglob
     [ "${#suites[@]}" -gt 0 ] || fail "no root test-*.sh suites found in: $repo_root"
+
+    for suite in "${suites[@]}"; do
+        suite_name=$(basename -- "$suite")
+        /bin/sh "$repo_root/tests/ci-suite.sh" --validate-suite "$suite_name" || \
+            fail "root suite missing from guest allowlist: $suite_name"
+        if [ "$evidence_root" = --list ]; then printf '%s\n' "$suite_name"; fi
+    done
+    printf 'CI discovered allowed root suites=%s\n' "${#suites[@]}"
+    [ "$evidence_root" != --list ] || return 0
+    case $evidence_root in
+        /*) ;;
+        *) fail "evidence directory must be absolute: $evidence_root" ;;
+    esac
+    [ ! -e "$evidence_root" ] && [ ! -L "$evidence_root" ] || fail "evidence directory already exists: $evidence_root"
+    mkdir -- "$evidence_root" || fail "cannot create evidence directory: $evidence_root"
 
     printf 'CI pulling pinned image: %s\n' "$IMAGE"
     docker pull "$IMAGE" || fail 'cannot pull pinned OpenWrt image'

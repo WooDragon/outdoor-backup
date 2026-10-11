@@ -2,6 +2,29 @@
 
 快速构建和部署 IPK 包的完整指南，专为 Lean's LEDE 优化。
 
+## 可选日期包与 provider 边界
+
+主体本地日期实现与定向验证已闭合，有限范围复核 APPROVED。修后未重跑全量，G1–G6 验收门槛仍未全部完成；不能发布。以下是现行 recipe 接口，不是 SDK/IPK 或目标设备验收。修改或选择日期包前，应先读取 [现行实现与 G1–G6 边界](docs/media-date-library-implementation.md)。
+
+`outdoor-backup/Makefile` 同时定义 core 与可选 `outdoor-backup-media-date`。core 安装 shell runtime，镜像安装不引入 Perl。可选包安装 `media-date-plan.pl` 和 `lib/OutdoorBackup/MediaDate/` 下九个 `.pm`。其依赖为 core、外部 `exiftool` provider、`perl` 以及 recipe 声明的 `perlbase-essential/findbin/json-pp/digest/encode/fcntl/time/cwd/b/storable`。应核对目标 feed 的真实模块归属，不用宿主 Perl 的“核心模块”判断替代目标依赖。
+
+ExifTool provider 应提供完整 `Image::ExifTool` 与 `File` 模块树，CLI 存在不充分。现有 guest 的 ExifTool 13.59 是经过 source hash 核验的源码模块加载证据，不是实际 provider IPK 安装或 SDK 交付。stock SDK 没有该外部 provider 时，可选 date 包构建仍 blocked；core mirror 包不因此拉入 Perl。provider 的真实 IPK/SDK 与 R5S rsync 3.4.1、目标 ext4/f2fs 和资源验收仍需独立证据。
+
+在已注册本 feed 且外部 provider 可发现的 OpenWrt 构建树中，可核对以下形状。此文档任务没有执行它们。
+
+```sh
+./scripts/feeds update outdoor
+grep -F -x 'Package: outdoor-backup-media-date' feeds/outdoor.index
+./scripts/feeds install outdoor-backup-media-date
+make menuconfig
+# 显式选中 outdoor-backup-media-date；core/LuCI 的原有选择保持。
+make package/feeds/outdoor/outdoor-backup/compile V=s
+```
+
+预期：可选包由与 core 相同的 canonical recipe 编译，不存在独立 `package/feeds/outdoor/outdoor-backup-media-date/compile` recipe 路径。应分别核对生成 IPK 的文件清单、运行依赖和实际目标模块加载。日期源码加载、synthetic install 或 feed 索引成功都不能代替真实 provider/IPK 验收。
+
+构建前应保持 core 的 BusyBox setsid/flock 合同；既有 IPK 不能补齐缺失 applet。设备命令与日期启用流程应先读取 [media-date-library-operations.md](docs/media-date-library-operations.md)。下方旧构建输出及发布示例属于一般构建说明，不构成本地日期实现的 publish 授权。
+
 ## 前置要求
 
 - 已配置好的 Lean's LEDE 构建环境
@@ -113,7 +136,8 @@ ssh root@router "opkg upgrade /tmp/outdoor-backup*.ipk"
 # 在干净工作副本中直接测试规范运行时源文件。
 cd ~/src/outdoor-backup
 scp -r files/opt/outdoor-backup root@router:/tmp/test-backup/
-ssh root@router "sh -x /tmp/test-backup/scripts/backup-manager.sh add sda1 /devices/test"
+# 旧任意 add 路径不作为实际设备操作示例。
+# 已安装 runtime 的 manual/initialize 形状以 docs/media-date-library-operations.md 为准。
 
 # 查看包内容（不安装）
 tar -tzf outdoor-backup_*.ipk

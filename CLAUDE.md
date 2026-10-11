@@ -125,12 +125,23 @@ outdoor-backup/
 
 > **前置阅读**：服务状态、hotplug、manager 准入和包生命周期的稳定设计边界，修改这些接口前必须先读取：[docs/component-implementation.md](docs/component-implementation.md)。
 
+## 媒体日期库的稳定约束与导航
+
+- mirror 保持默认；date 显式启用并与镜像根隔离。配置保存或 API 请求不改变正在运行的任务快照。
+- 日期自动任务只读来源；无配置卡应拒绝并要求独立 initialize。初始化不承担备份、alias 或 identity 发布。
+- 禁用时自动 add 仍成功忽略；manual 与 initialize 应非零拒绝，且不产生备份副作用。
+- 日期规划复用现有 owner/lease、目标 FD 9 和 runner/drain；不另造 PID 管理、内容 hash 缓存、复制器或自动消费者。
+- routes 只记录固定位置，不证明文件已完成。未知状态、历史路径冲突及需改变固定路由的旁车关联应失败关闭，不自动迁移或重分类。
+- 默认 quick 不构成逐字审计；manual checksum 只覆盖本次来源对应目标。旧 cleanup 只接受已准入的当前镜像根，磁盘日期状态不能靠切模式或 force 绕过。
+
+修改日期相关代码前应先读取 [docs/media-date-library-implementation.md](docs/media-date-library-implementation.md)：适用于独立 date 根、可选 Perl helper 和固定 routes 的源码/接口导航。执行初始化、manual 或清理前应先读取 [docs/media-date-library-operations.md](docs/media-date-library-operations.md)：适用于 root CLI、已挂载 ext4/f2fs 目标和受管清理。产品规则以 [docs/media-date-library-design.md](docs/media-date-library-design.md) 为准；设计与实现评审轮次以 [docs/media-date-library-review.md](docs/media-date-library-review.md) 为准。测试数字和短期修订状态不写入本入口。
+
 ## 配置系统
 
 ### 三层配置架构
 1. **内置默认值与兼容配置**：运行时先使用内置默认值，再读取 root 管理的 `/opt/outdoor-backup/conf/backup.conf`。
 2. **UCI 覆盖层**：`/etc/config/outdoor-backup` 的命名 section `outdoor-backup.config` 仅以显式 option 覆盖下层值。运行时只能通过 `uci` CLI 读取它，不应将 UCI 文件作为 shell 脚本 `source` 或 `eval`。
-3. **SD 卡配置**（`{SD_ROOT}/FieldBackup.conf`）：卡配置来自可移除介质，必须由 `card-config.sh` 按数据读取，绝不 `source` 或 `eval`。读取器接受现代 `SD_UUID`，或在该字段缺席时把旧 `SD_NAME` 用作 UUID；旧 `SD_REPLICA=NO|YES` 映射为 `PRIMARY|REPLICA`。重复、非法、注入式或与显式 `BACKUP_MODE` 冲突的数据应拒绝，且不得污染原有内存状态。自动备份只执行 `PRIMARY` 的 SD 卡到目标存储方向；管理器应明确拒绝既有 `REPLICA` 卡，绝不反向写卡或改成 `PRIMARY`。legacy UUID 在已有无 identity record 的目标叶时不得建立 TOFU 绑定，现代 `SD_UUID` 保持既有 TOFU。新卡配置只生成 `PRIMARY`。首次配置只可在正式文件缺失时打开受控读写窗口；正式文件必须由同目录临时文件完整写入后发布。来源卡限制、证据边界和用户可见恢复语义见 [README.md 的 Per-SD Card Configuration](README.md#per-sd-card-configuration) 与 [docs/component-implementation.md](docs/component-implementation.md)。
+3. **SD 卡配置**（`{SD_ROOT}/FieldBackup.conf`）：卡配置来自可移除介质，必须由 `card-config.sh` 按数据读取，绝不 `source` 或 `eval`。读取器接受现代 `SD_UUID`，或在该字段缺席时把旧 `SD_NAME` 用作 UUID；旧 `SD_REPLICA=NO|YES` 映射为 `PRIMARY|REPLICA`。重复、非法、注入式或与显式 `BACKUP_MODE` 冲突的数据应拒绝，且不得污染原有内存状态。自动备份只执行 `PRIMARY` 的 SD 卡到目标存储方向；管理器应明确拒绝既有 `REPLICA` 卡，绝不反向写卡或改成 `PRIMARY`。legacy UUID 在已有无 identity record 的目标叶时不得建立 TOFU 绑定，现代 `SD_UUID` 保持既有 TOFU。新卡配置只生成 `PRIMARY`。mirror 首次配置或显式 initialize 只可在正式文件缺失时打开受控读写窗口；date 自动任务应只读拒绝无配置卡。正式文件必须由同目录临时文件完整写入后发布。来源卡限制、证据边界和用户可见恢复语义见 [README.md 的 Per-SD Card Configuration](README.md#per-sd-card-configuration) 与 [docs/component-implementation.md](docs/component-implementation.md)。
 
 目标存储的稳定约束：`TARGET_MOUNT` 默认 `/mnt/ssd`，`TARGET_UUID` 默认空；有效优先级始终为 defaults < legacy < UCI。`add` 事件只有在用户配置了非空目标 UUID 后才能进入备份。`/etc/config/fstab` 的实际 `config global` 必须设置 `anon_mount=0`；目标 named mount 只定义其 UUID、target 和 enabled。包只检查这一运行前提，不迁移 fstab。管理器不猜测磁盘、不格式化磁盘、也不自行挂载目标介质。初始目标守卫失败只允许 stderr、error 级 syslog 和可选红灯；它不应进入来源挂载、`rsync`、别名、锁或应用日志生命周期。`enabled=0` 的 `add` 事件不应产生 LED 副作用。
 
@@ -403,6 +414,14 @@ WebUI 别名（非空）→ UUID 前8位（SD_xxxxxxxx）
   - 组件划分、数据流、接口定义
 - **[docs/component-implementation.md](docs/component-implementation.md)**: 组件边界与目标存储守卫
   - FD 锚定、设备身份判定、失败关闭边界和源码入口
+- **[docs/media-date-library-design.md](docs/media-date-library-design.md)**: 媒体单一日期库产品设计（固定路由、受管日期根）
+  - ExifTool 日期路由、临时来源视图、单次 rsync 与 BDD 验收边界
+- **[docs/media-date-library-review.md](docs/media-date-library-review.md)**: 媒体日期库设计评审记录
+  - 区分历史设计闭环与本地实现评审；设计评审不等于实现验收
+- **[docs/media-date-library-implementation.md](docs/media-date-library-implementation.md)**: 独立 date 根与可选 Perl helper 的现行实现
+  - 配置/manager 接口、固定 routes、owner/FD 9 与未验收边界
+- **[docs/media-date-library-operations.md](docs/media-date-library-operations.md)**: root CLI 与已挂载 ext4/f2fs 目标的操作
+  - 独立 initialize、单次 manual、受管 mirror cleanup 与恢复限制
 - **[docs/technical-research.md](docs/technical-research.md)**: 技术调研
   - 待验证技术点、硬件兼容性
 - **[docs/deployment-guide.md](docs/deployment-guide.md)**: 部署指南

@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "scope": "real rsync acceptance definitions; argv doubles do not satisfy these",
+  "scenarios": [
+    {"id":"M01","given":"three-day synthetic ordinary media and real delivered planner view","when":"one date transfer","then":"one actual media rsync; three-day destination leaves are ordinary files with exact content; private capability rsync counted separately"},
+    {"id":"M16","given":"same source path,size,mtime and different bytes","when":"quick then explicit checksum","then":"quick may skip and must not claim full verification; checksum updates and retains old bytes in owner replaced directory"},
+    {"id":"M17","given":"only mtime changed beyond comparison precision then unchanged rerun","when":"quick/checksum","then":"quick may retain same-content old file; checksum updates attributes without replaced; unchanged rerun neither mode creates replacement"},
+    {"id":"M25","given":"interrupted transfer after route publication","when":"retry","then":"same route; partial separated from formal file; no ignore-existing or append flags; do not promise byte delta resume"},
+    {"id":"M31","given":"ENOSPC, backup-dir write failure or interrupted partial","when":"date transfer","then":"nonzero; old file retention checked with actual bytes; no completed; partial/replaced recoverable"},
+    {"id":"M49","given":"large unchanged source and default automatic quick","when":"real transfer observed","then":"NUL argv lacks checksum; no second content comparer/hash; metadata I/O accounted separately from rsync update comparison"}
+  ]
+}

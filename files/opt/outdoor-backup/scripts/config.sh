@@ -184,6 +184,9 @@ config_apply_uci_option() {
         backup_root)
             BACKUP_ROOT="$option_value"
             ;;
+        backup_layout) BACKUP_LAYOUT="$option_value" ;;
+        library_root) LIBRARY_ROOT="$option_value" ;;
+        archive_offset_minutes) ARCHIVE_OFFSET_MINUTES="$option_value" ;;
         mount_point)
             MOUNT_POINT="$option_value"
             ;;
@@ -220,6 +223,9 @@ config_load() {
     local uci_file="$uci_dir/outdoor-backup"
 
     ENABLED=1
+    BACKUP_LAYOUT=mirror
+    LIBRARY_ROOT=""
+    ARCHIVE_OFFSET_MINUTES=""
     BACKUP_ROOT="/mnt/ssd/SDMirrors"
     MOUNT_POINT="/mnt/sdcard"
     TARGET_MOUNT="/mnt/ssd"
@@ -260,6 +266,9 @@ config_load() {
         if uci -q -c "$uci_dir" get outdoor-backup.config >/dev/null; then
             config_apply_uci_option "$uci_dir" enabled
             config_apply_uci_option "$uci_dir" backup_root
+            config_apply_uci_option "$uci_dir" backup_layout
+            config_apply_uci_option "$uci_dir" library_root
+            config_apply_uci_option "$uci_dir" archive_offset_minutes
             config_apply_uci_option "$uci_dir" mount_point
             config_apply_uci_option "$uci_dir" target_mount
             config_apply_uci_option "$uci_dir" target_uuid
@@ -307,5 +316,39 @@ config_load() {
             }
             ;;
     esac
-    config_paths_are_disjoint "$BACKUP_ROOT" "$MOUNT_POINT"
+    config_paths_are_disjoint "$BACKUP_ROOT" "$MOUNT_POINT" || return 1
+    config_validate_layout
+}
+
+# Validate layout intent without tools, media reads or shared writes.
+# Args: none. Returns 0/1; offset is required only when initializing a date library.
+config_validate_layout() {
+    case "$BACKUP_LAYOUT" in mirror|date) ;; *)
+        config_error 'backup_layout must be mirror or date'; return 1 ;;
+    esac
+    # Preserve absence through defaults < legacy < UCI. A mirror has no date
+    # root intent until a nonempty root is supplied; a display default is not one.
+    [ "$BACKUP_LAYOUT" = date ] || [ -n "$LIBRARY_ROOT" ] || return 0
+    [ -n "$LIBRARY_ROOT" ] || LIBRARY_ROOT="$TARGET_MOUNT/MediaLibrary"
+    LIBRARY_ROOT=$(config_normalize_path "$LIBRARY_ROOT" library_root) || return 1
+    config_paths_are_disjoint "$BACKUP_ROOT" "$LIBRARY_ROOT" || return 1
+    config_paths_are_disjoint "$LIBRARY_ROOT" "$MOUNT_POINT" || return 1
+    [ "$BACKUP_LAYOUT" = date ] || return 0
+    case "$LIBRARY_ROOT" in "$TARGET_MOUNT"/*) ;; *)
+        config_error 'library_root must be a direct child of target_mount'; return 1 ;;
+    esac
+    case "${LIBRARY_ROOT#"$TARGET_MOUNT"/}" in ''|*/*)
+        config_error 'library_root must be a direct child of target_mount'; return 1 ;;
+    esac
+    return 0
+}
+
+# Validate an explicitly supplied fixed offset without TZ or unsafe arithmetic.
+# Args: integer text. Returns 0 for canonical -840..840 inclusive, otherwise 1.
+config_valid_archive_offset() {
+    case "$1" in ''|*[!0-9-]*|--*|-|0[0-9]*|-0*) return 1 ;; esac
+    case "$1" in -*) config_offset_magnitude=${1#-} ;; *) config_offset_magnitude=$1 ;; esac
+    case "$config_offset_magnitude" in ''|*[!0-9]*) return 1 ;; esac
+    [ "${#config_offset_magnitude}" -le 3 ] || return 1
+    [ "$config_offset_magnitude" -le 840 ]
 }

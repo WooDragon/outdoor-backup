@@ -41,9 +41,36 @@ backup_transfer_cleanup() {
 # Returns: 0 on rsync success; otherwise the real rsync exit code, or 1 when
 # runtime output preparation fails.
 backup_transfer() {
-	local source_dir=$1
-	local target_dir=$2
-	local log_file=$3
+	[ "$#" -eq 3 ] || return 2
+	backup_transfer_execute "$1" "$2" "$3" mirror ''
+}
+
+# Date profile accepts only owner-created view/library/replaced paths.
+# Args: VIEW LIBRARY LOG quick|checksum REPLACED_DIR (exactly five).
+# Returns: 2 invalid input, 1 admission failure, or real runner result.
+backup_transfer_date() {
+	[ "$#" -eq 5 ] || return 2
+	case "$4" in quick|checksum) ;; *) return 2 ;; esac
+	[ "$1" = "${MEDIA_DATE_WORK:-}/view" ] && [ -d "$1" ] || return 1
+	[ "$2" = "${TARGET_BACKUP_ROOT:-}" ] && [ -d "$2" ] || return 1
+	[ "$5" = "${MEDIA_DATE_REPLACED_DIR:-}" ] && [ -d "$5" ] || return 1
+	[ "$3" = "${BACKUP_LOG_FILE:-}" ] || return 1
+	[ ! -L "$1" ] && [ ! -L "$5" ] || return 1
+	case "$2" in "${TARGET_FD_ROOT:-/nonexistent}"/*) ;; *) return 1 ;; esac
+	case "$5" in "$2"/.outdoor-backup/replaced/*) ;; *) return 1 ;; esac
+	case "${5#"$2"/.outdoor-backup/replaced/}" in ''|*/*|.|..) return 1 ;; esac
+	lock_is_owned_by_self && target_anchor_healthy || return 1
+	check_cancel_request || return "$?"
+	backup_transfer_execute "$1/" "$2/" "$3" "$4" "$5"
+}
+
+# One output/runner/statistics lifecycle for both fixed profiles. Not user argv.
+# Args: source, target, log, mirror|quick|checksum, replaced path.
+backup_transfer_execute() {
+	local profile="$4" replaced_dir="$5"
+	local source_dir="$1"
+	local target_dir="$2"
+	local log_file="$3"
 	local stdout_file=""
 	local stderr_file=""
 	local rsync_exit=1
@@ -88,23 +115,30 @@ backup_transfer() {
 	BACKUP_TRANSFER_TMP_STDERR=$stderr_file
 	BACKUP_TRANSFER_CREATED_STDERR=$stderr_file
 
-	if transfer_process_run rsync \
-		--archive \
-		--recursive \
-		--times \
-		--prune-empty-dirs \
-		--partial \
-		--stats \
-		--info=progress2 \
-		--outbuf=L \
-		--log-file="$log_file" \
-		--exclude="${CONFIG_FILE:-FieldBackup.conf}" \
-		--exclude=".Trash*" \
-		--exclude=".Spotlight*" \
-		--exclude=".fseventsd" \
-		--exclude="System Volume Information" \
-		--exclude="\$RECYCLE.BIN" \
-		"$source_dir" "$target_dir" >"$stdout_file" 2>"$stderr_file"; then
+	case "$profile" in
+		mirror)
+			set -- rsync --archive --recursive --times --prune-empty-dirs --partial \
+				--stats --info=progress2 --outbuf=L --log-file="$log_file" \
+				--exclude="${CONFIG_FILE:-FieldBackup.conf}" --exclude=".Trash*" \
+				--exclude=".Spotlight*" --exclude=".fseventsd" \
+				--exclude="System Volume Information" --exclude="\$RECYCLE.BIN"
+			;;
+		quick|checksum)
+			set -- rsync -aL --prune-empty-dirs --partial-dir=.rsync-partial \
+				--backup --backup-dir="$replaced_dir" --stats --info=progress2 \
+				--outbuf=L --log-file="$log_file"
+			[ "$profile" != checksum ] || set -- "$@" --checksum
+			# The manager checks lease+sticky cancellation before every reader launch.
+			if check_cancel_request; then :; else
+				rsync_exit=$?
+				backup_transfer_cleanup
+				return "$rsync_exit"
+			fi
+			;;
+		*) backup_transfer_cleanup; return 2 ;;
+	esac
+	if transfer_process_run "$@" "$source_dir" "$target_dir" \
+		>"$stdout_file" 2>"$stderr_file"; then
 		rsync_exit=0
 	else
 		rsync_exit=$?

@@ -1,0 +1,306 @@
+{
+  "repository": "immortalwrt/packages",
+  "commit": "97af13986bcb1efa6fdcc85af9589dd5640b6e63",
+  "sources": {
+    "perlbase.mk": {
+      "path": "lang/perl/perlbase.mk",
+      "sha256": "32b7f59e60d220780900aecf04707d55e55a2fe5c74239a2e9d25ddb5ba898fd"
+    },
+    "perlver.mk": {
+      "path": "lang/perl/perlver.mk",
+      "sha256": "22c8cf9e75c3942738531d2b5b25ce93121a67fb8a69f51a030650c7469b9119"
+    }
+  },
+  "perl_version": "5.40.0",
+  "direct_dependencies": [
+    "perlbase-essential",
+    "perlbase-findbin",
+    "perlbase-json-pp",
+    "perlbase-digest",
+    "perlbase-encode",
+    "perlbase-fcntl",
+    "perlbase-time",
+    "perlbase-cwd",
+    "perlbase-b",
+    "perlbase-storable"
+  ],
+  "transitive_dependencies": [
+    "perl",
+    "perlbase-b",
+    "perlbase-base",
+    "perlbase-bytes",
+    "perlbase-class",
+    "perlbase-config",
+    "perlbase-cwd",
+    "perlbase-digest",
+    "perlbase-dynaloader",
+    "perlbase-encode",
+    "perlbase-errno",
+    "perlbase-essential",
+    "perlbase-fcntl",
+    "perlbase-feature",
+    "perlbase-file",
+    "perlbase-filehandle",
+    "perlbase-findbin",
+    "perlbase-i18n",
+    "perlbase-integer",
+    "perlbase-io",
+    "perlbase-json-pp",
+    "perlbase-list",
+    "perlbase-locale",
+    "perlbase-mime",
+    "perlbase-params",
+    "perlbase-posix",
+    "perlbase-re",
+    "perlbase-scalar",
+    "perlbase-selectsaver",
+    "perlbase-socket",
+    "perlbase-storable",
+    "perlbase-symbol",
+    "perlbase-tie",
+    "perlbase-time",
+    "perlbase-unicore",
+    "perlbase-utf8",
+    "perlbase-xsloader"
+  ],
+  "package_dependencies": {
+    "perlbase-b": [
+      "perl",
+      "perlbase-config",
+      "perlbase-essential",
+      "perlbase-feature"
+    ],
+    "perlbase-base": [
+      "perl",
+      "perlbase-essential"
+    ],
+    "perlbase-bytes": [
+      "perl"
+    ],
+    "perlbase-class": [
+      "perl",
+      "perlbase-essential"
+    ],
+    "perlbase-config": [
+      "perl"
+    ],
+    "perlbase-cwd": [
+      "perl",
+      "perlbase-essential"
+    ],
+    "perlbase-digest": [
+      "perl",
+      "perlbase-dynaloader",
+      "perlbase-essential",
+      "perlbase-fcntl",
+      "perlbase-integer"
+    ],
+    "perlbase-dynaloader": [
+      "perl",
+      "perlbase-config"
+    ],
+    "perlbase-encode": [
+      "perl",
+      "perlbase-essential",
+      "perlbase-mime",
+      "perlbase-utf8",
+      "perlbase-xsloader"
+    ],
+    "perlbase-errno": [
+      "perl",
+      "perlbase-config",
+      "perlbase-essential"
+    ],
+    "perlbase-essential": [
+      "perl",
+      "perlbase-config"
+    ],
+    "perlbase-fcntl": [
+      "perl",
+      "perlbase-essential",
+      "perlbase-xsloader"
+    ],
+    "perlbase-feature": [
+      "perl"
+    ],
+    "perlbase-file": [
+      "perl",
+      "perlbase-class",
+      "perlbase-config",
+      "perlbase-cwd",
+      "perlbase-errno",
+      "perlbase-essential",
+      "perlbase-fcntl",
+      "perlbase-filehandle",
+      "perlbase-io",
+      "perlbase-locale",
+      "perlbase-params",
+      "perlbase-scalar",
+      "perlbase-symbol",
+      "perlbase-xsloader"
+    ],
+    "perlbase-filehandle": [
+      "perl",
+      "perlbase-essential",
+      "perlbase-io"
+    ],
+    "perlbase-findbin": [
+      "perl",
+      "perlbase-cwd",
+      "perlbase-essential",
+      "perlbase-file"
+    ],
+    "perlbase-i18n": [
+      "perl",
+      "perlbase-essential",
+      "perlbase-posix",
+      "perlbase-xsloader"
+    ],
+    "perlbase-integer": [
+      "perl"
+    ],
+    "perlbase-io": [
+      "perl",
+      "perlbase-base",
+      "perlbase-bytes",
+      "perlbase-config",
+      "perlbase-errno",
+      "perlbase-essential",
+      "perlbase-fcntl",
+      "perlbase-list",
+      "perlbase-posix",
+      "perlbase-scalar",
+      "perlbase-selectsaver",
+      "perlbase-socket",
+      "perlbase-symbol",
+      "perlbase-tie",
+      "perlbase-xsloader"
+    ],
+    "perlbase-json-pp": [
+      "perl",
+      "perlbase-b",
+      "perlbase-base",
+      "perlbase-essential"
+    ],
+    "perlbase-list": [
+      "perl",
+      "perlbase-essential",
+      "perlbase-xsloader"
+    ],
+    "perlbase-locale": [
+      "perl",
+      "perlbase-essential",
+      "perlbase-i18n",
+      "perlbase-integer",
+      "perlbase-utf8"
+    ],
+    "perlbase-mime": [
+      "perl",
+      "perlbase-essential",
+      "perlbase-xsloader"
+    ],
+    "perlbase-params": [
+      "perl",
+      "perlbase-essential",
+      "perlbase-locale"
+    ],
+    "perlbase-posix": [
+      "perl",
+      "perlbase-essential",
+      "perlbase-fcntl",
+      "perlbase-tie",
+      "perlbase-xsloader"
+    ],
+    "perlbase-re": [
+      "perl",
+      "perlbase-essential"
+    ],
+    "perlbase-scalar": [
+      "perl",
+      "perlbase-essential",
+      "perlbase-list"
+    ],
+    "perlbase-selectsaver": [
+      "perl",
+      "perlbase-essential",
+      "perlbase-symbol"
+    ],
+    "perlbase-socket": [
+      "perl",
+      "perlbase-essential",
+      "perlbase-xsloader"
+    ],
+    "perlbase-symbol": [
+      "perl",
+      "perlbase-essential"
+    ],
+    "perlbase-tie": [
+      "perl",
+      "perlbase-essential",
+      "perlbase-fcntl",
+      "perlbase-xsloader"
+    ],
+    "perlbase-time": [
+      "perl",
+      "perlbase-class",
+      "perlbase-config",
+      "perlbase-dynaloader",
+      "perlbase-essential"
+    ],
+    "perlbase-unicore": [
+      "perl"
+    ],
+    "perlbase-utf8": [
+      "perl",
+      "perlbase-essential",
+      "perlbase-re",
+      "perlbase-unicore"
+    ],
+    "perlbase-xsloader": [
+      "perl"
+    ],
+    "perlbase-storable": [
+      "perl",
+      "perlbase-essential",
+      "perlbase-xsloader"
+    ]
+  },
+  "module_owners": {
+    "JSON::PP": "perlbase-json-pp",
+    "Digest::SHA": "perlbase-digest",
+    "Encode": "perlbase-encode",
+    "FindBin": "perlbase-findbin",
+    "Cwd": "perlbase-cwd",
+    "Fcntl": "perlbase-fcntl",
+    "Time::Local": "perlbase-time",
+    "B": "perlbase-b",
+    "File::*": "perlbase-file",
+    "Scalar::Util": "perlbase-scalar",
+    "strict/warnings/lib": "perlbase-essential",
+    "Storable": "perlbase-storable"
+  },
+  "provider": {
+    "repository": "WooDragon/mCPE-Release",
+    "commit": "f6d7cbfe57b4727ff1eee542e8957ac19e219c07",
+    "path": "package/exiftool/Makefile",
+    "recipe_sha256": "cee3da5bf571792935b3055a640c7fb0b7e1e84c48fd8fb3ace389de7d6c5c91",
+    "version": "13.59",
+    "source_sha256": "668ea3acececb7235fbd0f4900e72d5f12c9b07e5c778fd36cb1e9b5828fd65a",
+    "install_contract": "Complete lib/Image and lib/File to /usr/lib/perl5/$(PERL_VERSION2)/",
+    "dependencies": [
+      "perl",
+      "perlbase-essential",
+      "perlbase-file",
+      "perlbase-integer",
+      "perlbase-time"
+    ]
+  },
+  "observed_undeclared_edges": [
+    {
+      "consumer": "Encode.pm:51",
+      "module": "Storable",
+      "proof": "package-module-probe/suite.stderr",
+      "status": "added explicit dependency; moduleload not rerun"
+    }
+  ]
+}

@@ -443,6 +443,11 @@ prepare_runtime() {
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/target-device.sh" "$SCRIPTS/target-device.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/owner-event.sh" "$SCRIPTS/owner-event.sh"
     ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/service-state.sh" "$SCRIPTS/service-state.sh"
+    # Lazy modules use the fixture invocation tree, still linked to actual source.
+    for helper in library-layout.sh manager-admin.sh manager-cleanup.sh manager-date.sh \
+        media-date.sh media-date-tools.sh media-date-publication.sh media-date-plan.pl; do
+        ln -s "$REPO_ROOT/files/opt/outdoor-backup/scripts/$helper" "$SCRIPTS/$helper"
+    done
     : > "$SERVICE_INIT_SCRIPT"
     printf '%s' 'running:0' > "$SERVICE_RUNTIME/state"
     : > "$EFFECTS"

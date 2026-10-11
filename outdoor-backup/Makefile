@@ -8,7 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=outdoor-backup
-PKG_VERSION:=1.4.0
+PKG_VERSION:=1.5.0
 PKG_RELEASE:=1
 
 PKG_MAINTAINER:=Your Name <your.email@example.com>
@@ -41,6 +41,32 @@ define Package/outdoor-backup/description
   - Read-only source card mount, with a bounded write window only for first-time card provisioning
   - Support for multiple filesystems (ext4/exFAT/NTFS/FAT32)
   - One-way automatic backup from SD card to SSD
+endef
+
+# Module ownership verified in immortalwrt/packages at
+# 97af13986bcb1efa6fdcc85af9589dd5640b6e63: lang/perl/perlbase.mk.
+# Encode.pm:51 in the actual 5.40 guest requires Storable; the pinned Encode
+# recipe omits that edge, so declare it explicitly rather than trusting host Perl.
+# The exiftool provider is external; stock SDKs without it cannot build this opt-in.
+define Package/outdoor-backup-media-date
+  SECTION:=utils
+  CATEGORY:=Utilities
+  TITLE:=Outdoor Backup - optional media date planner
+  DEPENDS:=+outdoor-backup +exiftool +perl +perlbase-essential +perlbase-findbin +perlbase-json-pp +perlbase-digest +perlbase-encode +perlbase-fcntl +perlbase-time +perlbase-cwd +perlbase-b +perlbase-storable
+  PKGARCH:=all
+endef
+
+define Package/outdoor-backup-media-date/description
+  Optional Perl planner for the media date library. Requires an ExifTool
+  provider with the complete Image::ExifTool and File module trees.
+  Mirror-only installations do not require this package or Perl.
+endef
+
+define Package/outdoor-backup-media-date/install
+	$(INSTALL_DIR) $(1)/opt/outdoor-backup/scripts
+	$(INSTALL_BIN) ./files/opt/outdoor-backup/scripts/media-date-plan.pl $(1)/opt/outdoor-backup/scripts/
+	$(INSTALL_DIR) $(1)/opt/outdoor-backup/lib/OutdoorBackup/MediaDate
+	$(INSTALL_DATA) ./files/opt/outdoor-backup/lib/OutdoorBackup/MediaDate/*.pm $(1)/opt/outdoor-backup/lib/OutdoorBackup/MediaDate/
 endef
 
 define Package/outdoor-backup/conffiles
@@ -132,3 +158,4 @@ exit 0
 endef
 
 $(eval $(call BuildPackage,outdoor-backup))
+$(eval $(call BuildPackage,outdoor-backup-media-date))

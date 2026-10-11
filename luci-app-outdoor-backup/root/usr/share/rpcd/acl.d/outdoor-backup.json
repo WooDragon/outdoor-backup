@@ -14,9 +14,6 @@
       "file": {
         "/opt/outdoor-backup/conf/aliases.json": ["write"]
       }
-    },
-    "exec": {
-      "outdoor-backup": ["cleanup"]
     }
   }
 }

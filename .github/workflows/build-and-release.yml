@@ -133,7 +133,7 @@ jobs:
             echo "Feed index is empty or missing after update: $feed_index" >&2
             exit 1
           }
-          for package in outdoor-backup luci-app-outdoor-backup; do
+          for package in outdoor-backup outdoor-backup-media-date luci-app-outdoor-backup; do
             grep -F -x -q "Package: $package" "$feed_index" || {
               echo "Required package is absent from $feed_index: $package" >&2
               exit 1
@@ -159,6 +159,7 @@ jobs:
             '# CONFIG_ALL_NONSHARED is not set' \
             '# CONFIG_ALL_KMODS is not set' \
             'CONFIG_PACKAGE_outdoor-backup=y' \
+            '# CONFIG_PACKAGE_outdoor-backup-media-date is not set' \
             'CONFIG_PACKAGE_luci-app-outdoor-backup=y' > .config
           make defconfig
           for symbol in ALL ALL_NONSHARED ALL_KMODS; do
@@ -243,6 +244,10 @@ jobs:
             case "$dependency" in
               BUSYBOX_*)
                 printf 'Unexpected BusyBox runtime dependency: %s\n' "$dependency" >&2
+                exit 1
+                ;;
+              perl*|exiftool|outdoor-backup-media-date)
+                printf 'Mirror core unexpectedly requires optional planner: %s\n' "$dependency" >&2
                 exit 1
                 ;;
               rsync) has_rsync=true ;;

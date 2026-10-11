@@ -2,6 +2,8 @@
 -- Licensed under GPL-2.0-only
 
 local target_discovery = require "luci.model.outdoor-backup.target"
+local media = require "luci.model.outdoor-backup.media"
+local effective = media.config()
 local m, s, o
 local selected_values = {}
 
@@ -14,11 +16,11 @@ local function submitted_or_saved(option, section)
 end
 
 local function valid_uuid(value)
-    return value and value:match("^[A-Za-z0-9-]+$") ~= nil
+    return type(value) == "string" and value:match("^[A-Za-z0-9-]+$") ~= nil
 end
 
 local function valid_mount(value)
-    return value and value ~= "" and value ~= "/" and value:match("^/") and
+    return type(value) == "string" and value ~= "" and value ~= "/" and value:match("^/") and
         not value:match("[%c]") and not value:find("//", 1, true) and
         not value:find("/./", 1, true) and not value:find("/../", 1, true) and
         value:sub(-2) ~= "/." and value:sub(-3) ~= "/.."
@@ -214,6 +216,113 @@ enabled.validate = function(self, value, section)
     return value
 end
 
+-- Keep backup_root a mirror root; date has its own explicitly chosen root.
+o = s:option(ListValue, "backup_layout", translate("Backup Layout"),
+    translate("Mirror remains the default. Date requires the optional date package, ExifTool and Perl modules; saving checks the real helper schema. Runtime admission remains authoritative. Configuration changes never rewrite a running task snapshot."))
+o:value("mirror", translate("Mirror (default)"))
+o:value("date", translate("Date library"))
+o.default = "mirror"
+o.rmempty = false
+local layout = o
+
+o = s:option(Value, "library_root", translate("Date Library Root"),
+    translate("A separate direct child of the target mount, never equal to, inside or above the mirror root. Use a new empty library; no automatic migration. Do not manually rename managed dates, source directories or media paths."))
+o.placeholder = "/mnt/ssd/MediaLibrary"
+-- Empty means inherit the date-only derived root, not explicit root intent.
+o.default = (effective and effective.library_root) or ""
+o.rmempty = true
+local library_root = o
+
+o = s:option(Value, "archive_offset_minutes", translate("Fixed Archive Offset (minutes)"),
+    translate("Explicit integer -840..840 (480 = UTC+08:00) for a new date library. An existing library policy cannot be changed online; changing UCI cannot rewrite it or a running snapshot. No travel timezone or DST guessing."))
+o.rmempty = true
+local offset = o
+
+-- Missing UCI values inherit the same runtime effective legacy/default values,
+-- without parsing or sourcing legacy shell in Lua.
+for _, field in ipairs({target_mount, target_uuid, backup_root, source_mount, layout, library_root, offset}) do
+    field.cfgvalue = function(self, section)
+        local saved = self.map.uci:get("outdoor-backup", section, self.option)
+        return saved or (effective and effective[self.option]) or self.default
+    end
+end
+
+offset.validate = function(self, value)
+    if value == "" then return value end
+    local number = type(value) == "string" and tonumber(value)
+    if number and number >= -840 and number <= 840 and number == math.floor(number) and
+        tostring(number) == value then return value end
+    return nil, translate("Offset must be a canonical integer from -840 to 840")
+end
+
+-- Validate the complete submitted layout before Map.save(), including fields
+-- later in the form. No preview/status document is accepted as authorization.
+layout.validate = function(self, value, section)
+    if value ~= "mirror" and value ~= "date" then
+        return nil, translate("Unknown backup layout")
+    end
+    if value == "mirror" then return value end
+    local capability, reason = media.probe()
+    if not capability then return nil, translate(reason) end
+    local target = submitted_or_saved(target_mount, section)
+    local mirror = submitted_or_saved(backup_root, section)
+    local library = submitted_or_saved(library_root, section)
+    if library == "" or library == nil then
+        library = type(target) == "string" and (target .. "/MediaLibrary") or nil
+    end
+    local source = submitted_or_saved(source_mount, section)
+    if not valid_mount(target) or not valid_mount(library) or not valid_mount(mirror) or
+        not valid_mount(source) or library:match("^(.*)/[^/]+$") ~= target or
+        paths_intersect(library, mirror) or paths_intersect(library, source) then
+        return nil, translate("Date root must be a direct target child, disjoint from mirror and source roots")
+    end
+    local configured_offset = submitted_or_saved(offset, section) or ""
+    if type(configured_offset) ~= "string" then
+        return nil, translate("Offset must be a canonical integer from -840 to 840")
+    end
+    local fs = require "nixio.fs"
+    local marker = library .. "/.outdoor-backup/library.json"
+    if fs.lstat(marker) then
+        local policy = media.library(library)
+        if not policy then return nil, translate("Existing library policy is invalid or unsupported") end
+        if configured_offset ~= "" and tonumber(configured_offset) ~= policy.archive_offset_minutes then
+            return nil, translate("Existing library offset cannot be changed online")
+        end
+    elseif configured_offset == "" then
+        return nil, translate("An explicit fixed offset is required for a new date library")
+    end
+    return value
+end
+
+library_root.validate = function(self, value, section)
+    local date_layout = submitted_or_saved(layout, section) == "date"
+    if (value == "" or value == nil) and not date_layout then return value end
+    if value == "" or value == nil then
+        local target = submitted_or_saved(target_mount, section)
+        value = type(target) == "string" and (target .. "/MediaLibrary") or nil
+    end
+    local mirror = submitted_or_saved(backup_root, section)
+    local source = submitted_or_saved(source_mount, section)
+    if not valid_mount(value) or not valid_mount(mirror) or not valid_mount(source) then
+        return nil, translate("Library root must be an absolute path without unsafe segments")
+    end
+    if paths_intersect(value, mirror) or paths_intersect(value, source) then
+        return nil, translate("Library root must be disjoint from mirror and source roots")
+    end
+    return value
+end
+
+local original_backup_validate = backup_root.validate
+backup_root.validate = function(self, value, section)
+    local checked, reason = original_backup_validate(self, value)
+    local target = submitted_or_saved(target_mount, section)
+    if not checked then return nil, reason end
+    if not valid_mount(target) or value:sub(1, #target + 1) ~= target .. "/" then
+        return nil, translate("Mirror root must be a strict child of the target mount")
+    end
+    return value
+end
+
 o = s:option(Flag, "debug", translate("Debug Mode"),
              translate("Enable verbose logging for troubleshooting"))
 o.default = "0"
@@ -258,5 +367,16 @@ o = s:option(Value, "led_red", translate("Red LED Path"),
 o.default = "/sys/class/leds/red:power"
 o.placeholder = "/sys/class/leds/red:power"
 o.rmempty = true
+
+-- A CBI submit is also a write, even when called through a direct adapter.
+local original_parse = m.parse
+m.parse = function(self, ...)
+    if self:formvalue("cbi.submit") and
+        not require("luci.model.outdoor-backup.security").allow(true) then
+        self.save = false
+        return require("luci.cbi").FORM_INVALID
+    end
+    return original_parse(self, ...)
+end
 
 return m

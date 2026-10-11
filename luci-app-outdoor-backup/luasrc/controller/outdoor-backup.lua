@@ -7,8 +7,9 @@ License: GPL-2.0-only
 
 module("luci.controller.outdoor-backup", package.seeall)
 
--- Load UCI module globally
-local uci = require "luci.model.uci".cursor()
+-- Fixed runtime adapters and handler-level session authorization.
+local security = require 'luci.model.outdoor-backup.security'
+local media = require 'luci.model.outdoor-backup.media'
 
 function index()
     -- Main menu entry: Services > Outdoor Backup
@@ -33,17 +34,17 @@ function index()
 
     -- Alias management API routes
     entry({"admin", "services", "outdoor-backup", "api", "alias", "update"},
-          call("api_update_alias"))
+          post("api_update_alias"))
 
     entry({"admin", "services", "outdoor-backup", "api", "alias", "delete"},
-          call("api_delete_alias"))
+          post("api_delete_alias"))
 
     -- Batch cleanup API routes
     entry({"admin", "services", "outdoor-backup", "api", "cleanup", "preview"},
           call("api_cleanup_preview"))
 
     entry({"admin", "services", "outdoor-backup", "api", "cleanup", "execute"},
-          call("api_cleanup_execute"))
+          post("api_cleanup_execute"))
 end
 
 -------------------------------------------------------------------------------
@@ -55,6 +56,7 @@ action_log - Display recent backup logs
 Reads last 100 lines from backup.log and renders log page template
 ]]--
 function action_log()
+    if not security.allow(false) then return end
     local fs = require "nixio.fs"
     local log_file = "/opt/outdoor-backup/log/backup.log"
 
@@ -92,6 +94,7 @@ Returns: status.json content with backup progress and history
 Response: JSON object with current_backup, storage, history fields
 ]]--
 function api_status()
+    if not security.allow(false) then return end
     local json = require "luci.jsonc"
     local fs = require "nixio.fs"
 
@@ -113,6 +116,7 @@ Returns: All UUID-to-alias mappings from aliases.json
 Response: JSON object with version and aliases fields
 ]]--
 function api_aliases()
+    if not security.allow(false) then return end
     local json = require "luci.jsonc"
     local fs = require "nixio.fs"
 
@@ -139,23 +143,23 @@ Creates or updates alias mapping for a UUID
 Uses atomic write (temp file + rename) to prevent corruption
 ]]--
 function api_update_alias()
+    if not security.allow(true) then return end
     local json = require "luci.jsonc"
     local fs = require "nixio.fs"
 
-    -- Read POST data
-    luci.http.setfilehandler()
-    local content_length = tonumber(luci.http.getenv("CONTENT_LENGTH")) or 0
-    if content_length == 0 then
-        luci.http.status(400)
-        luci.http.prepare_content("application/json")
-        return luci.http.write_json({error = "Empty request body"})
+    -- LuCI XHR posts application/x-www-form-urlencoded objects, not JSON strings.
+    local data = {uuid=luci.http.formvalue("uuid"), alias=luci.http.formvalue("alias"),
+        notes=luci.http.formvalue("notes")}
+    if (data.alias ~= nil and type(data.alias) ~= "string") or
+        (data.notes ~= nil and type(data.notes) ~= "string") or
+        (type(data.alias) == "string" and #data.alias > 256) or
+        (type(data.notes) == "string" and #data.notes > 1024) then
+        security.reject(400, "Invalid alias fields")
+        return
     end
 
-    local post_data = luci.http.content()
-    local data = json.parse(post_data)
-
     -- Validate input
-    if not data or not data.uuid or data.uuid == "" then
+    if type(data.uuid) ~= "string" or data.uuid == "" then
         luci.http.status(400)
         luci.http.prepare_content("application/json")
         return luci.http.write_json({error = "Missing or empty uuid field"})
@@ -230,13 +234,14 @@ Removes alias mapping from aliases.json
 NOTE: Does NOT delete backup data, only removes the alias mapping
 ]]--
 function api_delete_alias()
+    if not security.allow(true) then return end
     local json = require "luci.jsonc"
     local fs = require "nixio.fs"
 
     local uuid = luci.http.formvalue("uuid")
 
     -- Validate input
-    if not uuid or uuid == "" then
+    if type(uuid) ~= "string" or not uuid:match("^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$") then
         luci.http.status(400)
         luci.http.prepare_content("application/json")
         return luci.http.write_json({error = "Missing uuid parameter"})
@@ -294,176 +299,35 @@ end
 -- Batch Cleanup API Functions
 -------------------------------------------------------------------------------
 
---[[
-api_cleanup_preview - GET /api/cleanup/preview
-Scans backup root directory and returns list of all backup cards with sizes
-Used for displaying confirmation dialog before cleanup
-Returns: {cards: [{uuid, display_name, size_bytes, path}], total_size_bytes, total_cards, backup_root}
-]]--
-function api_cleanup_preview()
-    local json = require "luci.jsonc"
-    local fs = require "nixio.fs"
-    local util = require "luci.util"
-
-    -- Get backup root directory from UCI using Lua API
-    local backup_root = uci:get("outdoor-backup", "config", "backup_root") or "/mnt/ssd/SDMirrors"
-
-    -- Check if backup root exists
-    local stat = fs.stat(backup_root)
-    if not stat or stat.type ~= "dir" then
-        luci.http.status(404)
-        luci.http.prepare_content("application/json")
-        return luci.http.write_json({error = "Backup root directory not found"})
-    end
-
-    -- Read alias mappings
-    local alias_file = "/opt/outdoor-backup/conf/aliases.json"
-    local aliases = {}
-    local existing_content = fs.readfile(alias_file)
-    if existing_content then
-        local parsed = json.parse(existing_content)
-        if parsed and parsed.aliases then
-            aliases = parsed.aliases
-        end
-    end
-
-    -- Helper function for calculating directory size recursively
-    local function calculate_dir_size(path)
-        local total = 0
-        local stat = fs.stat(path)
-        if not stat then return 0 end
-
-        if stat.type == "dir" then
-            for entry in fs.dir(path) do
-                if entry ~= "." and entry ~= ".." then
-                    total = total + calculate_dir_size(path .. "/" .. entry)
-                end
-            end
-        else
-            total = stat.size or 0
-        end
-
-        return total
-    end
-
-    -- Scan backup directory for UUID directories
-    local cards = {}
-    local total_size = 0
-
-    for entry in fs.dir(backup_root) do
-        local full_path = backup_root .. "/" .. entry
-        local entry_stat = fs.stat(full_path)
-
-        -- Check if it's a directory and looks like a UUID
-        if entry_stat and entry_stat.type == "dir" and entry:match("^%x%x%x%x%x%x%x%x%-") then
-            -- Calculate directory size using Lua recursion
-            local size = calculate_dir_size(full_path)
-
-            -- Get display name (alias or UUID prefix)
-            local display_name = "SD_" .. entry:sub(1, 8)
-            if aliases[entry] and aliases[entry].alias and aliases[entry].alias ~= "" then
-                display_name = aliases[entry].alias
-            end
-
-            table.insert(cards, {
-                uuid = entry,
-                display_name = display_name,
-                size_bytes = size,
-                path = full_path
-            })
-
-            total_size = total_size + size
-        end
-    end
-
+-- Args: preview boolean. Manager is the sole root/lease/precheck authority.
+-- Nonzero stdout and private stderr never reach shared UI.
+local function cleanup_response(preview)
+    local config, code = media.config()
+    local result
+    if config then result, code = media.cleanup(preview, config) end
     luci.http.prepare_content("application/json")
-    luci.http.write_json({
-        cards = cards,
-        total_size_bytes = total_size,
-        total_cards = #cards,
-        backup_root = backup_root
-    })
+    if code ~= 0 then
+        local messages = {[1]="Invalid cleanup arguments", [2]="Invalid configured mirror root",
+            [3]="Cleanup failed", [4]="Cleanup is unsupported for date layout",
+            [5]="Backup service busy or unavailable", [130]="Cleanup cancelled", [143]="Cleanup cancelled"}
+        luci.http.status(media.exit_http[code] or 500)
+        return luci.http.write_json({error=messages[code] or "Cleanup failed", exit_code=code})
+    end
+    luci.http.write_json(result)
 end
 
---[[
-api_cleanup_execute - POST /api/cleanup/execute
-Request body: {confirm_text: "清空备份数据"}
-Executes batch cleanup after confirmation
-Validates confirmation text before calling cleanup-all.sh script
-NOTE: Always preserves aliases.json
-]]--
+-- GET preview; read permission only, no arbitrary root request parameter.
+function api_cleanup_preview()
+    if not security.allow(false) then return end
+    cleanup_response(true)
+end
+
+-- POST form: token, confirm_text. Preview is not an authorization capability.
 function api_cleanup_execute()
-    local json = require "luci.jsonc"
-    local fs = require "nixio.fs"
-    local util = require "luci.util"
-
-    -- Read POST data
-    luci.http.setfilehandler()
-    local content_length = tonumber(luci.http.getenv("CONTENT_LENGTH")) or 0
-    if content_length == 0 then
-        luci.http.status(400)
-        luci.http.prepare_content("application/json")
-        return luci.http.write_json({error = "Empty request body"})
+    if not security.allow(true) then return end
+    if luci.http.formvalue("confirm_text") ~= "清空备份数据" then
+        security.reject(400, "Invalid confirmation text")
+        return
     end
-
-    local post_data = luci.http.content()
-    local data = json.parse(post_data)
-
-    -- Validate confirmation text
-    if not data or data.confirm_text ~= "清空备份数据" then
-        luci.http.status(400)
-        luci.http.prepare_content("application/json")
-        return luci.http.write_json({error = "Invalid confirmation text"})
-    end
-
-    -- Get backup root directory using UCI Lua API
-    local backup_root = uci:get("outdoor-backup", "config", "backup_root") or "/mnt/ssd/SDMirrors"
-
-    -- Check if backup root exists
-    local stat = fs.stat(backup_root)
-    if not stat or stat.type ~= "dir" then
-        luci.http.status(404)
-        luci.http.prepare_content("application/json")
-        return luci.http.write_json({error = "Backup root directory not found"})
-    end
-
-    -- Execute cleanup script
-    -- cleanup-all.sh <backup_root> <keep_aliases>
-    -- keep_aliases=1 means preserve aliases.json
-    local cleanup_script = "/opt/outdoor-backup/scripts/cleanup-all.sh"
-
-    -- Check if script exists
-    if not fs.access(cleanup_script, "x") then
-        luci.http.status(500)
-        luci.http.prepare_content("application/json")
-        return luci.http.write_json({error = "Cleanup script not found or not executable"})
-    end
-
-    -- Execute cleanup (preserve aliases)
-    -- IMPORTANT: Must use --force flag to pass safety check in cleanup-all.sh
-    -- Use luci.util.shellquote to properly escape backup_root
-    local cmd = string.format("%s --force %s 1 2>&1",
-                              cleanup_script,
-                              util.shellquote(backup_root))
-
-    -- CRITICAL FIX: Only call once, not twice!
-    -- Use luci.sys.call to get exit code directly
-    local exit_code = luci.sys.call(cmd)
-
-    if exit_code ~= 0 then
-        luci.http.status(500)
-        luci.http.prepare_content("application/json")
-        return luci.http.write_json({
-            success = false,
-            error = "Cleanup failed",
-            exit_code = exit_code
-        })
-    end
-
-    -- Success
-    luci.http.prepare_content("application/json")
-    luci.http.write_json({
-        success = true,
-        message = "Backup data cleaned successfully"
-    })
+    cleanup_response(false)
 end

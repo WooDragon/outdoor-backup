@@ -1,0 +1,5 @@
+Can't locate Storable.pm in @INC (you may need to install the Storable module) (@INC entries checked: /tmp/outdoor-test-exiftool/Image-ExifTool-13.59/lib /src/files/opt/outdoor-backup/lib /usr/lib/perl5/5.40) at /usr/lib/perl5/5.40/Encode.pm line 51.
+BEGIN failed--compilation aborted at /usr/lib/perl5/5.40/Encode.pm line 51.
+Compilation failed in require.
+BEGIN failed--compilation aborted.
+FAIL: BLOCKED: actual guest Perl module load failed
