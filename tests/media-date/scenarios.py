@@ -287,7 +287,7 @@ class Scenarios(unittest.TestCase):
                 fd = os.open(self.source / name, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
                 os.close(fd)
             except FileExistsError:
-                self.skipTest('BLOCKED filesystem aliases case or Unicode names; target ext4/f2fs required')
+                self.skipTest('BLOCKED filesystem aliases case or Unicode names; target ext4/btrfs required')
         self.assertEqual(self.plan()['files_total'], 4)
 
     def test_M35_routes_size_boundary(self):

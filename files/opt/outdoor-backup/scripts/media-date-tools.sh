@@ -201,7 +201,7 @@ media_date_tool() {
 # Probe only an owner-created FD9 child, deleting only that exact private child.
 # Args: none. Returns nonzero on unsupported FS or any capability/check error.
 media_date_probe_filesystem() {
-    case "$TARGET_FS_TYPE" in ext4|f2fs) ;; *) media_date_fail unsupported_filesystem; return 1 ;; esac
+    case "$TARGET_FS_TYPE" in ext4|btrfs) ;; *) media_date_fail unsupported_filesystem; return 1 ;; esac
     media_date_guard || return "$?"
     MEDIA_DATE_PROBE=$(umask 077; mktemp -d "$TARGET_FD_ROOT/.media-date-probe.XXXXXX") || return 1
     media_date_tool filesystem "$MEDIA_DATE_PROBE"

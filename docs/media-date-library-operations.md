@@ -1,7 +1,7 @@
 # 媒体日期库：本地操作与恢复边界
 
 > 状态：主体本地实现与定向验证已闭合，有限范围复核 APPROVED；修后未重跑全量，不能发布。以下命令是源码核对后的接口说明，不是目标 R5S 部署批准。本次文档维护未在设备上执行这些命令。
-> 场景：root 管理已挂载的 ext4/f2fs 目标，并使用独立日期库；不会访问私人素材、自动迁移旧镜像或创建 WebUI 队列。
+> 场景：root 管理已挂载的 ext4/btrfs 目标，并使用独立日期库；不会访问私人素材、自动迁移旧镜像或创建 WebUI 队列。
 
 **前置阅读**：操作前应先读取 [media-date-library-implementation.md](media-date-library-implementation.md) 的配置、来源身份及 G1–G6 边界。挂载目标前应先读取 [README 的 Configure target storage](../README.md#configure-target-storage)。WebUI 操作前应先读取 [WEBUI_USER_GUIDE.md](WEBUI_USER_GUIDE.md)。本文是日期配置、manual、initialize 和现行 cleanup CLI 的操作权威；其他文档只链接这些步骤。
 

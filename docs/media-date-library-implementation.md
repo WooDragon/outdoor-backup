@@ -42,12 +42,14 @@ manual 与 initialize 复用 service admission、锁、来源 snapshot、挂载�
 | manager 动作与终态 | [`backup-manager.sh`](../files/opt/outdoor-backup/scripts/backup-manager.sh)、[`manager-admin.sh`](../files/opt/outdoor-backup/scripts/manager-admin.sh)、[`manager-date.sh`](../files/opt/outdoor-backup/scripts/manager-date.sh) | 冻结任务比较模式；管理 planning、transferring、finalizing 和成功边界。 |
 | 日期准入与规划调用 | [`media-date.sh`](../files/opt/outdoor-backup/scripts/media-date.sh) | 只在既有 owner/lease 和 FD 9 下调用同步 runner；保留 sticky cancel。 |
 | 发布与恢复状态 | [`media-date-publication.sh`](../files/opt/outdoor-backup/scripts/media-date-publication.sh) | 验证、同文件系统候选、sync、rename、sync；首份空 routes 先于 identity claim。 |
-| 目标能力与结果核对 | [`media-date-tools.sh`](../files/opt/outdoor-backup/scripts/media-date-tools.sh) | 仅 ext4/f2fs；实际探测 case/Unicode 区分及 rename；核对受控 view、计数与历史路由。 |
+| 目标能力与结果核对 | [`media-date-tools.sh`](../files/opt/outdoor-backup/scripts/media-date-tools.sh) | 仅 ext4/btrfs；实际探测 case/Unicode 区分及 rename；核对受控 view、计数与历史路由。 |
 | 元数据与规划 helper | [`media-date-plan.pl`](../files/opt/outdoor-backup/scripts/media-date-plan.pl)、[`MediaDate/`](../files/opt/outdoor-backup/lib/OutdoorBackup/MediaDate/) | 固定 argv/schema；只产私有规划结果，不复制媒体或写共享状态。 |
 | 实际传输 | [`backup-transfer.sh`](../files/opt/outdoor-backup/scripts/backup-transfer.sh)、[`transfer-process.sh`](../files/opt/outdoor-backup/scripts/transfer-process.sh) | 一次 `-aL` rsync；沿用已有进程组取消和 drain，不新增 PID 管理。 |
 | 镜像清理 | [`manager-cleanup.sh`](../files/opt/outdoor-backup/scripts/manager-cleanup.sh)、[`cleanup-all.sh`](../files/opt/outdoor-backup/scripts/cleanup-all.sh) | manager 后端统一租约、owner、target-only FD 9、全祖先与全树预检。 |
 | LuCI 表单、API 与任务显示 | [WEBUI_DEVELOPER_GUIDE.md](WEBUI_DEVELOPER_GUIDE.md) | 该文档是 HTTP、授权、表单与 task schema 的权威说明。 |
 | 可选包 | [BUILD.md](../BUILD.md) | 该文档是 recipe、安装文件及 provider 验证边界的权威说明。 |
+
+本修订将日期目标类型合同改为 ext4/btrfs，f2fs 不再作为日期目标接受；系统 rootfs/overlay 的 f2fs 与 mirror 不受此限制影响。类型放行后仍执行原有 owner/FD9 私有能力探测。旧 ext4/f2fs 测试记录属于历史证据，不代表当前支持范围。合成 guard 回归不等于真实 btrfs 介质、掉电或性能验收。
 
 九个 Perl 模块按职责分为 JSON、Path、Scan、Extractor、Date、Groups、Routes、Namespace 和 Planner。维护者应在对应模块修改规则，不将源码复制到文档作为第二份算法。
 
@@ -167,14 +169,18 @@ LuCI 后续证据根为 `/private/tmp/outdoor-luci-bootstrap.fUbP24/`：`red/` �
 |---|---|---|
 | G1 原卡素材 | synthetic 日期、配对和冲突 fixture | 未改名的真实 Sony/DJI/XML 原卡脱敏 fixture 缺席；人工名字不是 raw fixture。 |
 | G2 分支与回归 | 本地 implementation、synthetic、组件合同有证据；本次全量非通过项已定向闭合；有限范围评审 APPROVED | 未重跑修后全量；不是 release passed。 |
-| G3 工具与包 | native OpenWrt rsync 3.5.1 / protocol 33；verified ExifTool 13.59 source moduleload | 目标 R5S rsync 3.4.1、真实 provider IPK/SDK、真 ext4/f2fs 验收仍 blocked；源码加载不等于 IPK 安装。 |
+| G3 工具与包 | native OpenWrt rsync 3.5.1 / protocol 33；verified ExifTool 13.59 source moduleload | 目标 R5S rsync 3.4.1、真实 provider IPK/SDK、真 ext4/btrfs 验收仍 blocked；源码加载不等于 IPK 安装。 |
 | G4 故障 | tmpfs ENOSPC、实际进程组 cancel/drain 部分通过 | 真介质拔盘、掉电与目标设备故障未验。 |
 | G5 资源与性能 | M49 是合同证据，不是性能证明 | 真大视频 RSS、IO split、规划成本与峰值空间未验；无目标性能结论。 |
 | G6 LuCI | real RPC/CBI/XHR/DOM 部分通过，真实权限不 mock | browser/full CGI auth 及真机未验；PhotoPrism 自动 index 不在本次验收。 |
 
+#### ext4/btrfs 白名单定向记录
+
+修复前 RED：`/tmp/outdoor-date-btrfs.OoWo06/red-2.log` 记录 `ran=77 passed=74 failed=3 blocked=2 assertions=274`、rc 1；三个失败分别为 btrfs 放行、f2fs 拒绝和 btrfs 能力失败。此前 `red.log` 的 rc 126 来自入口未加执行位，0 case 前置失败，不计入行为结果。本轮 GREEN 的环境为 macOS/Darwin 24.3.0，runner 为 `/bin/sh` 与 `python3`，仅运行 synthetic 模式；命令为 `/bin/sh /Users/woodragon/Work/github/outdoor-backup/test-media-date-library.sh --synthetic`。结果为 `ran=77 passed=77 failed=0 blocked=2 assertions=301`、rc 0；日志和退出码见 [`green.log`](/tmp/outdoor-date-btrfs.green.7xIuir/green.log) 与 [`green.rc`](/tmp/outdoor-date-btrfs.green.7xIuir/green.rc)。`blocked=2` 表示 OpenWrt toolchain 与真实 ext4/btrfs target 未验。本结果不等于真实 btrfs 介质、掉电或性能验收，G1–G6 仍未全部完成。
+
 - 未完成的 G1–G6 验收统一跟踪 [Issue #59](https://github.com/WooDragon/outdoor-backup/issues/59)，实现合并或固件编译成功不自动关闭验收。
 
-源码与 suite 导航为 [`tests/media-date/`](../tests/media-date/)、[`test-media-date-regressions.sh`](../test-media-date-regressions.sh)、[`test-media-date-manager.sh`](../test-media-date-manager.sh)、[`test-media-date-library.sh`](../test-media-date-library.sh)、[`test-media-date-lifecycle.sh`](../test-media-date-lifecycle.sh) 和 [`test-luci-media-date.sh`](../test-luci-media-date.sh)。本次文档任务只做文档编辑与静态核查，没有执行行为套件、网络、固件、部署或发布。
+源码与 suite 导航为 [`tests/media-date/`](../tests/media-date/)、[`test-media-date-regressions.sh`](../test-media-date-regressions.sh)、[`test-media-date-manager.sh`](../test-media-date-manager.sh)、[`test-media-date-library.sh`](../test-media-date-library.sh)、[`test-media-date-lifecycle.sh`](../test-media-date-lifecycle.sh) 和 [`test-luci-media-date.sh`](../test-luci-media-date.sh)。最初的文档整理阶段只做文档编辑与静态核查；本次白名单定向修复已实际执行上述 synthetic 行为套件，但不构成真实介质、固件或部署验收。
 
 ### PR #60 第 1 轮：禁用管理动作的定向修复
 
