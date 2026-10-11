@@ -157,8 +157,13 @@ o = s:option(Value, "mount_point", translate("SD Card Mount Point"),
              translate("Temporary mount point for SD cards during backup"))
 o.default = "/mnt/sdcard"
 o.placeholder = "/mnt/sdcard"
-o.datatype = "directory"
 o.rmempty = false
+o.validate = function(self, value)
+    if valid_mount(value) then
+        return value
+    end
+    return nil, translate("SD card mount point must be an absolute path without unsafe segments")
+end
 
 local source_mount = o
 

@@ -167,6 +167,8 @@ Use this after backing up to NAS.
 | **Fixed Archive Offset** | 新库显式固定分钟偏移；既有 policy 不在线改变 | 新库无隐式值 |
 | **Debug Mode** | 调试日志开关 | 禁用 |
 
+来源挂载点（**SD Card Mount Point**）应填写安全的绝对路径。保存不要求该目录已存在或 SD 卡已插入。配置页不会创建目录或挂载 SD 卡。实际任务的来源目录创建与 SD 卡挂载仍受运行期守卫约束。
+
 #### 选择目标存储
 
 先通过既有 `fstab` 流程挂载目标存储。然后打开配置页并 reload。列表只显示当前可用的读写目标。每个选项显示设备、UUID、挂载点和文件系统类型。
