@@ -129,6 +129,7 @@ outdoor-backup/
 
 - mirror 保持默认；date 显式启用并与镜像根隔离。配置保存或 API 请求不改变正在运行的任务快照。
 - 日期自动任务只读来源；无配置卡应拒绝并要求独立 initialize。初始化不承担备份、alias 或 identity 发布。
+- 禁用时自动 add 仍成功忽略；manual 与 initialize 应非零拒绝，且不产生备份副作用。
 - 日期规划复用现有 owner/lease、目标 FD 9 和 runner/drain；不另造 PID 管理、内容 hash 缓存、复制器或自动消费者。
 - routes 只记录固定位置，不证明文件已完成。未知状态、历史路径冲突及需改变固定路由的旁车关联应失败关闭，不自动迁移或重分类。
 - 默认 quick 不构成逐字审计；manual checksum 只覆盖本次来源对应目标。旧 cleanup 只接受已准入的当前镜像根，磁盘日期状态不能靠切模式或 force 绕过。

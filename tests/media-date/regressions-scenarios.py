@@ -319,6 +319,65 @@ def cbi(base):
 
 
 case('F1 actual CBI intent partition (7 validator cases)', cbi)
-require(ran == 32, f'expected 32, got {ran}')
+
+
+def disabled_manager(base, action, comparison=None):
+    """Run delivered manager with disabled date config; require lazy, inert exit."""
+    scripts = base / 'scripts'; scripts.mkdir()
+    for script in S.iterdir():
+        if script.is_file():
+            (scripts / script.name).symlink_to(script)
+    conf = base / 'conf'; conf.mkdir()
+    source = base / 'source'; source.mkdir()
+    (source / 'clip.bin').write_bytes(b'unchanged-source')
+    target = base / 'target'; target.mkdir()
+    uci = base / 'uci'; uci.mkdir()
+    service = base / 'service'; service.mkdir(mode=0o700)
+    (service / 'state').write_text('stopped:1')
+    (conf / 'backup.conf').write_text(
+        f'ENABLED=0\nBACKUP_LAYOUT=date\nMOUNT_POINT={source}\n'
+        f'TARGET_MOUNT={target}\nTARGET_UUID=fixture-target\n'
+        f'BACKUP_ROOT={target}/SDMirrors\nLIBRARY_ROOT={target}/MediaLibrary\n'
+        'ARCHIVE_OFFSET_MINUTES=480\n'
+        "LED_GREEN=''\nLED_GREEN2=''\nLED_GREEN3=''\nLED_RED=''\n")
+    # File absence detects even same-value publications; trace detects transient
+    # mount/runner activity, which a final content comparison cannot establish.
+    before = {str(p.relative_to(base)): (p.lstat().st_mode, p.lstat().st_mtime_ns,
+              p.read_bytes() if p.is_file() and not p.is_symlink() else None)
+              for p in base.rglob('*')}
+    env = dict(os.environ, UCI_CONFIG_DIR=str(uci), OUTDOOR_BACKUP_SERVICE_DIR=str(service))
+    argv = ['/bin/sh', '-x', str(scripts / 'backup-manager.sh'), action,
+            'sda1', '/devices/platform/fixture/block/sda/sda1']
+    if comparison is not None:
+        argv.append(comparison)
+    result = subprocess.run(argv, env=env, capture_output=True, text=True)
+    expected = 0 if action == 'add' else 5
+    diagnostic = (f'outdoor-backup: backup disabled; ignoring add event for sda1'
+                  if action == 'add' else f'outdoor-backup: backup disabled; refusing {action} action')
+    require(result.returncode == expected, f'expected rc{expected}, got rc{result.returncode}: {result.stderr}')
+    require(diagnostic in result.stderr.splitlines(), result.stderr)
+    require('+ config_validate_layout' in result.stderr, 'real config validation not reached')
+    if action != 'add':
+        require('+ manager_admin_validate ' in result.stderr, 'real lexical validation not reached')
+    else:
+        for module in ['target-device.sh', 'manager-admin.sh', 'owner-event.sh']:
+            require(f'. {scripts}/{module}' not in result.stderr, 'disabled add lost lazy exit: ' + module)
+    for module in ['common.sh', 'service-state.sh', 'target.sh', 'source-identity.sh',
+                   'card-identity.sh', 'status.sh', 'transfer-process.sh', 'backup-transfer.sh']:
+        require(f'. {scripts}/{module}' not in result.stderr, 'unexpected lifecycle module: ' + module)
+    for command in ['mount', 'umount', 'rsync', 'setsid', 'transfer_process_run', 'owner_event_cancel']:
+        require(not any(line.startswith('+ ' + command + ' ') for line in result.stderr.splitlines()),
+                'unexpected source/transfer/owner activity: ' + command)
+    after = {str(p.relative_to(base)): (p.lstat().st_mode, p.lstat().st_mtime_ns,
+             p.read_bytes() if p.is_file() and not p.is_symlink() else None)
+             for p in base.rglob('*')}
+    require(after == before, 'card config/route/identity/alias/status/target or runtime state changed')
+
+
+case('A1 disabled date add remains successful lazy no-op', lambda b: disabled_manager(b, 'add'))
+case('A1 disabled date initialize refuses without side effects', lambda b: disabled_manager(b, 'initialize'))
+case('A1 disabled date manual quick refuses without side effects', lambda b: disabled_manager(b, 'manual', 'quick'))
+case('A1 disabled date manual checksum refuses without side effects', lambda b: disabled_manager(b, 'manual', 'checksum'))
+require(ran == 36, f'expected 36, got {ran}')
 print(f'ran={ran} passed={passed} failed={failed}; real helper/modules; temporary fixtures only', flush=True)
 sys.exit(1 if failed else 0)

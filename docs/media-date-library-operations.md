@@ -84,7 +84,7 @@ date 自动任务遇到未配置卡只报 `source_not_initialized`，不会替�
 
 ## 4. 执行本次手动任务
 
-应先按上一节核对来源设备和 DEVPATH。应确认服务准入和目标挂载有效。以下两条二选一，不连续执行两次当成一次任务。
+应先按上一节核对来源设备和 DEVPATH。应确认 `enabled=1`、服务准入和目标挂载有效。有效配置为 `enabled=0` 时，manual（quick 或 checksum）与 initialize 均返回 5，并明确诊断所拒绝的 action；manager 不进入备份生命周期，不创建卡配置、route、identity、alias、status 或目标目录，不打开来源 RW 窗口，也不启动 rsync 或传输 runner。自动 add 仍成功忽略。以下两条二选一，不连续执行两次当成一次任务。
 
 ```sh
 # 日常比较；mirror 和 date 均可用。

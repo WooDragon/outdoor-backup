@@ -176,6 +176,22 @@ LuCI 后续证据根为 `/private/tmp/outdoor-luci-bootstrap.fUbP24/`：`red/` �
 
 源码与 suite 导航为 [`tests/media-date/`](../tests/media-date/)、[`test-media-date-regressions.sh`](../test-media-date-regressions.sh)、[`test-media-date-manager.sh`](../test-media-date-manager.sh)、[`test-media-date-library.sh`](../test-media-date-library.sh)、[`test-media-date-lifecycle.sh`](../test-media-date-lifecycle.sh) 和 [`test-luci-media-date.sh`](../test-luci-media-date.sh)。本次文档任务只做文档编辑与静态核查，没有执行行为套件、网络、固件、部署或发布。
 
+### PR #60 第 1 轮：禁用管理动作的定向修复
+
+原 manager 把所有 `ENABLED=0` 动作都作为 add 成功忽略。本轮保留 disabled add 的成功快退与既有诊断。manual 与 initialize 在配置和词法参数校验后返回 5，并诊断所拒绝的 action。拒绝发生在 service admission、common、来源、目标与传输生命周期之前；配置 option 与 remove 快路径不变。
+
+`tests/media-date/regressions-scenarios.py` 新增四个实际 manager 场景：disabled date add、initialize、manual quick 与 manual checksum。场景使用私有临时配置、合法词法参数与 stopped 服务状态，加载交付 helper。文件缺席和隔离树快照验证没有卡配置、route、identity、alias、status 或目标创建；shell 执行轨迹验证没有来源 mount、rsync、传输 runner 或 owner 取消。
+
+本轮只执行 `test-media-date-regressions.sh`，使用固定 digest 的 native OpenWrt guest。证据根为 `/private/tmp/outdoor-disabled-admin.zlt841a3/`，各 suite 子目录保留 `suite.stdout`、`suite.stderr` 与 `suite.rc`。准备阶段阻断后，对失败日志中的精确 IPK URL 执行了一次有界 HTTPS HEAD（30 秒、无重试），返回 200。`head/` 保留响应头、HTTP 状态与 curl 退出码。确认前置当前可达后，仅新增一次 `green-2/` 定向执行；未改 feeds，未运行全量或网络循环。
+
+| 轮次 | 实际结果 | 证据子目录 |
+|---|---|---|
+| 修复前 RED | 36 outer：33 passed、3 failed；三个显式动作错误返回 0。嵌套 CBI 独立为 7 passed、0 failed。suite rc1。 | `red/` |
+| 修复后首次尝试 | guest 下载 `perlbase-tap` 失败，`perlbase-test` 未安装；准备阶段 blocked，0 个行为场景执行，suite rc1。不是 GREEN。 | `green/` |
+| 前置可达后的 GREEN | 36 outer：36 passed、0 failed；嵌套 CBI 独立为 7 passed、0 failed。新增四个 disabled 场景均实际通过，suite rc0。 | `green-2/` |
+
+外层场景与嵌套 CBI 不相加为总覆盖。上述定向结果不改变历史全量分类，也不关闭 G1–G6 或 Issue #59。guest 加载真实 helper/module 的 synthetic 证据不替代目标 provider IPK、SDK、真实介质或真机验收。
+
 ### 6.5 实际交付文件
 
 以下索引依据当前实际 tracked diff 与未跟踪源码核对。列入索引不表示所有差异都由本次生成。根目录 `README.md`、`CLAUDE.md` 及 `docs/` 下的设计文档和评审文档含有既有内容。生成日志与 `tags` 不列为功能源码。

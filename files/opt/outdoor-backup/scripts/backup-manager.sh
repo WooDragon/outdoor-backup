@@ -135,10 +135,19 @@ case "$ACTION" in cleanup|cleanup-preview)
 	;;
 esac
 
-# Preserve the legacy disabled-add fast exit before loading jq or event helpers.
+# Only automatic add is a successful disabled no-op. Explicit administrative
+# requests must report refusal before admission or any backup lifecycle effects.
 if [ "$ENABLED" = "0" ]; then
-	config_notice "backup disabled; ignoring add event for $DEVNAME"
-	exit 0
+	case "$ACTION" in
+		add)
+			config_notice "backup disabled; ignoring add event for $DEVNAME"
+			exit 0
+			;;
+		manual|initialize)
+			config_notice "backup disabled; refusing $ACTION action"
+			exit 5
+			;;
+	esac
 fi
 
 # Manual argv is the sole comparison snapshot; never persist it to UCI.
