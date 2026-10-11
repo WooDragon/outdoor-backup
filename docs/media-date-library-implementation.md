@@ -180,7 +180,7 @@ LuCI 后续证据根为 `/private/tmp/outdoor-luci-bootstrap.fUbP24/`：`red/` �
 
 - 未完成的 G1–G6 验收统一跟踪 [Issue #59](https://github.com/WooDragon/outdoor-backup/issues/59)，实现合并或固件编译成功不自动关闭验收。
 
-源码与 suite 导航为 [`tests/media-date/`](../tests/media-date/)、[`test-media-date-regressions.sh`](../test-media-date-regressions.sh)、[`test-media-date-manager.sh`](../test-media-date-manager.sh)、[`test-media-date-library.sh`](../test-media-date-library.sh)、[`test-media-date-lifecycle.sh`](../test-media-date-lifecycle.sh) 和 [`test-luci-media-date.sh`](../test-luci-media-date.sh)。本次文档任务只做文档编辑与静态核查，没有执行行为套件、网络、固件、部署或发布。
+源码与 suite 导航为 [`tests/media-date/`](../tests/media-date/)、[`test-media-date-regressions.sh`](../test-media-date-regressions.sh)、[`test-media-date-manager.sh`](../test-media-date-manager.sh)、[`test-media-date-library.sh`](../test-media-date-library.sh)、[`test-media-date-lifecycle.sh`](../test-media-date-lifecycle.sh) 和 [`test-luci-media-date.sh`](../test-luci-media-date.sh)。最初的文档整理阶段只做文档编辑与静态核查；本次白名单定向修复已实际执行上述 synthetic 行为套件，但不构成真实介质、固件或部署验收。
 
 ### PR #60 第 1 轮：禁用管理动作的定向修复
 
