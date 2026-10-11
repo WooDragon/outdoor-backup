@@ -5,6 +5,10 @@
 # Target identity is intentionally unconfigured; set verified values explicitly:
 # uci set outdoor-backup.config.target_mount='/mnt/ssd'
 # uci set outdoor-backup.config.target_uuid='A1B2-C3D4'
+# backup_layout: mirror (default) or date. Date lifecycle currently fails closed.
+# library_root defaults dynamically to <target_mount>/MediaLibrary.
+# archive_offset_minutes must be an explicit integer -840..840 at initialization.
+# These intentions do not change backup_root (the persistent mirror root).
 # uci commit outdoor-backup
 
 config outdoor-backup 'config'

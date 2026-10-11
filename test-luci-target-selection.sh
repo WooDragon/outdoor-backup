@@ -45,7 +45,8 @@ local http = require "luci.http"
 
 local cases, assertions, failed = 0, 0, 0
 local forms, helper_outputs, helper_commands = {}, {}, {}
-local original_popen = io.popen
+local fixture_module = assert(loadfile("/src/tests/luci-target-fixture.lua"))()
+local fixture
 
 local function fail(message)
     io.stderr:write("FAIL: " .. message .. "\n")
@@ -93,9 +94,8 @@ io.popen = function(command, mode)
     }
 end
 
-http.formvalue = function(key)
-    return forms[key]
-end
+fixture = fixture_module.install(luasrc, io.popen, function() return forms end)
+fixture_module.verify(fixture)
 http.formvaluetable = function()
     return {}
 end
@@ -144,6 +144,8 @@ local function load_map(label, stored, page_output, parse_output)
     current_confdir, current_savedir = root .. "/conf", root .. "/save"
     write_config(current_confdir, stored)
     forms = {}
+    fixture:configure(stored)
+    fixture:authenticate()
     queue(helper(page_output, true), helper(parse_output or page_output, true))
     local map = assert(dofile(model), "delivered model did not return a Map")
     return map, root
@@ -170,8 +172,10 @@ local function render_target_template(contents, selector)
     return table.concat(chunks)
 end
 
-local function submit(map, values)
-    forms = { ["cbi.submit"] = "1" }
+local function submit(map, values, omit_token)
+    forms = { ["cbi.submit"] = "1", token = not omit_token and "target-fixture-token" or nil,
+        [form_value("backup_layout")] = "mirror", [form_value("library_root")] = "",
+        [form_value("archive_offset_minutes")] = "" }
     for name, value in pairs(values) do
         if name == "enabled" or name == "debug" then
             forms["cbi.cbe.outdoor-backup.config." .. name] = "1"
@@ -440,9 +444,26 @@ do
         "S16 data-roots attribute differs from LuCI pcdata serialization")
 end
 
-check(cases == 16, "all required cases executed")
-if assertions ~= 125 then
-    fail(string.format("all required assertions executed (expected=125, actual=%d)", assertions))
+for index, boundary in ipairs({
+    { label = "read-only session", writable = false, method = "POST", status = 403 },
+    { label = "GET request", writable = true, method = "GET", status = 405 },
+    { label = "missing CSRF token", writable = true, method = "POST", status = 403, omit_token = true }
+}) do
+    local id = "S" .. tostring(16 + index)
+    begin(id, boundary.label .. " cannot save through real Map.parse")
+    local map, root = load_map("auth-" .. index, base_values(), json(one_target, "/mnt/old-target", "/mnt/old-target/CustomMirrors"))
+    fixture.writable, fixture.method = boundary.writable, boundary.method
+    submit(map, { _target_selector = "manual", enabled = "1", target_mount = "/mnt/attacker",
+        target_uuid = "ATTACKER", backup_root = "/mnt/attacker/SDMirrors",
+        mount_point = "/mnt/sdcard", debug = "1" }, boundary.omit_token)
+    check(not map.save and fixture.status == boundary.status, id .. " incorrect write rejection")
+    check(reloaded(root, "target_uuid") == "OLD-UUID", id .. " unauthorized UUID saved")
+    check(saved_config(root) == "", id .. " unauthorized form wrote savedir")
+end
+
+check(cases == 19, "all required cases executed")
+if assertions ~= 137 then
+    fail(string.format("all required assertions executed (expected=137, actual=%d)", assertions))
 end
 if failed ~= 0 then
     print(string.format("cases=%d assertions=%d failed=%d", cases, assertions, failed))

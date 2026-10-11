@@ -1,5 +1,11 @@
 # 组件详细实现
 
+## 现行媒体日期库入口
+
+**前置阅读**：修改 date/mirror 配置、manual/initialize 动作、日期规划与路由发布前，应先读取 [media-date-library-implementation.md](media-date-library-implementation.md)。该文档区分现行本地接口与设计规格，并记录 G1–G6 的证据边界。执行日期配置或旧 cleanup 前，应先读取 [media-date-library-operations.md](media-date-library-operations.md)。HTTP 表单、权限与 task 字段以 [WEBUI_DEVELOPER_GUIDE.md](WEBUI_DEVELOPER_GUIDE.md) 为权威说明。
+
+日期主体本地实现与定向验证已闭合，有限范围复核 APPROVED。修后未重跑全量；不能发布。证据应先读取 [implementation 验证节](media-date-library-implementation.md#6-验收证据的边界)。本文件下方保留既有组件记录与历史示例；首次配置的 RW 窗口仅属于 mirror 兼容行为或显式 initialize，date 自动任务缺配置时只读拒绝。cleanup 现行协议由 manager 后端统一准入，不再授权任意目录；下方旧 fixture/清理描述不扩展这一边界。
+
 ## 1. 热插拔触发脚本
 
 运行时实现以 [`90-outdoor-backup`](../files/etc/hotplug.d/block/90-outdoor-backup) 为单一事实源。`add` 仅处理分区事件。它将每个 `ACTION=add` 和 `DEVTYPE=partition` 事件作为安全来源候选。它不读取 reader 配置，也不按 VID:PID、`DEVPATH`、model、size 或媒体扩展名分类。运行态的 `add` 在 settle 前捕获 generation，并通过环境变量传给 manager。停止态的 `add` 不排队 manager。`remove` 绕过 service 和 configuration gate，并传入原始事件参数 `DEVNAME`、`DEVPATH` 和 `SEQNUM`。
@@ -72,7 +78,7 @@ LuCI 发现流程只在固定 helper 子进程中关闭继承的 FD 9。父进�
 
 `status.sh` 依赖 `jq`。它把 `current_backup`、经活 FD 获取的 `storage` 和 `history` 原子写入唯一的 `status.json` 快照。它不维护 `history.jsonl`。history 以 UUID 去重，最新终态在前，最多 20 条。新任务先发布 `live_progress={basis:"file_list_entries",entries_done:null,entries_total:null,sampled_at:null,files_known:false}`，以明确未知阶段。旧 schema `version: "1.0"` 与 15 参数 `write_status` 保持兼容；第 16 参数可选写入该 `live_progress` 对象。为兼容本批旧四字段对象，缺少 `files_known` 时规范化为 `false`。`sampled_at` 只证明 bytes 和 speed 已采样。LuCI 只有在 `files_known=true` 时才显示文件数，因此真实 `xfr#0` 显示 `0`，未知文件数显示 `Waiting for file count`。只有 `to-chk` 的完整采样才填充条目字段并计算运行百分比，且该百分比最大为 99。尾窗口没有新 suffix 时，管理器保留此前已知的条目和文件数。畸形记录同样不覆盖此前已知的值。增量 rsync 即使以 11% 结束也不表示整体完成率。LuCI 将条目标签显示为 `Last observed file-list entries checked (including directories)`，不以未知值计算 ETA，并明确增量任务 ETA 不可用。状态观察不证明数据完整性。
 
-成功终态的文件数和字节数来自 `rsync --stats`。管理器仅在 rsync、cleanup `sync`、汇总写入和最后的锚点健康及身份复验均成功后才写 `completed`。初始、采样或终态 status 写入失败均不能产生 `completed`。真实 rsync exit 与取消协议不因观测路径改变。真机 LuCI E2E 和本批新最终 CI 均未执行。
+成功终态的文件数和字节数来自 `rsync --stats`。管理器仅在 rsync、cleanup `sync`、汇总写入和最后的锚点健康及身份复验均成功后才写 `completed`。初始、采样或终态 status 写入失败均不能产生 `completed`。真实 rsync exit 与取消协议不因观测路径改变。真机 LuCI E2E 尚未执行。已有全量与后续定向结果应先读取 [implementation 验证节](media-date-library-implementation.md#6-验收证据的边界)；修后没有重新全量验收。
 
 持锁 `cleanup` 先清理传输临时文件和本进程拥有的来源挂载。它随后执行 `sync`。cleanup `sync` 失败时，管理器将此前成功的 transfer 转为 `rsync`/exit 1。cleanup `sync` 失败时，管理器保留既有业务失败码。cleanup `sync` 成功后，管理器才可写 `completed`。finalization 判定失败后，管理器在关闭目标 FD 前写入 failed 状态。管理器随后写 LED 终态和日志。管理器最后释放锁。`ERROR_TYPE` 的现有调用映射为 `device_unknown`、`lock_timeout`、`no_space`、`card_config`（红灯 4 闪，SD 卡配置被策略拒绝，例如既有 `REPLICA` 卡）、`rsync` 和 `verify_failed`。本文档不把未覆盖的 LED 类型表述为端到端验证。
 
@@ -204,6 +210,9 @@ operator 拔卡（`led_state_cancelled_operator`）只熄灭三盏绿灯、不�
 （G3）混淆。管理器负责在状态变化时调用这些原语，公共函数库不自行启动后台
 任务。
 
+以下保留历史 helper 示例，不作为现行生产接口的权威版本。
+
+```bash
 # Get filesystem type of device
 get_fs_type() {
     local device="$1"

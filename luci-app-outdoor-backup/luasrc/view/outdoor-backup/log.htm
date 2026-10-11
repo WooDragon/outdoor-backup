@@ -91,9 +91,9 @@
             &#x1F504; <%:Refresh%>
         </button>
 
-        <a href="/opt/outdoor-backup/log/backup.log" download class="cbi-button cbi-button-save">
-            &#x2B07; <%:Download Full Log%>
-        </a>
+        <button class="cbi-button cbi-button-save" onclick="downloadLog()">
+            <%:Download Displayed Log%>
+        </button>
 
         <div class="log-filter">
             <label>
@@ -116,7 +116,7 @@
 
     <!-- Log Display -->
     <div id="log-container">
-        <pre id="log-content"><%= log_content %></pre>
+        <pre id="log-content"><%=pcdata(log_content)%></pre>
     </div>
 
     <div style="margin-top: 10px; color: #666; font-size: 0.9em;">
@@ -131,7 +131,17 @@
 <script type="text/javascript">
     // Global state
     var autoRefreshInterval = null;
-    var originalLogContent = '<%= log_content %>';
+    var originalLogContent = document.getElementById('log-content').textContent;
+
+    /** Download only the already authorized displayed text; no raw file URL. */
+    function downloadLog() {
+        var link = document.createElement('a');
+        var objectUrl = URL.createObjectURL(new Blob([document.getElementById('log-content').textContent], {type: 'text/plain'}));
+        link.href = objectUrl;
+        link.download = 'outdoor-backup.log';
+        link.click();
+        setTimeout(function() { URL.revokeObjectURL(objectUrl); }, 1000);
+    }
 
     /**
      * Refresh the entire page to reload log content
@@ -166,7 +176,7 @@
         var logContent = document.getElementById('log-content');
 
         // Reset to original content
-        logContent.innerHTML = originalLogContent;
+        logContent.textContent = originalLogContent;
 
         if (level === 'all') {
             // Re-apply highlighting
@@ -198,18 +208,16 @@
         var logContent = document.getElementById('log-content');
         var text = logContent.textContent;
 
-        // Replace log level patterns with colored spans
-        var html = text
-            // ERROR - red + bold
-            .replace(/(\[ERROR\][^\n]*)/g, '<span class="log-error">$1</span>')
-            // WARN - yellow
-            .replace(/(\[WARN\][^\n]*)/g, '<span class="log-warn">$1</span>')
-            // INFO - blue
-            .replace(/(\[INFO\][^\n]*)/g, '<span class="log-info">$1</span>')
-            // DEBUG - gray
-            .replace(/(\[DEBUG\][^\n]*)/g, '<span class="log-debug">$1</span>');
-
-        logContent.innerHTML = html;
+        // Fixed classes decorate text nodes, never reparse paths or aliases as HTML.
+        logContent.textContent = '';
+        var lines = text.split('\n');
+        for (var i = 0; i < lines.length; i++) {
+            var span = document.createElement('span');
+            var level = lines[i].match(/\[(ERROR|WARN|INFO|DEBUG)\]/);
+            if (level) span.className = 'log-' + level[1].toLowerCase();
+            span.textContent = lines[i] + (i < lines.length - 1 ? '\n' : '');
+            logContent.appendChild(span);
+        }
     }
 
     /**

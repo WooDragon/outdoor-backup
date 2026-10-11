@@ -114,7 +114,7 @@ luci-app-outdoor-backup/
 │       ├── luci/menu.d/
 │       │   └── luci-app-outdoor-backup.json  # 菜单入口（受版本跟踪）
 │       └── rpcd/acl.d/
-│           └── outdoor-backup.json      # RPCD 权限（待添加）
+│           └── outdoor-backup.json      # 已交付 RPCD read/write 权限
 └── po/                                   # 国际化（待添加）
     ├── zh_Hans/outdoor-backup.po        # 简体中文
     └── templates/outdoor-backup.pot     # 翻译模板
@@ -153,398 +153,52 @@ manual 默认值为 `Manual / keep current`。它保留 `target_mount`、`target
 
 ## API 接口文档
 
-### 1. GET /api/status
+本节是现行 HTTP 接口的权威说明，面向 Lua LuCI 开发者。源码为 [`outdoor-backup.lua`](../luci-app-outdoor-backup/luasrc/controller/outdoor-backup.lua)、[`security.lua`](../luci-app-outdoor-backup/luasrc/model/outdoor-backup/security.lua)、[`media.lua`](../luci-app-outdoor-backup/luasrc/model/outdoor-backup/media.lua) 和 [`status.htm`](../luci-app-outdoor-backup/luasrc/view/outdoor-backup/status.htm)。修改接口前应先读取这些文件，不用下方历史教学示例推导新动作。
 
-**功能**：获取当前备份状态和历史记录
+所有 `/api/...` 路径相对于 `/cgi-bin/luci/admin/services/outdoor-backup`。handler 独立校验 session，而非只依赖菜单 ACL。读取需要 session 的 `uci/outdoor-backup/read`，写入需要 `uci/outdoor-backup/write`。无有效会话或权限时返回 403。mutation 仅 POST；方法错误返回 405，响应包含 `Allow: POST`。POST 表单 token 应与当前 `dispatcher.context.authtoken` 精确匹配，否则 403。
 
-**请求**：
-```http
-GET /admin/services/outdoor-backup/api/status HTTP/1.1
-```
+| 相对端点 | 方法 / 表单字段 | 结果与边界 |
+|---|---|---|
+| `/api/status` | GET | 返回现行 status.json；缺文件 404。不能用旧 snapshot 授权写操作。 |
+| `/api/aliases` | GET | 返回 alias 对象；缺文件返回 version 1.0 空映射。 |
+| `/api/alias/update` | POST：`token,uuid,alias,notes` | UUID 必填；alias/notes 可空，分别最多 256/1024 字节。参数错误 400，写入失败 500。成功 `{success:true}`。 |
+| `/api/alias/delete` | POST：`token,uuid` | 不是 GET/DELETE；缺失/非法 UUID 400，不存在 404，写入失败 500。只删显示映射，不删媒体或来源 identity。 |
+| `/api/cleanup/preview` | GET；不接收任意 root | 固定 adapter 读取有效配置，调用 manager cleanup-preview。读取权限只允许预览，不授权删除。 |
+| `/api/cleanup/execute` | POST：`token,confirm_text` | confirm_text 应精确为“清空备份数据”。adapter 使用当前有效镜像根及 keep=1；浏览器不能提交 shell、force、源设备或任意根。 |
 
-**响应**（成功）：
-```json
-{
-  "version": "1.0",
-  "last_update": 1728825600,
-  "storage": {
-    "root": "/mnt/ssd/SDMirrors",
-    "total_bytes": 512000000000,
-    "used_bytes": 128000000000,
-    "free_bytes": 384000000000
-  },
-  "current_backup": {
-    "active": true,
-    "uuid": "550e8400-e29b-41d4-a716-446655440000",
-    "name": "Canon_5D4_Card1",
-    "device": "sda1",
-    "started_at": 1728825000,
-    "progress_percent": 45,
-    "files_total": 1200,
-    "files_done": 540,
-    "bytes_total": 52428800000,
-    "bytes_done": 23592960000,
-    "speed_bytes_per_sec": 157286400
-  },
-  "history": [
-    {
-      "uuid": "550e8400-e29b-41d4-a716-446655440000",
-      "name": "Canon_5D4_Card1",
-      "last_backup_at": 1728825000,
-      "status": "completed",
-      "files_count": 1200,
-      "bytes_total": 52428800000,
-      "backup_path": "/mnt/ssd/SDMirrors/550e8400-...",
-      "error_message": null
-    }
-  ]
-}
-```
+LuCI XHR.post 的第二参数是表单对象，不能传 JSON.stringify 字符串。handler 使用 `http.formvalue`；mutation 的 Content-Type 为 `application/x-www-form-urlencoded`。应用前端从授权页面生成的 hidden token 字段取值。读取端点也不接受无权限绕过。
 
-**响应**（失败）：
-```json
-{
-  "error": "Status file not found"
-}
-```
+清理的 preview/execute 每次独立取得 manager service lease、owner 和 target-only FD 9。manager 在删除前检查精确当前镜像根、全部祖先及全部子树。preview 的 `version:1,layout:"mirror",backup_root,target_uuid,cards,total_size_bytes,total_cards` 经过 adapter 的 exact schema 校验；每个 card 含 `uuid,display_name,size_bytes,path`。`size_bytes` 来自 du 估算，不是删除后的释放字节承诺。preview 结束后释放 owner，execute 重新检查，不将旧 preview 当能力凭证。
 
-**HTTP 状态码**：
-- `200 OK`：成功
-- `404 Not Found`：状态文件不存在
+清理失败返回 `{error,exit_code}`，代码 1/2 映射 HTTP 400，3 映射 500，4/5/130/143 映射 409。成功 execute 返回 `{success:true}`。date 当前布局、磁盘日期状态、date 根/bucket 和切回 mirror 后的受保护状态均由后端拒绝。CLI force 只确认意图，不跳过检查。删除集、保留项及 CLI 形状应先读取 [media-date-library-operations.md](media-date-library-operations.md#6-镜像清理的现行入口)。
 
-**实现位置**：`outdoor-backup.lua:94-108`
+没有 `/api/trigger`、WebUI initialize、手动 checksum endpoint、取消按钮或后台队列。manual/initialize 是 root CLI；修改这层边界属于独立功能，不把旧教学草图当现成接口。
 
----
+### 日期任务与状态合同
 
-### 2. GET /api/aliases
+status.json 保持 `version:"1.0"` 与既有 `current_backup/storage/history`。`status.sh` 仍是唯一 writer，按原子快照发布。旧 15 参数 write_status 兼容；第 16 参数为 live_progress，第 17 参数为可选 task。日期 task 使用下列 exact schema：
 
-**功能**：获取所有 UUID 别名映射
+| 字段 | 形状 / 含义 |
+|---|---|
+| `version` | 数字 1，不是外层 version 字符串。 |
+| `layout` | `mirror` 或 `date`；当前 date manager 写 date。 |
+| `phase` | `planning`、`transferring`、`finalizing`。 |
+| `comparison_mode` | `quick` 或 `checksum`；只代表本次任务。 |
+| `archive` | `files_total,routes_total,excluded_total,undated_total`；非负计数或 null。routes_total 可含历史位置，不是复制完成数。 |
+| `warnings` | 数组；每项为固定 `code,count`，无原始 metadata 或路径 payload。 |
+| `replaced` | `files_count,path`；计数或路径可 null，表示未知。路径为稳定显示路径，不暴露 FD 内部路径。 |
 
-**请求**：
-```http
-GET /admin/services/outdoor-backup/api/aliases HTTP/1.1
-```
+planning/finalizing 不显示虚构进度或 ETA。transferring 从既有同步 runner wait loop 采样；live_progress 的 entries 包含目录，files_known 决定普通文件数是否可显示。运行百分比最高为 99，completed 只在 manager 最终门通过后发布。history 保持 UUID 唯一、最多 20 个最新终态；task 随终态保留。所有 history/task 文本字段应转义，不能把路径、别名或警告插入未转义 HTML。
 
-**响应**（成功）：
-```json
-{
-  "version": "1.0",
-  "aliases": {
-    "550e8400-e29b-41d4-a716-446655440000": {
-      "alias": "Canon_5D4_Card1",
-      "notes": "佳能相机主卡",
-      "created_at": 1728825600,
-      "last_seen": 1728900000
-    },
-    "7c9e6679-7425-40de-944b-e07fc1f90ae7": {
-      "alias": "Sony A7R5 Backup",
-      "notes": "",
-      "created_at": 1728800000,
-      "last_seen": 1728900000
-    }
-  }
-}
-```
+默认 quick 可能跳过同 size/mtime 的内容变化。mtime-only 可产生同内容 retained old file。checksum 只核验当前 source 对应 target，不审计历史全库；配置/API snapshot 不改变正在运行的任务。
 
-**响应**（文件不存在）：
-```json
-{
-  "version": "1.0",
-  "aliases": {}
-}
-```
+### 日期 CBI 与日志边界
 
-**HTTP 状态码**：
-- `200 OK`：始终成功（空别名表也是合法响应）
+[`config.lua`](../luci-app-outdoor-backup/luasrc/model/cbi/outdoor-backup/config.lua) 新增 backup_layout、library_root 和 archive_offset_minutes。date 保存时加载真实 helper 能力/schema，检查目标直接子根与隔离，读取既有 policy 并拒绝在线 offset 改变。新库无显式 offset 时拒绝。mirror 无 library_root 时保持空 intent。CBI Map.parse 的 submit 同样执行 write/session/POST/token 检查。运行时目标/来源守卫仍是最终准入权威。
 
-**实现位置**：`outdoor-backup.lua:115-129`
+[`log.htm`](../luci-app-outdoor-backup/luasrc/view/outdoor-backup/log.htm) 的 Download Full Log 标签保留旧名，但当前行为仅从已授权显示的 textContent 创建 text/plain Blob。没有原始 backup.log URL 或未经权限校验的全文件下载接口。日志页面的读取 handler 校验 read 权限，服务端 pcdata 和前端文本转义保留。
 
----
-
-### 3. POST /api/alias/update
-
-**功能**：创建或更新 UUID 别名
-
-**请求**：
-```http
-POST /admin/services/outdoor-backup/api/alias/update HTTP/1.1
-Content-Type: application/json
-
-{
-  "uuid": "550e8400-e29b-41d4-a716-446655440000",
-  "alias": "Canon_5D4_Card1",
-  "notes": "佳能相机主卡，128GB"
-}
-```
-
-**请求字段**：
-
-| 字段 | 类型 | 必需 | 说明 |
-|------|------|------|------|
-| `uuid` | string | ✅ | 完整 UUID（36 字符，带连字符） |
-| `alias` | string | ❌ | 别名（可为空） |
-| `notes` | string | ❌ | 备注（可为空） |
-
-**响应**（成功）：
-```json
-{
-  "success": true
-}
-```
-
-**响应**（失败）：
-```json
-{
-  "error": "Missing or empty uuid field"
-}
-```
-
-或
-
-```json
-{
-  "error": "Invalid UUID format"
-}
-```
-
-或
-
-```json
-{
-  "error": "Failed to write alias file"
-}
-```
-
-**HTTP 状态码**：
-- `200 OK`：成功
-- `400 Bad Request`：参数错误
-- `500 Internal Server Error`：写入失败
-
-**UUID 格式验证**：
-```lua
--- 正则表达式
-^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$
-```
-
-**实现位置**：`outdoor-backup.lua:140-225`
-
-**原子写入机制**：
-```lua
--- 1. 写入临时文件
-fs.writefile(temp_file, new_content)
-
--- 2. 原子重命名
-fs.rename(temp_file, alias_file)
-
--- 3. 失败时清理
-fs.unlink(temp_file)
-```
-
----
-
-### 4. DELETE /api/alias/delete
-
-**功能**：删除 UUID 别名映射（不删除备份数据）
-
-**请求**：
-```http
-DELETE /admin/services/outdoor-backup/api/alias/delete?uuid=550e8400-e29b-41d4-a716-446655440000 HTTP/1.1
-```
-
-**请求参数**：
-
-| 参数 | 类型 | 必需 | 说明 |
-|------|------|------|------|
-| `uuid` | string | ✅ | 完整 UUID |
-
-**响应**（成功）：
-```json
-{
-  "success": true
-}
-```
-
-**响应**（失败）：
-```json
-{
-  "error": "Missing uuid parameter"
-}
-```
-
-或
-
-```json
-{
-  "error": "Alias not found"
-}
-```
-
-或
-
-```json
-{
-  "error": "Failed to write alias file"
-}
-```
-
-**HTTP 状态码**：
-- `200 OK`：成功
-- `400 Bad Request`：参数错误
-- `404 Not Found`：别名不存在
-- `500 Internal Server Error`：写入失败
-
-**实现位置**：`outdoor-backup.lua:232-291`
-
-**重要说明**：
-- 删除别名**不会**删除备份数据
-- 备份数据路径：`/mnt/ssd/SDMirrors/{uuid}/`
-- 如需删除备份数据，使用批量清理功能
-
----
-
-### 5. GET /api/cleanup/preview
-
-**功能**：预览批量清理（列出所有卡片和大小）
-
-**请求**：
-```http
-GET /admin/services/outdoor-backup/api/cleanup/preview HTTP/1.1
-```
-
-**响应**（成功）：
-```json
-{
-  "cards": [
-    {
-      "uuid": "550e8400-e29b-41d4-a716-446655440000",
-      "display_name": "Canon_5D4_Card1",
-      "size_bytes": 52428800000,
-      "path": "/mnt/ssd/SDMirrors/550e8400-..."
-    },
-    {
-      "uuid": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
-      "display_name": "Sony A7R5 Backup",
-      "size_bytes": 34359738368,
-      "path": "/mnt/ssd/SDMirrors/7c9e6679-..."
-    }
-  ],
-  "total_size_bytes": 86788538368,
-  "total_cards": 2,
-  "backup_root": "/mnt/ssd/SDMirrors"
-}
-```
-
-**响应**（失败）：
-```json
-{
-  "error": "Backup root directory not found"
-}
-```
-
-**HTTP 状态码**：
-- `200 OK`：成功
-- `404 Not Found`：备份根目录不存在
-
-**实现位置**：`outdoor-backup.lua:303-386`
-
-**大小计算方法**：
-```lua
--- 递归计算目录大小
-local function calculate_dir_size(path)
-    local total = 0
-    for entry in fs.dir(path) do
-        if entry ~= "." and entry ~= ".." then
-            total = total + calculate_dir_size(path .. "/" .. entry)
-        end
-    end
-    return total
-end
-```
-
----
-
-### 6. POST /api/cleanup/execute
-
-**功能**：执行批量清理（需要确认文字）
-
-**请求**：
-```http
-POST /admin/services/outdoor-backup/api/cleanup/execute HTTP/1.1
-Content-Type: application/json
-
-{
-  "confirm_text": "清空备份数据"
-}
-```
-
-**请求字段**：
-
-| 字段 | 类型 | 必需 | 说明 |
-|------|------|------|------|
-| `confirm_text` | string | ✅ | 必须完全匹配 "清空备份数据" |
-
-**响应**（成功）：
-```json
-{
-  "success": true,
-  "message": "Backup data cleaned successfully"
-}
-```
-
-**响应**（失败）：
-```json
-{
-  "error": "Invalid confirmation text"
-}
-```
-
-或
-
-```json
-{
-  "error": "Backup root directory not found"
-}
-```
-
-或
-
-```json
-{
-  "error": "Cleanup script not found or not executable"
-}
-```
-
-或
-
-```json
-{
-  "success": false,
-  "error": "Cleanup failed",
-  "exit_code": 1
-}
-```
-
-**HTTP 状态码**：
-- `200 OK`：成功
-- `400 Bad Request`：参数错误
-- `404 Not Found`：备份根目录不存在
-- `500 Internal Server Error`：执行失败
-
-**实现位置**：`outdoor-backup.lua:395-469`
-
-**执行命令**：
-```lua
-local cmd = string.format("%s --force %s 1 2>&1",
-                          cleanup_script,
-                          util.shellquote(backup_root))
-```
-
-**参数说明**：
-- `--force`：跳过安全检查（WebUI 已完成确认）
-- `backup_root`：备份根目录路径（shell 转义）
-- `1`：保留别名标志（1 = 保留，0 = 删除）
-
-**清理脚本**：`/opt/outdoor-backup/scripts/cleanup-all.sh`
+主体本地实现与定向验证已闭合，有限范围复核 APPROVED；修后未重跑全量，不能发布。隔离 guest 使用 root 启动的测试专属 ubusd/rpcd，并只清理自己拥有的 PID 和 socket。CI 准备真实 luci-compat、ubusd、ubus、rpcd 和 libuci-lua；权限验证使用真实 RPC session/access，不 mock 授权。已有 real RPC/CBI/XHR/DOM 场景不等于 browser/full CGI auth 或真机端到端。证据与 G1–G6 应先读取 [implementation 验证节](media-date-library-implementation.md#6-验收证据的边界)；本次范围不验收 PhotoPrism 自动 index。
 
 ---
 
@@ -554,7 +208,7 @@ local cmd = string.format("%s --force %s 1 2>&1",
 
 **路径**：`/opt/outdoor-backup/var/status.json`
 
-**更新频率**：backup-manager.sh 每 60 秒更新一次
+**更新频率**：manager 在阶段转换和同步 wait loop 采样时发布；旧示意对象未列出可选 live_progress/task，应先读取上方现行状态合同。
 
 **字段说明**：
 
@@ -653,99 +307,9 @@ local cmd = string.format("%s --force %s 1 2>&1",
 
 ### 如何添加新功能
 
-#### 场景：添加 "手动触发备份" 按钮
+#### 现行边界：root CLI 与 WebUI 分离
 
-**步骤**：
-
-1. **修改 Controller（outdoor-backup.lua）**
-
-```lua
--- 添加 API 路由
-entry({"admin", "services", "outdoor-backup", "api", "trigger"},
-      call("api_trigger_backup"))
-
--- 实现 API 函数
-function api_trigger_backup()
-    local uuid = luci.http.formvalue("uuid")
-
-    -- 验证参数
-    if not uuid then
-        luci.http.status(400)
-        return luci.http.write_json({error = "Missing uuid"})
-    end
-
-    -- 调用 Shell 脚本
-    local cmd = string.format("/opt/outdoor-backup/scripts/manual-backup.sh '%s'", uuid)
-    local result = luci.sys.call(cmd)
-
-    -- 返回结果
-    luci.http.prepare_content("application/json")
-    if result == 0 then
-        luci.http.write_json({success = true})
-    else
-        luci.http.status(500)
-        luci.http.write_json({error = "Backup failed", exit_code = result})
-    end
-end
-```
-
-2. **修改 View Template（status.htm）**
-
-```html
-<!-- 添加按钮 -->
-<button class="btn btn-primary" onclick="triggerBackup('550e8400-...')">
-    Manual Backup
-</button>
-
-<!-- 添加 JavaScript 函数 -->
-<script>
-function triggerBackup(uuid) {
-    if (!confirm('Trigger backup for UUID: ' + uuid + '?')) return;
-
-    XHR.get('<%=url("admin/services/outdoor-backup/api/trigger")%>',
-        {uuid: uuid},
-        function(x, result) {
-            if (result && result.success) {
-                alert('Backup triggered successfully');
-                refreshData();
-            } else {
-                alert('Backup failed: ' + (result ? result.error : 'Unknown error'));
-            }
-        }
-    );
-}
-</script>
-```
-
-3. **创建 Shell 脚本（manual-backup.sh）**
-
-```bash
-#!/bin/sh
-# Manual backup trigger script
-
-UUID="$1"
-
-if [ -z "$UUID" ]; then
-    echo "Usage: $0 <uuid>" >&2
-    exit 1
-fi
-
-# 调用 backup-manager.sh
-/opt/outdoor-backup/scripts/backup-manager.sh manual "$UUID"
-```
-
-4. **测试**
-
-```bash
-# 编译包
-make package/luci-app-outdoor-backup/compile V=s
-
-# 安装测试
-scp bin/packages/.../luci-app-outdoor-backup_*.ipk root@router:/tmp/
-ssh root@router "opkg install --force-reinstall /tmp/luci-app-outdoor-backup_*.ipk"
-
-# 访问 WebUI 测试按钮
-```
+旧“添加手动触发”草图使用 UUID-only manual、GET mutation 和任意拼接命令，与现行 manager/HTTP 合同不符，不作为开发或设备操作示例。当前 WebUI 仅监控、配置、alias 和受管镜像 cleanup。需要手动任务时，应先读取 [root CLI 操作](media-date-library-operations.md#4-执行本次手动任务)。新增 WebUI 动作需独立定义权限、来源身份、任务快照和生命周期，不复用旧草图。
 
 ---
 
@@ -951,7 +515,7 @@ function testAliasUpdate() {
     };
 
     XHR.post('/cgi-bin/luci/admin/services/outdoor-backup/api/alias/update',
-        JSON.stringify(testData),
+        {token: csrfToken(), uuid: testData.uuid, alias: testData.alias, notes: testData.notes},
         function(x, result) {
             console.log('Alias update result:', result);
             if (result && result.success) {
@@ -1083,20 +647,7 @@ XHR.get('/cgi-bin/luci/admin/services/outdoor-backup/api/status', null,
 
 #### 3. API 调试（curl）
 
-```bash
-# 测试状态 API
-curl -s "http://192.168.1.1/cgi-bin/luci/admin/services/outdoor-backup/api/status" | jq
-
-# 测试别名更新（需要认证）
-curl -s -b cookies.txt -X POST \
-    -H "Content-Type: application/json" \
-    -d '{"uuid":"550e8400-...","alias":"Test"}' \
-    "http://192.168.1.1/cgi-bin/luci/admin/services/outdoor-backup/api/alias/update"
-
-# 获取认证 Cookie
-curl -c cookies.txt -d "luci_username=root&luci_password=password" \
-    "http://192.168.1.1/cgi-bin/luci"
-```
+调用前应从实际 LuCI 登录流程取得授权 session 与当前 token。读接口仍需要 read 权限。写接口只提交表单字段及 token；旧 JSON 请求体、硬编码密码与未认证 curl 不作为现行示例。字段及状态码以本文件 API 合同为准。
 
 ---
 
@@ -1177,7 +728,7 @@ fs.unlink(temp_file)
 | **第二层** | 输入确认文字 | 必须手动输入 "清空备份数据" |
 | **第三层** | 复选框确认 | 必须勾选 "我已备份到 NAS" |
 | **第四层** | 按钮禁用 | 前两步未完成时按钮灰色不可点击 |
-| **第五层** | Shell 脚本安全检查 | cleanup-all.sh 检查 `--force` 标志 |
+| **第五层** | manager 后端准入 | 共享租约/owner、target-only FD 9、exact root 与全树预检；force 不是绕过 |
 
 **代码实现**（status.htm:641-651）：
 
@@ -1249,9 +800,9 @@ function validateCleanupConfirm() {
    - 添加 `po/zh_Hans/outdoor-backup.po`（简体中文）
    - 添加 `po/en/outdoor-backup.po`（英语）
 
-2. **RPCD 权限控制**
-   - 创建 `root/usr/share/rpcd/acl.d/outdoor-backup.json`
-   - 细化权限（只读 vs 读写）
+2. **权限回归**
+   - 已交付 ACL 与 handler 级 read/write 检查；维护时保持 session.access 的真实 UCI shape。
+   - 浏览器/CGI 端到端尚未验收。
 
 3. **错误日志下载**
    - 添加 "下载错误日志" 按钮

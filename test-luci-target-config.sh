@@ -29,6 +29,15 @@ grep -Fq 'if self.rmempty or self.optional then' "$CBI" || {
 
 lua - /src/luci-app-outdoor-backup/luasrc/model/cbi/outdoor-backup/config.lua <<'LUA'
 local model = assert(arg[1], "missing config model")
+local luasrc = assert(model:match("^(.*)/model/cbi/outdoor%-backup/config%.lua$"), "invalid model path")
+_G.L = { http = {}, ctx = { request_path = {}, request_args = {} }, dispatcher = {
+    lang = "en", build_url = function() return "" end, menu_json = function() return {} end
+} }
+package.preload["luci.config"] = function() return {} end
+local submitted = {}
+local fixture_module = assert(loadfile("/src/tests/luci-target-fixture.lua"))()
+local fixture = fixture_module.install(luasrc, nil, function() return submitted end)
+fixture_module.verify(fixture)
 local cases, assertions, failed = 0, 0, 0
 
 local function fail(message)
@@ -52,7 +61,11 @@ package.preload["luci.model.outdoor-backup.target"] = function()
 end
 
 function Map(config)
-    local map = { config = config, submitted = {}, saved = {}, sections = {} }
+    local map = { config = config, submitted = submitted, saved = {}, sections = {} }
+    map.uci = { get = function(_, requested_config, section, option)
+        assert(requested_config == config and section == "config", "unexpected UCI lookup")
+        return map.saved[section] and map.saved[section][option]
+    end }
     function map:formvalue(key) return self.submitted[key] end
     function map:section(kind, name)
         local section = { kind = kind, name = name, map = self, options = {} }

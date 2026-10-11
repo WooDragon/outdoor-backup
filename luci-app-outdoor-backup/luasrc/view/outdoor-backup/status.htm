@@ -348,14 +348,54 @@ function escapeHtml(str) {
     return div.innerHTML;
 }
 
-function escapeJs(str) {
-    if (!str) return '';
-    return str.replace(/\\/g, '\\\\')
-              .replace(/'/g, "\\'")
-              .replace(/"/g, '\\"')
-              .replace(/\n/g, '\\n')
-              .replace(/\r/g, '\\r');
+// Strictly consume the delivered status.sh argument-17 schema; no raw metadata.
+function exactKeys(object, keys) {
+    return object && typeof object === 'object' && !Array.isArray(object) &&
+        Object.keys(object).sort().join(',') === keys.slice().sort().join(',');
 }
+function nullableCount(value) {
+    return value === null || (isNonNegativeFinite(value) && Math.floor(value) === value);
+}
+function validTask(task) {
+    if (!exactKeys(task, ['version','layout','phase','comparison_mode','archive','warnings','replaced']) ||
+        task.version !== 1 || ['mirror','date'].indexOf(task.layout) < 0 ||
+        ['planning','transferring','finalizing'].indexOf(task.phase) < 0 ||
+        ['quick','checksum'].indexOf(task.comparison_mode) < 0 ||
+        !exactKeys(task.archive, ['files_total','routes_total','excluded_total','undated_total']) ||
+        !exactKeys(task.replaced, ['files_count','path']) || !Array.isArray(task.warnings)) return false;
+    var counts = Object.keys(task.archive);
+    for (var i = 0; i < counts.length; i++) if (!nullableCount(task.archive[counts[i]])) return false;
+    var codes = ['xml_too_large','metadata_parse_failed','metadata_parse_warning','metadata_candidate_limit',
+        'ambiguous_date_semantics','ambiguous_recording_identity','unverified_time_profile','ambiguous_pairing',
+        'primary_not_present','no_capture_date','conflicting_capture_date'];
+    for (var j = 0; j < task.warnings.length; j++) {
+        var warning = task.warnings[j];
+        if (!exactKeys(warning, ['code','count']) || codes.indexOf(warning.code) < 0 ||
+            !isNonNegativeFinite(warning.count) || Math.floor(warning.count) !== warning.count) return false;
+    }
+    return nullableCount(task.replaced.files_count) &&
+        (task.replaced.path === null || typeof task.replaced.path === 'string');
+}
+// Returns escaped presentation HTML. Null means unknown; numeric zero stays zero.
+function taskSummary(task) {
+    if (!validTask(task)) return '<p>Task information unavailable (unsupported schema)</p>';
+    var html = '<div class="info-box"><p>Layout: ' + task.layout + '; comparison mode: ' + task.comparison_mode + '</p>';
+    html += '<p>' + (task.comparison_mode === 'quick' ?
+        'Quick compares size/mtime; same size/mtime content changes may be missed. Mtime-only changes may retain identical old content in replaced.' :
+        'Checksum reads current source and corresponding destination media in full; it does not audit historical media absent from this card.') + '</p>';
+    var names = {files_total:'Accepted files', routes_total:'Retained routes', excluded_total:'Excluded', undated_total:'Undated'};
+    Object.keys(names).forEach(function(key) {
+        html += '<p>' + names[key] + ': ' + (task.archive[key] === null ? 'Unknown' : task.archive[key]) + '</p>';
+    });
+    task.warnings.forEach(function(warning) {
+        html += '<p>Warning: ' + escapeHtml(warning.code) + ' (' + warning.count + ')</p>';
+    });
+    html += '<p>Retained old files (not proof of different content): ' +
+        (task.replaced.files_count === null ? 'Unknown' : task.replaced.files_count) + '</p>';
+    if (task.replaced.path !== null) html += '<p>Retained path: ' + escapeHtml(task.replaced.path) + '</p>';
+    return html + '</div>';
+}
+function csrfToken() { return document.getElementById('outdoor-backup-token').value; }
 
 // Utility Functions
 function formatBytes(bytes) {
@@ -417,6 +457,19 @@ function updateCurrentBackup(backup) {
         return;
     }
 
+    if (backup.task !== undefined && backup.task !== null) {
+        if (!validTask(backup.task)) {
+            container.innerHTML = taskSummary(backup.task);
+            return;
+        }
+        if (backup.task.phase !== 'transferring') {
+            container.innerHTML = '<p>Card: ' + escapeHtml(backup.name || 'Unknown') + '</p><p>' +
+                (backup.task.phase === 'planning' ? '正在分析素材 / Analyzing media; progress unknown; no ETA' :
+                    'Finalizing / 正在完成同步、摘要与最终检查; no ETA') + '</p>' + taskSummary(backup.task);
+            return;
+        }
+    }
+
     var liveProgress = backup.live_progress;
     var hasLiveProgress = liveProgress && liveProgress.basis === 'file_list_entries';
     var percent = isNonNegativeFinite(backup.progress_percent) ? backup.progress_percent : 0;
@@ -474,7 +527,7 @@ function updateCurrentBackup(backup) {
     html += '</div>';
 
     html += '</div>';
-    container.innerHTML = html;
+    container.innerHTML = html + (backup.task ? taskSummary(backup.task) : '');
 }
 
 function updateStorageInfo(storage) {
@@ -529,12 +582,20 @@ function updateHistoryTable(history) {
         html += '<td style="font-family: monospace; font-size: 0.9em;">' + escapeHtml(uuid.substring(0, 8)) + '...</td>';
         html += '<td>' + lastBackup + '</td>';
         html += '<td>' + size + '</td>';
-        html += '<td><span class="status-badge ' + statusClass + '">' + statusText + '</span></td>';
-        html += '<td><a class="action-link" onclick="showAliasModal(\'' + escapeJs(uuid) + '\', \'' + escapeJs(name) + '\', \'\')">Edit</a></td>';
+        html += '<td><span class="status-badge ' + statusClass + '">' + escapeHtml(statusText) + '</span></td>';
+        html += '<td><a class="action-link" data-history-index="' + i + '">Edit</a></td>';
         html += '</tr>';
+        if (item.task) html += '<tr><td colspan="6">' + taskSummary(item.task) + '</td></tr>';
     }
 
     tbody.innerHTML = html;
+    var links = tbody.querySelectorAll('[data-history-index]');
+    for (var linkIndex = 0; linkIndex < links.length; linkIndex++) {
+        links[linkIndex].onclick = function() {
+            var entry = history[Number(this.getAttribute('data-history-index'))];
+            showAliasModal(entry.uuid || 'N/A', entry.name || '', '');
+        };
+    }
 }
 
 function refreshData() {
@@ -564,14 +625,8 @@ function saveAlias() {
     var alias = document.getElementById('alias-input').value.trim();
     var notes = document.getElementById('alias-notes').value.trim();
 
-    var data = {
-        uuid: uuid,
-        alias: alias,
-        notes: notes
-    };
-
     XHR.post('<%=url("admin/services/outdoor-backup/api/alias/update")%>',
-        JSON.stringify(data),
+        {token: csrfToken(), uuid: uuid, alias: alias, notes: notes},
         function(x, result) {
             if (result && result.success) {
                 closeModal('alias-modal');
@@ -590,9 +645,8 @@ function deleteAlias() {
         return;
     }
 
-    var params = 'uuid=' + encodeURIComponent(uuid);
-    XHR.get('<%=url("admin/services/outdoor-backup/api/alias/delete")%>?' + params,
-        null,
+    XHR.post('<%=url("admin/services/outdoor-backup/api/alias/delete")%>',
+        {token: csrfToken(), uuid: uuid},
         function(x, result) {
             if (result && result.success) {
                 closeModal('alias-modal');
@@ -697,7 +751,7 @@ function executeCleanup() {
     document.getElementById('cleanup-progress-bar').style.width = '50%';
 
     XHR.post('<%=url("admin/services/outdoor-backup/api/cleanup/execute")%>',
-        JSON.stringify({confirm_text: confirmText}),
+        {token: csrfToken(), confirm_text: confirmText},
         function(x, result) {
             if (result && result.success) {
                 showCleanupComplete(result);
@@ -740,6 +794,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
 <!-- HTML Content -->
 <h2 name="content"><%:Status%></h2>
+
+<input type="hidden" id="outdoor-backup-token" <%=attr("value", require("luci.dispatcher").context.authtoken or "")%>>
+<p>Automatic date tasks use quick comparison. Administrator-only manual checksum and independent card initialization are CLI operations, not WebUI write actions. Checksum may read all current card and matching destination media; it does not verify historical files absent from the card. Completed is not a full-library content audit. Managed library paths must not be renamed manually.</p>
 
 <!-- Current Backup Section -->
 <fieldset class="cbi-section">

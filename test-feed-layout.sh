@@ -116,6 +116,22 @@ case_l06_busybox_selectors_are_metadata_only() {
         'L06 legacy runtime dependency selector remains in the delivered recipe'
 }
 
+case_l07_optional_package_is_canonical_and_lazy() {
+    begin_case L07 'optional date package shares canonical recipe and never pulls Perl into core'
+    # shellcheck disable=SC2016
+    assert_grep '$(eval $(call BuildPackage,outdoor-backup-media-date))' "$CORE_MAKEFILE" \
+        'L07 optional package is not discoverable from the canonical recipe'
+    assert_contains '$(INSTALL_BIN) ./files/opt/outdoor-backup/scripts/media-date-plan.pl' \
+        "$CORE_MAKEFILE" 'L07 optional helper install rule missing'
+    assert_contains '$(INSTALL_DATA) ./files/opt/outdoor-backup/lib/OutdoorBackup/MediaDate/*.pm' \
+        "$CORE_MAKEFILE" 'L07 optional module install rule missing'
+    ASSERTIONS=$((ASSERTIONS + 1))
+    core_definition=$(sed -n '/^define Package\/outdoor-backup$/,/^endef$/p' "$CORE_MAKEFILE")
+    if printf '%s\n' "$core_definition" | grep -E '\+(perl|exiftool|outdoor-backup-media-date)'; then
+        fail 'L07 mirror core acquired optional Perl dependencies'
+    fi
+}
+
 main() {
     [ -d "$REPO_ROOT" ] || {
         printf 'FAIL: repository root is unavailable: %s\n' "$REPO_ROOT" >&2
@@ -128,13 +144,14 @@ main() {
     case_l04_core_files_are_the_single_runtime_source
     case_l05_install_sources_exist_at_recipe_relative_paths
     case_l06_busybox_selectors_are_metadata_only
+    case_l07_optional_package_is_canonical_and_lazy
 
     ASSERTIONS=$((ASSERTIONS + 1))
-    if [ "$CASES" -ne 6 ]; then
-        fail "all required cases executed (expected=6, actual=$CASES)"
+    if [ "$CASES" -ne 7 ]; then
+        fail "all required cases executed (expected=7, actual=$CASES)"
     fi
-    if [ "$ASSERTIONS" -ne 18 ]; then
-        fail "all required assertions executed (expected=18, actual=$ASSERTIONS)"
+    if [ "$ASSERTIONS" -ne 22 ]; then
+        fail "all required assertions executed (expected=22, actual=$ASSERTIONS)"
     fi
     printf 'cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"
     [ "$FAILED" -eq 0 ]

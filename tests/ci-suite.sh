@@ -63,6 +63,32 @@ prepare_lifecycle_wrappers() {
     printf '%s\n' "$UPSTREAM_COMMIT" > "$upstream_root/commit" || fail 'cannot save lifecycle wrapper commit marker'
 }
 
+# Test-only provider bootstrap. This is verified source loading, NOT an IPK install.
+prepare_media_date() {
+    require_opkg python3 perl perlbase-essential perlbase-findbin perlbase-json-pp \
+        perlbase-digest perlbase-encode perlbase-fcntl perlbase-time perlbase-cwd \
+        perlbase-b perlbase-file perlbase-storable perlbase-test perlbase-mro jq rsync curl ca-bundle
+    python3 -c 'import importlib.util, io, json, os, pathlib, re, shutil, subprocess, sys, tempfile, unittest' || \
+        fail 'BLOCKED: actual OpenWrt Python test modules unavailable'
+    provider_root=/tmp/outdoor-test-exiftool
+    mkdir -p "$provider_root" || fail 'cannot create test-owned provider directory'
+    curl --fail --silent --show-error --location \
+        https://downloads.sourceforge.net/project/exiftool/Image-ExifTool-13.59.tar.gz \
+        -o "$provider_root/source.tar.gz" || fail 'BLOCKED: fixed ExifTool test source unavailable'
+    printf '%s  %s\n' \
+        668ea3acececb7235fbd0f4900e72d5f12c9b07e5c778fd36cb1e9b5828fd65a \
+        "$provider_root/source.tar.gz" | sha256sum -c - || fail 'ExifTool test source hash mismatch'
+    tar -xzf "$provider_root/source.tar.gz" -C "$provider_root" || fail 'cannot extract verified ExifTool test source'
+    PERL5LIB="$provider_root/Image-ExifTool-13.59/lib:/src/files/opt/outdoor-backup/lib"
+    export PERL5LIB
+    perl -MImage::ExifTool -MJSON::PP -MDigest::SHA -MEncode -MFindBin -MCwd -MFcntl -MTime::Local -MB \
+        -e 'die "ExifTool version mismatch" unless $Image::ExifTool::VERSION eq "13.59"; print "actual guest moduleload OK\n"' || \
+        fail 'BLOCKED: actual guest Perl module load failed'
+    printf '%s\n' 'provider=verified-source-moduleload; synthetic packaging; SDK/IPK/G3=BLOCKED (no actual provider IPK installed)' \
+        > "$TEST_EVIDENCE/provider.txt"
+    cat "$TEST_EVIDENCE/provider.txt"
+}
+
 validate_suite() {
     [ "$#" -eq 1 ] || {
         printf '%s\n' 'usage: ci-suite.sh test-*.sh' >&2
@@ -74,7 +100,7 @@ validate_suite() {
         exit 64
     }
     case $suite in
-        test-backup-core.sh|test-backup-progress.sh|test-card-config.sh|test-card-identity.sh|test-card-reader.sh|test-cleanup.sh|test-config.sh|test-feed-layout.sh|test-hotplug-service.sh|test-led-lifecycle.sh|test-led.sh|test-live-progress.sh|test-lock.sh|test-luci-acl.sh|test-luci-target-config.sh|test-luci-target-fd.sh|test-luci-target-selection.sh|test-manager-cancellation.sh|test-manager-removal.sh|test-manager-service.sh|test-manager-source-identity.sh|test-owner-event.sh|test-service-control.sh|test-service-lifecycle.sh|test-service-state.sh|test-source-identity.sh|test-status.sh|test-storage-lifecycle.sh|test-target-anchor.sh|test-target-device.sh|test-target-list.sh|test-target-manager.sh|test-transfer-process.sh) ;;
+        test-media-date-regressions.sh|test-media-date-package.sh|test-media-date-helper.sh|test-media-date-manager.sh|test-media-date-transfer.sh|test-media-date-library.sh|test-media-date-lifecycle.sh|test-luci-media-date.sh|test-backup-core.sh|test-backup-progress.sh|test-card-config.sh|test-card-identity.sh|test-card-reader.sh|test-cleanup.sh|test-config.sh|test-feed-layout.sh|test-hotplug-service.sh|test-led-lifecycle.sh|test-led.sh|test-live-progress.sh|test-lock.sh|test-luci-acl.sh|test-luci-target-config.sh|test-luci-target-fd.sh|test-luci-target-selection.sh|test-manager-cancellation.sh|test-manager-removal.sh|test-manager-service.sh|test-manager-source-identity.sh|test-owner-event.sh|test-service-control.sh|test-service-lifecycle.sh|test-service-state.sh|test-source-identity.sh|test-status.sh|test-storage-lifecycle.sh|test-target-anchor.sh|test-target-device.sh|test-target-list.sh|test-target-manager.sh|test-transfer-process.sh) ;;
         *)
             printf 'FAIL: unsupported suite: %s\n' "$suite" >&2
             exit 64
@@ -85,12 +111,49 @@ validate_suite() {
 main() {
     [ -f /.dockerenv ] && [ -r /etc/openwrt_release ] || fail 'ci-suite requires the pinned OpenWrt guest'
     [ -d /src ] && [ -d /evidence ] || fail 'ci-suite requires /src and /evidence mounts'
-    validate_suite "$@"
     mkdir -p /var/lock || fail 'cannot create OpenWrt package lock directory'
     TEST_EVIDENCE=/evidence
     export TEST_EVIDENCE
+    if [ "$#" -eq 1 ] && [ "$1" = --probe-media-date-modules ]; then
+        prepare_media_date
+        printf '%s\n' 'module probe only; behavior cases=0; SDK/IPK/G3=BLOCKED'
+        return 0
+    fi
+    validate_suite "$@"
 
     case $suite in
+        test-media-date-package.sh)
+            require_opkg python3 coreutils-install
+            exec /bin/ash "/src/$suite" --inside
+            ;;
+        test-media-date-helper.sh)
+            prepare_media_date
+            exec /bin/ash "/src/$suite" --inside
+            ;;
+        test-media-date-library.sh)
+            prepare_media_date
+            exec /bin/ash "/src/$suite" --synthetic
+            ;;
+        test-media-date-manager.sh|test-media-date-transfer.sh)
+            prepare_media_date
+            exec /bin/ash "/src/$suite"
+            ;;
+        test-media-date-regressions.sh)
+            prepare_media_date
+            require_opkg lua
+            exec /bin/ash "/src/$suite"
+            ;;
+        test-media-date-lifecycle.sh)
+            prepare_media_date
+            printf 'native lifecycle kernel=%s arch=%s; real /proc; source=/src (read-only)\n' "$(uname -s)" "$(uname -m)"
+            exec /bin/ash "/src/$suite" --inside "$TEST_EVIDENCE/lifecycle.json"
+            ;;
+        test-luci-media-date.sh)
+            require_opkg ubusd ubus rpcd libuci-lua lua luci-base luci-compat luci-lib-jsonc luci-lib-nixio jq node
+            /bin/ash "/src/$suite" --inside || fail 'LuCI media-date Lua contracts failed'
+            [ -r /www/luci-static/resources/luci.js ] || fail 'BLOCKED: installed guest LuCI XHR source unavailable'
+            exec node /src/tests/media-date/luci-ui.js /www/luci-static/resources/luci.js
+            ;;
         test-backup-progress.sh)
             require_opkg jq
             exec /bin/ash "/src/$suite" --inside
@@ -120,4 +183,10 @@ main() {
     esac
 }
 
+# Host-side allowlist preflight performs no guest mutation or dependency install.
+if [ "${1:-}" = --validate-suite ]; then
+    shift
+    validate_suite "$@"
+    exit 0
+fi
 main "$@"

@@ -339,6 +339,8 @@ main() {
             exit 1
         }
     # shellcheck disable=SC1090
+    . "${TARGET_SCRIPT%/*}/library-layout.sh"
+    # shellcheck disable=SC1090
     . "$TARGET_SCRIPT"
     # shellcheck disable=SC1090
     . "$GETTER_SCRIPT"

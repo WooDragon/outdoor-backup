@@ -30,6 +30,9 @@ def valid_devname:
   end;
 def printable_text:
   type == "string" and all(explode[]; . >= 32 and . != 127);
+def canonical_cleanup_root:
+  printable_text and startswith("/") and . != "/" and (endswith("/") | not) and
+  (ltrimstr("/") | split("/") | all(. != "" and . != "." and . != ".."));
 def valid_devpath($devname):
   printable_text and startswith("/devices/") and (endswith("/") | not) and
   (ltrimstr("/") | split("/") | all(. != "" and . != "." and . != "..")) and
@@ -78,13 +81,24 @@ def nul: [0] | implode;
 if endswith(nul) then split(nul)[:-1] else empty end |
 . as $argv |
 ($argv | length) as $length |
-($length == 5 or $length == 6) and
 ($argv[0] == "/bin/sh" or $argv[0] == "/bin/ash") and
-$argv[1] == $manager and $argv[2] == "add" and
-($argv[3] | valid_devname) and
-(if $length == 5 then true
- else valid_event($argv[3]; $argv[4]; $argv[5])
- end)
+$argv[1] == $manager and
+(if $argv[2] == "add" then
+   ($length == 5 or $length == 6) and ($argv[3] | valid_devname) and
+   (if $length == 5 then true else valid_event($argv[3]; $argv[4]; $argv[5]) end)
+ elif $argv[2] == "manual" then
+   $length == 6 and ($argv[3] | valid_devname) and
+   ($argv[4] | valid_devpath($argv[3])) and
+   ($argv[5] == "quick" or $argv[5] == "checksum")
+ elif $argv[2] == "initialize" then
+   $length == 5 and ($argv[3] | valid_devname) and
+   ($argv[4] | valid_devpath($argv[3]))
+ elif $argv[2] == "cleanup-preview" then
+   $length == 4 and ($argv[3] | canonical_cleanup_root)
+ elif $argv[2] == "cleanup" then
+   $length == 5 and ($argv[3] | canonical_cleanup_root) and
+   ($argv[4] == "0" or $argv[4] == "1")
+ else false end)
 JQ
             ;;
         *) return 1 ;;
@@ -176,7 +190,10 @@ owner_event_cmdline_matches() {
 
 # Match a raw NUL-terminated active manager argv for administrator stop.
 # Arguments: cmdline path, canonical manager path. Returns zero only for exact
-# legacy five-slot or canonical six-slot add argv.
+# legacy five-slot/canonical six-slot add, six-slot manual quick|checksum,
+# five-slot initialize, four-slot cleanup-preview or five-slot cleanup argv.
+# Cleanup accepts only canonical absolute roots and the exact keep-alias enum;
+# remove's add-only matcher is deliberately unchanged.
 owner_event_cmdline_matches_stop() {
     owner_event_require_jq || return 1
     [ -r "$1" ] || return 1

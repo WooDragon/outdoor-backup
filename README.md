@@ -4,6 +4,19 @@ Automatic SD card backup system for OpenWrt routers with internal storage (SSD/H
 
 **Outdoor Backup** 是为户外摄影、航拍、数据采集等场景设计的 OpenWrt IPK 包，实现 SD 卡插入即自动备份到路由器内置存储。
 
+## Media date library — local implementation status
+
+媒体日期库主体本地实现与定向验证已闭合。首轮实现修订及 CI Lua 修订已闭合，有限范围复核为 APPROVED。修后未重跑全量；不能发布。下方既有镜像功能、性能预期及兼容性描述不构成日期模式的发布或目标设备验收。
+
+- [现行实现与接口](docs/media-date-library-implementation.md)：date/mirror 分离、只读来源、固定路由、可选 helper 与 G1–G6 证据边界。
+- [root CLI 操作与恢复](docs/media-date-library-operations.md)：新库配置、显式卡初始化、本次 quick/checksum 和受管镜像 cleanup。
+- [产品设计](docs/media-date-library-design.md) 与 [评审记录](docs/media-date-library-review.md)：保留设计审批历史，区分设计批准、有限范围实现复核与未完成发布门槛。
+- 未完成的 G1–G6 验收统一跟踪 [Issue #59](https://github.com/WooDragon/outdoor-backup/issues/59)，实现合并或固件编译成功不自动关闭验收。
+
+**前置阅读**：启用日期模式或执行 manual/initialize/cleanup 前，应先读取上述操作手册。mirror 保持默认；`backup_root` 仍为镜像根，日期根独立使用 `library_root`。mirror 未配置日期根时保留空 intent。日期库没有自动历史迁移、WebUI 手动触发、自动队列或 PhotoPrism 自动 index。
+
+日期自动任务默认 quick，可能漏掉同 size/mtime 的内容变化。仅 mtime 改变可保留同内容旧文件。显式 checksum 只覆盖本次 source 对应 target，不是历史全库核验；系统不自动删除 replaced/partial。
+
 ## Features
 
 - ✅ **Automatic Backup**: Every `ACTION=add` block partition is a safe source candidate; the manager decides whether it may run
@@ -84,7 +97,7 @@ Automatic backup follows after ImmortalWrt's `default_postinst` wrapper enables 
 
 Configure and mount the target storage before inserting an SD card. The manager does not format, mount, or select a target disk automatically. Follow [Configure target storage](#configure-target-storage) first.
 
-1. **Insert an SD card**. After the target guard accepts the configured target, the manager captures a source identity snapshot before it waits for the backup lock. It rechecks that snapshot after it acquires the lock and before every source mount. The initial mount is read-only. When no formal `FieldBackup.conf` exists, the manager uses a bounded read-write window to publish a complete configuration, then restores the read-only mount before it starts the backup. The LED then shows the backup status.
+1. **Insert an SD card**. After the target guard accepts the configured target, the manager captures a source identity snapshot before it waits for the backup lock. It rechecks that snapshot after it acquires the lock and before every source mount. The initial mount is read-only. In mirror mode, when no formal `FieldBackup.conf` exists, the manager uses a bounded read-write window to publish a complete configuration, then restores the read-only mount before it starts the backup. A date task instead rejects an uninitialized card without that write window; use the independent root CLI initialization documented above. The LED then shows the backup status.
 
 2. **Monitor progress**:
    ```bash
@@ -233,7 +246,7 @@ The LuCI form exposes `target_mount`, `target_uuid`, and the `backup_root` bound
 
 ### Set other UCI overrides
 
-Set only values that must override the lower layers. The supported UCI options are `enabled`, `backup_root`, `mount_point`, `target_mount`, `target_uuid`, `debug`, `led_green`, `led_green2`, `led_green3`, and `led_red`. The three green options map to G1 (wan), G2 (lan-1), and G3 (lan-2); `led_red` maps to R (power).
+Set only values that must override the lower layers. The supported UCI options are `enabled`, `backup_root`, `backup_layout`, `library_root`, `archive_offset_minutes`, `mount_point`, `target_mount`, `target_uuid`, `debug`, `led_green`, `led_green2`, `led_green3`, and `led_red`. The layout-specific contract is defined in [the implementation reference](docs/media-date-library-implementation.md#1-配置合同). The three green options map to G1 (wan), G2 (lan-1), and G3 (lan-2); `led_red` maps to R (power).
 
 ```sh
 # Use absolute, non-root, non-nested paths.
@@ -263,7 +276,7 @@ Before lock contention, the manager captures a source snapshot through the exact
 
 After the initial read-only mount, the manager separately rereads the source filesystem UUID for the existing card-binding record. It compares that observed value exactly with the pre-lock snapshot `filesystem_uuid` before binding. The observed value remains the identity value for the binding; it does not replace the snapshot. A failed snapshot capture, recheck, consumption read, or UUID comparison stops the run as `device_unknown` without a later source operation or completed status. This comparison does not claim a post-mount full-snapshot check.
 
-The one exception is bounded and explicit. When no formal `FieldBackup.conf` exists, the manager unmounts the source and mounts it read-write. It rechecks the same pre-lock snapshot before that mount and before the following read-only restoration. It writes the complete data to a uniquely named temporary file in that directory. It checks the write and publishes the file with a same-filesystem rename. It checks `sync` after publication. A rename is not proof against power loss. A recheck failure does not roll back a write already completed in the preceding window.
+The mirror-mode first-provisioning exception is bounded. Independent root CLI initialize uses the same provisioning flow without backup, alias or identity publication. A date backup with no configuration is refused as source_not_initialized. When no formal `FieldBackup.conf` exists in the permitted provisioning flow, the manager unmounts the source and mounts it read-write. It rechecks the same pre-lock snapshot before that mount and before the following read-only restoration. It writes the complete data to a uniquely named temporary file in that directory. It checks the write and publishes the file with a same-filesystem rename. It checks `sync` after publication. A rename is not proof against power loss. A recheck failure does not roll back a write already completed in the preceding window.
 
 A failed read-write mount or a failed configuration write means that the manager cannot initialize the card. The manager reports a card-configuration error and does not run `rsync`. If the read-only mount cannot be restored, it also stops before `rsync`. Cleanup attempts to unmount the source only when this manager successfully mounted it. A failed explicit unmount preserves that manager-owned cleanup state for one final cleanup attempt. Cleanup does not promise that every failed run restores a read-only mount. A manager that did not acquire the current lock does not unmount the source, modify status, change LEDs, release the lock, or claim backup completion. After the read-only mount succeeds, the manager rereads the formal file as a flow check. That reread does not prove physical-media durability or card identity. A `SIGKILL` can leave a temporary file behind. The manager never treats that name as `FieldBackup.conf` and does not scan or delete other temporary files.
 
@@ -403,9 +416,9 @@ logread -f | grep hotplug
 # Verify device enumeration
 ls -l /dev/sd*
 
-# Test hotplug script manually
-SUBSYSTEM=block ACTION=add DEVNAME=sda1 DEVTYPE=partition \
-  /etc/hotplug.d/block/90-outdoor-backup
+# Do not synthesize a production hotplug event or invent SEQNUM.
+# Read actual device inventory, then use the documented root CLI manual flow.
+block info
 ```
 
 **Backup not starting?**
@@ -453,22 +466,15 @@ printf '%s\n' 100 > "$LED/delay_off"
 ```bash
 # Remove package (preserves backup data)
 opkg remove outdoor-backup
-
-# Cleanup backup data (if desired)
-rm -rf /mnt/ssd/SDMirrors/
 ```
+
+卸载不授权删除备份根。若确需清理，应在卸载前先读取并执行 [受管镜像清理](docs/media-date-library-operations.md#6-镜像清理的现行入口)。旧裸 `rm -rf` 示例不是现行协议；date 根、bucket、replaced 和 identity 不应以此绕过守卫。
 
 ## Development
 
 ### Testing Without Installation
 
-```bash
-# Copy scripts to device
-scp -r files/opt/outdoor-backup root@router:/tmp/
-
-# Run manually
-ssh root@router "/tmp/outdoor-backup/scripts/backup-manager.sh add sda1 /devices/platform/usb"
-```
+旧复制脚本加三参数 add 的示例不是管理员手动接口，也不能替代安装依赖与来源守卫。执行已安装 runtime 的手动任务前，应先读取 [本次 manual 操作](docs/media-date-library-operations.md#4-执行本次手动任务)。测试隔离 fixture 不应在真实备份根中运行。
 
 ### Debugging
 
@@ -570,25 +576,25 @@ http://192.168.1.1/cgi-bin/luci/admin/services/outdoor-backup
 - Alias mapping preserved after batch cleanup
 
 #### 3. Batch Cleanup
-Clear all backup data after backing up to NAS, with multi-layer protection:
+仅 mirror 可通过受管 backend 清理一级 UUID 的非 hidden child 子树；不是删除整个库。执行前应先读取 [现行清理边界](docs/media-date-library-operations.md#6-镜像清理的现行入口)。date 及磁盘上残留日期状态均拒绝。预览大小是 du 估算，不是释放字节承诺。
 
 **Safety Mechanisms**:
 1. Preview dialog (shows cards and sizes)
 2. Confirmation text input (must type "清空备份数据")
 3. Checkbox confirmation ("I have backed up to NAS")
 4. Button disabled until all conditions met
-5. Shell script safety check (`--force` flag)
+5. Manager backend admission, exact configured root and whole-tree precheck; force is CLI confirmation, not a bypass
 
 **Preserved Data**:
-- Alias mappings (`aliases.json`)
-- Configuration files
-- Log files
+- Alias mappings (`aliases.json`) in the LuCI keep=1 flow
+- Configuration files and root-level logs
+- Root-level and UUID-level hidden children, UUID directories and `.card-identities`
 
 #### 4. Log Viewing
 - Last 100 lines with color highlighting
 - Log level filtering (ERROR/WARN/INFO/DEBUG)
 - Auto-refresh option (10 seconds)
-- Download full log
+- Download only the authorized displayed log text; no raw file URL
 
 ### Quick Start
 
@@ -662,6 +668,8 @@ Clear all backup data after backing up to NAS, with multi-layer protection:
   - [WEBUI_USER_GUIDE.md](docs/WEBUI_USER_GUIDE.md) - WebUI 用户手册
   - [WEBUI_DEVELOPER_GUIDE.md](docs/WEBUI_DEVELOPER_GUIDE.md) - WebUI 开发者文档
   - [component-implementation.md](docs/component-implementation.md) - 传输进程组、取消边界和测试范围
+  - [media-date-library-design.md](docs/media-date-library-design.md) - 媒体日期库产品设计：保留已批准规则；现行实现与 root CLI 从顶部导航进入
+  - [media-date-library-review.md](docs/media-date-library-review.md) - 媒体日期库设计评审记录：Red Team 裁决、修订闭环与未验收范围
 
 ## License
 

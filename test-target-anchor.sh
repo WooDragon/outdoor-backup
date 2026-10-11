@@ -410,6 +410,8 @@ main() {
         exit 1
     fi
     # shellcheck disable=SC1090
+    . "${TARGET_SCRIPT%/*}/library-layout.sh"
+    # shellcheck disable=SC1090
     . "$TARGET_SCRIPT"
     mkdir -p "$TEST_ROOT"
 

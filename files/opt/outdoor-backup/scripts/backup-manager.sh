@@ -8,7 +8,7 @@
 set -e
 
 # Constants
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR=$(dirname "$0") || exit 1
 BASE_DIR="$(dirname "$SCRIPT_DIR")"
 MOUNT_POINT="/mnt/sdcard"
 BACKUP_ROOT="/mnt/ssd/SDMirrors"
@@ -56,16 +56,38 @@ BACKUP_CANCEL_CODE=0
 ACTION="${1:-}"
 DEVNAME="${2:-}"
 DEVPATH="${3:-}"
-EVENT_SEQNUM="${4:-}"
+EVENT_SEQNUM=""
+BACKUP_COMPARISON_MODE=quick
+INITIALIZE_SUCCEEDED=0
 
 case "$ACTION" in
+	cleanup-preview|cleanup)
+		. "$SCRIPT_DIR/manager-cleanup.sh"
+		case "$#:$ACTION" in
+			2:cleanup-preview) CLEANUP_KEEP_ALIASES=1 ;;
+			3:cleanup)
+				case "$3" in 0|1) CLEANUP_KEEP_ALIASES=$3 ;; *) manager_cleanup_error 1; exit 1 ;; esac
+				;;
+			*) manager_cleanup_error 1; exit 1 ;;
+		esac
+		CLEANUP_REQUEST_ROOT=$2
+		;;
 	add)
 		[ "$#" -eq 3 ] || [ "$#" -eq 4 ] || {
 			printf '%s\n' 'outdoor-backup: add requires DEVNAME DEVPATH [SEQNUM]' >&2
 			exit 1
 		}
+		EVENT_SEQNUM=${4:-}
+		;;
+	manual)
+		[ "$#" -eq 4 ] || exit 1
+		case "$4" in quick|checksum) BACKUP_COMPARISON_MODE=$4 ;; *) exit 1 ;; esac
+		;;
+	initialize)
+		[ "$#" -eq 3 ] || exit 1
 		;;
 	remove)
+		EVENT_SEQNUM=${4:-}
 		[ "$#" -eq 3 ] || [ "$#" -eq 4 ] || {
 			printf '%s\n' 'outdoor-backup: remove requires DEVNAME DEVPATH [SEQNUM]' >&2
 			exit 1
@@ -90,10 +112,28 @@ case "$ACTION" in
 		;;
 esac
 
+# New administrative actions have strict lexical argv even when service/config
+# is disabled. Add/remove fast paths retain their original lazy dependencies.
+if [ "$ACTION" = manual ] || [ "$ACTION" = initialize ]; then
+	. "$SCRIPT_DIR/target-device.sh"
+	. "$SCRIPT_DIR/manager-admin.sh"
+	manager_admin_validate "$DEVNAME" "$DEVPATH" || exit 1
+fi
+
 # config.sh owns defaults, legacy compatibility, real UCI loading, and input
 # validation. Failure here is deliberately before common functions and traps.
 . "$SCRIPT_DIR/config.sh"
-config_load "$BASE_DIR/conf/backup.conf" || exit 1
+if ! config_load "$BASE_DIR/conf/backup.conf"; then
+	case "$ACTION" in cleanup|cleanup-preview) manager_cleanup_error 3; exit 3 ;; esac
+	exit 1
+fi
+
+# Cleanup is an administrative operation, never a disabled-add successful no-op.
+case "$ACTION" in cleanup|cleanup-preview)
+	[ "$ENABLED" = 1 ] || { manager_cleanup_error 5; exit 5; }
+	[ "$BACKUP_LAYOUT" = mirror ] || { manager_cleanup_error 4; exit 4; }
+	;;
+esac
 
 # Preserve the legacy disabled-add fast exit before loading jq or event helpers.
 if [ "$ENABLED" = "0" ]; then
@@ -101,12 +141,20 @@ if [ "$ENABLED" = "0" ]; then
 	exit 0
 fi
 
+# Manual argv is the sole comparison snapshot; never persist it to UCI.
+# Mirror has no checksum profile, so reject rather than silently downgrade.
+if [ "$ACTION" = manual ] && [ "$BACKUP_LAYOUT" = mirror ] && \
+	[ "$BACKUP_COMPARISON_MODE" = checksum ]; then
+	config_notice 'checksum manual backup is supported only for date layout'
+	exit 1
+fi
+
 # Target libraries are inert when sourced. An add must prove and pin its target
 # before common.sh can create logs, aliases, LEDs, locks, or source mounts.
 # Event syntax must be valid before service admission. Keep remove and disabled
 # add above this point: both remain compatible fast paths without this library.
 . "$SCRIPT_DIR/target-device.sh"
-if [ "$#" -eq 4 ]; then
+if [ "$ACTION" = add ] && [ "$#" -eq 4 ]; then
 	. "$SCRIPT_DIR/owner-event.sh"
 	owner_event_validate_event "$DEVNAME" "$DEVPATH" "$EVENT_SEQNUM" || exit 1
 fi
@@ -129,10 +177,12 @@ fi
 case "$service_lease_rc" in
 	0) ;;
 	2)
+		case "$ACTION" in cleanup|cleanup-preview) manager_cleanup_error 5; exit 5 ;; esac
 		printf '%s\n' 'outdoor-backup: service admission not admitted' >&2
 		exit 2
 		;;
 	*)
+		case "$ACTION" in cleanup|cleanup-preview) manager_cleanup_error 3; exit 3 ;; esac
 		printf '%s\n' 'outdoor-backup: service state error' >&2
 		exit 1
 		;;
@@ -237,7 +287,7 @@ reset_leds_for_new_card() {
 	) >/dev/null || :
 }
 
-if [ "$ACTION" = "add" ]; then
+if [ "$ACTION" != cleanup ] && [ "$ACTION" != cleanup-preview ]; then
 	reset_leds_for_new_card
 	# An unconfigured UUID is a configuration state, not a mount probe. Report it
 	# before touching an optional default mount path or any application resource.
@@ -251,9 +301,13 @@ if [ "$ACTION" = "add" ]; then
 		guard_failure device_unknown
 		exit 1
 	fi
-	if ! target_prepare_root "$BACKUP_ROOT"; then
-		guard_failure unclassified
-		exit 1
+	# Date root creation belongs to admitted RO-source preparation under owner.
+	# Explicit card initialization creates neither mirror nor library state.
+	if [ "$BACKUP_LAYOUT" = mirror ] && [ "$ACTION" != initialize ]; then
+		if ! target_prepare_root "$BACKUP_ROOT"; then
+			guard_failure unclassified
+			exit 1
+		fi
 	fi
 fi
 
@@ -261,7 +315,7 @@ fi
 # Remove intentionally needs neither a target mount nor a status/transfer API.
 # There is no environment bypass: add tests execute this production manager.
 . "$SCRIPT_DIR/common.sh"
-if [ "$ACTION" = add ]; then
+if [ "$ACTION" != cleanup ] && [ "$ACTION" != cleanup-preview ]; then
 	. "$SCRIPT_DIR/status.sh"
 	. "$SCRIPT_DIR/transfer-process.sh"
 	. "$SCRIPT_DIR/backup-transfer.sh"
@@ -315,6 +369,10 @@ is_safe_mb_value() {
 # Publish the current task-local running snapshot. Args: $1 fixed live-progress JSON.
 # Returns: nonzero only when atomic status publication fails.
 backup_status_publish() {
+	if [ "$BACKUP_LAYOUT" = date ] && [ "$ACTION" != initialize ]; then
+		manager_date_status running '' "$1"
+		return "$?"
+	fi
 	write_status running "$SD_UUID" "$BACKUP_DISPLAY_NAME" "$DEVNAME" \
 		"$BACKUP_STARTED_AT" "$BACKUP_STATUS_PERCENT" 0 "$BACKUP_STATUS_FILES_DONE" \
 		0 "$BACKUP_STATUS_BYTES_DONE" "$BACKUP_STATUS_SPEED" "$TARGET_FD_ROOT" \
@@ -456,6 +514,10 @@ EOF
 
 # Transfer-process callback. It deliberately cannot alter runner cancellation or exit.
 transfer_process_observe() {
+	# Planner/validators also use this runner, but are not rsync observations.
+	if [ "$BACKUP_LAYOUT" = date ] && [ "${MANAGER_DATE_PHASE:-}" != transferring ]; then
+		return 0
+	fi
 	backup_status_progress
 	return 0
 }
@@ -470,6 +532,13 @@ write_running_status() {
 write_failed_status() {
 	[ "$STATUS_STARTED" -eq 1 ] || return 0
 	[ "$STATUS_TERMINAL_WRITTEN" -eq 0 ] || return 0
+	if [ "$BACKUP_LAYOUT" = date ] && [ "$ACTION" != initialize ]; then
+		if manager_date_status failed "$1"; then
+			STATUS_TERMINAL_WRITTEN=1
+			return 0
+		fi
+		return 1
+	fi
 	if write_status failed "$SD_UUID" "$BACKUP_DISPLAY_NAME" "$DEVNAME" \
 		"$BACKUP_STARTED_AT" 0 0 0 0 0 0 "$TARGET_FD_ROOT" \
 		"$TARGET_BACKUP_PATH/$SD_UUID" "$1" "$TARGET_BACKUP_PATH"; then
@@ -555,9 +624,15 @@ cleanup() {
 		exit "$cleanup_exit_code"
 	fi
 
-	if [ "$ACTION" = add ]; then
-		backup_transfer_cleanup
+	# Both date planning and transfer runners return only after draining. No new
+	# count reader is permitted after sticky cancel or a stale service lease.
+	if [ "$BACKUP_LAYOUT" = date ] && [ "$ACTION" != initialize ] && \
+		command -v manager_date_cleanup >/dev/null 2>&1; then
+		if ! manager_date_cleanup; then
+			[ "$cleanup_exit_code" -ne 0 ] || cleanup_exit_code=1
+		fi
 	fi
+	backup_transfer_cleanup
 	if [ "$SOURCE_MOUNTED" = 1 ] && mountpoint -q "$MOUNT_POINT" 2>/dev/null; then
 		if umount "$MOUNT_POINT" 2>/dev/null; then
 			SOURCE_MOUNTED=0
@@ -585,12 +660,20 @@ cleanup() {
 			cleanup_exit_code=$?
 		fi
 	fi
+	if [ "$cleanup_exit_code" -eq 0 ] && [ "$ACTION" = initialize ]; then
+		if [ "$INITIALIZE_SUCCEEDED" -ne 1 ] || ! verify_final_target; then
+			cleanup_exit_code=1
+		fi
+	fi
 	if [ "$cleanup_exit_code" -ne 0 ]; then
 		write_failed_status "${ERROR_TYPE:-rsync}" || :
 	fi
 	target_close
 
-	if [ "$cleanup_exit_code" -eq 0 ]; then
+	if [ "$cleanup_exit_code" -eq 0 ] && [ "$ACTION" = initialize ]; then
+		led_state_reset_idle
+		log_info 'Source configuration initialized; no media backup performed'
+	elif [ "$cleanup_exit_code" -eq 0 ]; then
 		led_state_complete
 		log_debug 'LED terminal state set to complete'
 		log_info 'Backup completed successfully'
@@ -797,6 +880,11 @@ setup_sdcard_config() {
 		fi
 		log_info "Loaded config for SD: $SD_NAME ($SD_UUID)"
 	else
+		if [ "$BACKUP_LAYOUT" = date ] && [ "$ACTION" != initialize ]; then
+			ERROR_TYPE=source_not_initialized
+			log_error 'source_not_initialized: explicitly initialize the card before date backup'
+			return 1
+		fi
 		if ! umount "$MOUNT_POINT" 2>/dev/null; then
 			log_error 'Failed to release read-only source mount to create card configuration'
 			return 1
@@ -940,6 +1028,13 @@ complete_backup() {
 		ERROR_TYPE=rsync
 		return 1
 	}
+	if [ "$BACKUP_LAYOUT" = date ]; then
+		manager_date_summary || { ERROR_TYPE=summary; return 1; }
+		verify_final_target || return 1
+		manager_date_status completed '' || { ERROR_TYPE=status; return 1; }
+		STATUS_TERMINAL_WRITTEN=1
+		return 0
+	fi
 	verify_final_target || return 1
 	if ! write_status completed "$SD_UUID" "$BACKUP_DISPLAY_NAME" "$DEVNAME" \
 		"$BACKUP_STARTED_AT" 100 "$BACKUP_TRANSFER_FILES" "$BACKUP_TRANSFER_FILES" \
@@ -1056,10 +1151,19 @@ main() {
 	if ! setup_sdcard_config; then
 		# A source snapshot mismatch from a remount gate is device evidence, not
 		# malformed card metadata. Preserve that classification for its LED path.
-		[ "$ERROR_TYPE" = device_unknown ] || ERROR_TYPE=card_config
+		case "$ERROR_TYPE" in device_unknown|source_not_initialized) ;; *) ERROR_TYPE=card_config ;; esac
 		exit 1
 	fi
 	check_cancel_request || exit "$?"
+	if [ "$ACTION" = initialize ]; then
+		INITIALIZE_SUCCEEDED=1
+		exit 0
+	fi
+	if [ "$BACKUP_LAYOUT" = date ]; then
+		. "$SCRIPT_DIR/media-date.sh"
+		. "$SCRIPT_DIR/manager-date.sh"
+		if perform_date_backup; then exit 0; else exit "$?"; fi
+	fi
 	if ! bind_card_identity; then
 		ERROR_TYPE=card_config
 		exit 1
@@ -1073,4 +1177,10 @@ main() {
 	fi
 }
 
+case "$ACTION" in
+	cleanup|cleanup-preview)
+		# Same manager lease, lock and cancel functions; no source lifecycle.
+		if manager_cleanup_main; then exit 0; else exit "$?"; fi
+		;;
+esac
 main "$@"
