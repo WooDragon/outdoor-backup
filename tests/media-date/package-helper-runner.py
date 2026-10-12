@@ -33,7 +33,7 @@ def main():
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(scenarios.Scenarios)
     if suite.countTestCases() != 21:
         raise SystemExit('incomplete helper integration registry')
-    semantic = run_tap('semantic-scenarios.pl', 84)
+    semantic = run_tap('semantic-scenarios.pl', 123)
     uuid = run_tap('uuid-scenarios.pl', 4)
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     failures = len(result.failures) + len(result.errors)

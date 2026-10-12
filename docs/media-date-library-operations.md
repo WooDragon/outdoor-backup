@@ -1,6 +1,6 @@
 # 媒体日期库：本地操作与恢复边界
 
-> 状态：主体本地实现与定向验证已闭合，有限范围复核 APPROVED；修后未重跑全量，不能发布。以下命令是源码核对后的接口说明，不是目标 R5S 部署批准。本次文档维护未在设备上执行这些命令。
+> 状态：本文已按 Issue #65 同步当前配置与状态语义。历史有限范围 APPROVED 不扩大到本轮；修后全量、root CI、SDK/IPK 与固件尚未执行。以下命令是源码核对后的接口说明，不是目标 R5S 部署批准。本次文档维护未在设备上执行这些命令。
 > 场景：root 管理已挂载的 ext4/btrfs 目标，并使用独立日期库；不会访问私人素材、自动迁移旧镜像或创建 WebUI 队列。
 
 **前置阅读**：操作前应先读取 [media-date-library-implementation.md](media-date-library-implementation.md) 的配置、来源身份及 G1–G6 边界。挂载目标前应先读取 [README 的 Configure target storage](../README.md#configure-target-storage)。WebUI 操作前应先读取 [WEBUI_USER_GUIDE.md](WEBUI_USER_GUIDE.md)。本文是日期配置、manual、initialize 和现行 cleanup CLI 的操作权威；其他文档只链接这些步骤。
@@ -37,25 +37,32 @@ block info
 
 目标必须已由 fstab 挂载。日期根应为该目标的直接新子目录；不存在或真正空目录才可首次初始化。它应与镜像根、来源挂载点互不包含。应保留旧镜像根配置，不把原镜像目录改成日期根。
 
-下面使用独立占位符，不自动选择设备。固定 offset 应由管理员显式选择，`480` 表示 UTC+08:00，`0` 表示 UTC；不能给新库留空或沿用设备 TZ 猜测。
+下面只用于新库，使用独立占位符，不自动选择设备。未配置 offset 时，新库初始化采用 `480`（UTC+08:00）；无需管理员逐次填写。`0` 表示 UTC，不等于未配置。既有库未配置 offset 时沿用 `library.json` 的固定 policy，包括 `0`；显式不同值拒绝，不能在线改策略。运行时不从设备 TZ 推断 offset。
 
 ```sh
 TARGET_MOUNT='<EXACT_ALREADY_MOUNTED_TARGET>'
 TARGET_UUID='<UUID_FROM_INTENDED_TARGET>'
-BACKUP_ROOT="$TARGET_MOUNT/<MIRROR_CHILD>"
 LIBRARY_ROOT="$TARGET_MOUNT/<NEW_DATE_LIBRARY_CHILD>"
-ARCHIVE_OFFSET_MINUTES='<CANONICAL_INTEGER_-840_TO_840>'
 
 uci set outdoor-backup.config.target_mount="$TARGET_MOUNT"
 uci set outdoor-backup.config.target_uuid="$TARGET_UUID"
-uci set outdoor-backup.config.backup_root="$BACKUP_ROOT"
 uci set outdoor-backup.config.library_root="$LIBRARY_ROOT"
-uci set outdoor-backup.config.archive_offset_minutes="$ARCHIVE_OFFSET_MINUTES"
 uci set outdoor-backup.config.backup_layout='date'
 uci commit outdoor-backup
 ```
 
-预期：配置显式选择 date，不改旧数据。库尚未因为 UCI commit 而建立。应检查 legacy 配置和有效继承是否符合预期；`uci show` 只显示 UCI 层。CBI 保存也不会执行卡初始化、备份或历史迁移。既有 library.json 固定的 offset 不应在线修改；改 UCI 不会重算历史路由。
+预期：配置显式选择 date，不改旧数据。UCI commit 尚未建立库。应先核对 legacy/UCI 的有效继承：未配置镜像根时，loader 在有效 target 确定后派生 `target_mount/SDMirrors`；显式旧镜像根仍优先，不自动迁移。`uci show` 只显示 UCI 层。已有 offset 配置也仍生效，不会被新库默认值覆盖。
+
+若新库需要不同于默认值的 offset，应在首次初始化前设置规范整数；例如下面明确选择 UTC。提交后预期该值固定到新库 policy，后续修改 UCI 不会重算历史路由。
+
+```sh
+uci set outdoor-backup.config.archive_offset_minutes='0'
+uci commit outdoor-backup
+```
+
+若要使用新库默认值或既有库 policy，应先确认 legacy 没有显式 offset，再移除相应 UCI override。仅删除 UCI option 不能取消 legacy 值；不应删除既有库 marker 来绕过 policy。
+
+LuCI 显示目标下的 `MediaLibrary` 与新库默认 offset 或既有 policy。常规默认路径随目标选择或手工 mount 改变；自定义路径保持原值并继续验证。mirror 无日期 intent 时，显示默认根不会写入 `library_root`，也不会引入与合法同名镜像根的重叠。date 默认根正常保存。CBI 保存只改配置，不创建目录、日期库或卡配置，不执行备份或历史迁移。表单说明应先读取 [WEBUI_USER_GUIDE 的基本设置](WEBUI_USER_GUIDE.md#21-基本设置)。
 
 ## 3. 显式初始化缺配置的新卡
 
@@ -107,7 +114,7 @@ jq '{current_backup,storage,history}' /opt/outdoor-backup/var/status.json
 logread | grep outdoor-backup
 ```
 
-预期：date task 显示布局、本次比较和 phase。planning 表示分析素材，finalizing 表示同步与最终检查，二者没有 ETA。transferring 的采样不构成完整性审计。应先读取 [WEBUI_DEVELOPER_GUIDE 的 task 合同](WEBUI_DEVELOPER_GUIDE.md#日期任务与状态合同) 理解 archive、warnings 和 replaced 的未知值。
+预期：date task 显示布局、本次比较和 phase。planning 表示分析素材，finalizing 表示同步与最终检查，二者没有 ETA。transferring 的采样不构成完整性审计。状态页将归档信息、元数据提示和旧版本保留分区显示，并折叠技术详情与帮助。Warning 和 Undated 不等于任务失败；未知计数不是 0，也不是错误。目录存在不证明实际旧文件或内容不同。应先读取 [WEBUI_DEVELOPER_GUIDE 的 task 合同](WEBUI_DEVELOPER_GUIDE.md#日期任务与状态合同) 核对字段与兼容边界。
 
 在任务退出且 owner 释放后，可只读列出自己的库元数据位置。
 

@@ -2,6 +2,7 @@
 
 > 状态：默认关闭 checksum 的增量设计复核 APPROVED；首轮五项 MUST FIX 的设计闭环保留。
 > 日期：2026-10-10。
+> 历史适用范围：本记录中的裁决、r1/r2 修订过程和测试结论保持原样。2026-10-12 的 [Issue #65](https://github.com/WooDragon/outdoor-backup/issues/65) 替代了旧的新库显式 offset、Warning 一律否决字段、静态默认 mirror 根及裸文本日期摘要决定。当前合同应先读取 [现行实现](media-date-library-implementation.md#1-配置合同) 与 [WebUI 合同](WEBUI_DEVELOPER_GUIDE.md#日期任务与状态合同)。历史 APPROVED 不构成本次改动的评审或验收结论。
 > 本记录保留设计审批历史，并追加本地实现的有限范围评审结论。主体本地实现与定向验证已闭合；修后未重跑全量，不能发布。本记录不是部署批准。
 
 **前置阅读**：方案及 BDD 分支的权威版本在 [media-date-library-design.md](media-date-library-design.md)。实现或评估这项功能前应先读取该设计；本记录不重复定义运行时合同。

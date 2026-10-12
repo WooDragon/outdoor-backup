@@ -710,10 +710,36 @@ main() {
     case_legacy_variable_names_do_not_control_uci
     case_common_sources_preserve_legacy_led_values
 
-    assert_equal "$CASES" "21" "all required cases executed"
+    begin_case D01 "absent mirror root follows target after legacy and UCI overlays"
+    prepare_config_state
+    printf '%s\n' 'TARGET_MOUNT=/mnt/legacy-target' > "$LEGACY_FILE"
+    assert_success load_config
+    assert_equal "$BACKUP_ROOT" "/mnt/legacy-target/SDMirrors" "D01 legacy target derives mirror root"
+    assert_equal "$LIBRARY_ROOT" "" "D01 mirror keeps absent date intent"
+    assert_equal "$ARCHIVE_OFFSET_MINUTES" "" "D01 parsing does not read/default policy"
+    write_uci "config outdoor-backup 'config'
+option target_mount '/mnt/uci-target'"
+    assert_success load_config
+    assert_equal "$BACKUP_ROOT" "/mnt/uci-target/SDMirrors" "D01 UCI target derives mirror root"
+    printf '%s\n' 'TARGET_MOUNT=/mnt/legacy-target' 'BACKUP_ROOT=/mnt/uci-target/Custom' > "$LEGACY_FILE"
+    assert_success load_config
+    assert_equal "$BACKUP_ROOT" "/mnt/uci-target/Custom" "D01 explicit legacy root retained"
+    write_uci "config outdoor-backup 'config'
+option target_mount '/mnt/uci-target'
+option backup_root '/mnt/uci-target/UCI'"
+    assert_success load_config
+    assert_equal "$BACKUP_ROOT" "/mnt/uci-target/UCI" "D01 explicit UCI root wins"
+    prepare_config_state
+    cp "$REPO_ROOT/files/opt/outdoor-backup/conf/backup.conf" "$LEGACY_FILE"
+    write_uci "config outdoor-backup 'config'
+option target_mount '/mnt/uci-target'"
+    assert_success load_config
+    assert_equal "$BACKUP_ROOT" "/mnt/uci-target/SDMirrors" "D01 packaged legacy does not pin root"
+
+    assert_equal "$CASES" "22" "all required cases executed"
     ASSERTIONS=$((ASSERTIONS + 1))
-    if [ "$ASSERTIONS" -ne 109 ]; then
-        fail "all required assertions executed (expected=109, actual=$ASSERTIONS)"
+    if [ "$ASSERTIONS" -ne 121 ]; then
+        fail "all required assertions executed (expected=121, actual=$ASSERTIONS)"
     fi
     if [ "$FAILED" -ne 0 ]; then
         printf 'cases=%s assertions=%s failed=%s\n' "$CASES" "$ASSERTIONS" "$FAILED"

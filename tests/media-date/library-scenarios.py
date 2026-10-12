@@ -183,7 +183,26 @@ def filesystem_admission(base, root, outcome, admitted, capability_called):
     check(not list((base / 'target').glob('.media-date-probe.*')), 'private probe left behind')
 
 
+def offset_policy(expected):
+    def after(base, root, outcome):
+        policy = json.loads((root / '.outdoor-backup/library.json').read_text())
+        check(policy['archive_offset_minutes'] == expected, 'wrong initialized/inherited offset')
+    return after
+
+
+def existing_zero(base, root):
+    existing('abcd-1234', False)(base, root)
+    marker = root / '.outdoor-backup/library.json'
+    policy = json.loads(marker.read_text())
+    policy['archive_offset_minutes'] = 0
+    marker.write_text(json.dumps(policy))
+
+
 run_case('G01 missing library initializes empty root', after=initialized)
+run_case('D01 new library absent offset defaults to 480', shell_extra='ARCHIVE_OFFSET_MINUTES=', after=offset_policy(480))
+run_case('D02 new library explicit zero preserved', shell_extra='ARCHIVE_OFFSET_MINUTES=0', after=offset_policy(0))
+run_case('D03 existing zero policy inherited with absent offset', existing_zero, shell_extra='ARCHIVE_OFFSET_MINUTES=', after=offset_policy(0))
+run_case('D04 existing zero policy cannot become default480', existing_zero, shell_extra='ARCHIVE_OFFSET_MINUTES=480', success=False, error='library_policy_changed', after=offset_policy(0))
 run_case('G02 unknown nonempty root refused', setup=lambda b,r:(r/'foreign').write_text('keep'), success=False, after=no_claim)
 run_case('G03 residual routes without library refused', setup=lambda b,r:(r/'.outdoor-backup/routes').mkdir(parents=True), success=False, after=no_claim)
 for label, text in [('empty',''), ('corrupt','{'), ('duplicate','{"version":1,"version":1}'), ('unknown','{"version":2}')]:
@@ -321,6 +340,6 @@ for assignment, reason in [('SD_UUID=invalid','invalid_source_id'),('SOURCE_FS_U
 run_case('G46 btrfs initializes only after capability probe', shell_extra='TARGET_FS_TYPE=btrfs', after=lambda b,r,o: filesystem_admission(b,r,o,True,True))
 run_case('G47 f2fs refused without capability tool or initialization', shell_extra='TARGET_FS_TYPE=f2fs', success=False, error='unsupported_filesystem', after=lambda b,r,o: filesystem_admission(b,r,o,False,False))
 run_case('G48 btrfs capability failure leaves no claim', shell_extra='TARGET_FS_TYPE=btrfs; CAPABILITY_FAILURE=1', success=False, error='filesystem_capability_failed', after=lambda b,r,o: filesystem_admission(b,r,o,False,True))
-check(ran == 77, f'expected 77 cases, got {ran}')
+check(ran == 81, f'expected 81 cases, got {ran}')
 print(f'ran={ran} passed={passed} failed={failed} blocked=2 assertions={assertions}; synthetic only; blocked=OpenWrt-toolchain,ext4/btrfs-target', flush=True)
 sys.exit(1 if failed else 0)

@@ -4,7 +4,9 @@
 
 ## 可选日期包与 provider 边界
 
-主体本地日期实现与定向验证已闭合，有限范围复核 APPROVED。修后未重跑全量，G1–G6 验收门槛仍未全部完成；不能发布。以下是现行 recipe 接口，不是 SDK/IPK 或目标设备验收。修改或选择日期包前，应先读取 [现行实现与 G1–G6 边界](docs/media-date-library-implementation.md)。
+主体本地日期实现已有定向证据；有限范围 APPROVED 属于历史轮次，不扩大到本轮 Issue #65。本轮修后本地全量已通过，GitHub CI/SDK/IPK 和固件仍待验证（见 [implementation §6.6](docs/media-date-library-implementation.md#66-issue-65warning默认配置与日期状态展示)）；G1–G6 验收门槛仍未全部完成；不能据局部结果称为发布通过。以下是现行 recipe 接口，不是 SDK/IPK 或目标设备验收。修改或选择日期包前，应先读取 [现行实现与 G1–G6 边界](docs/media-date-library-implementation.md)。
+
+本轮 [Issue #65](https://github.com/WooDragon/outdoor-backup/issues/65) 的源码配方版本为 core/date `1.5.0-r3`、LuCI `1.2.0-r3`；两份 recipe 的 `PKG_RELEASE` 均为 `3`。ExifTool provider 本轮未改变。该版本记录是当前配方事实，不证明 IPK 已构建或发布。旧 r1/r2 过程记录保持历史含义，不回写测试结果。新增行为、局部证据与未完成项应先读取 [implementation 的 Issue #65 验证节](docs/media-date-library-implementation.md#66-issue-65warning默认配置与日期状态展示)。
 
 `outdoor-backup/Makefile` 同时定义 core 与可选 `outdoor-backup-media-date`。core 安装 shell runtime，镜像安装不引入 Perl。可选包安装 `media-date-plan.pl` 和 `lib/OutdoorBackup/MediaDate/` 下九个 `.pm`。其依赖为 core、外部 `exiftool` provider、`perl` 以及 recipe 声明的 `perlbase-essential/findbin/json-pp/digest/encode/fcntl/time/cwd/b/storable`。应核对目标 feed 的真实模块归属，不用宿主 Perl 的“核心模块”判断替代目标依赖。
 

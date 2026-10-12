@@ -226,7 +226,7 @@ config_load() {
     BACKUP_LAYOUT=mirror
     LIBRARY_ROOT=""
     ARCHIVE_OFFSET_MINUTES=""
-    BACKUP_ROOT="/mnt/ssd/SDMirrors"
+    unset BACKUP_ROOT
     MOUNT_POINT="/mnt/sdcard"
     TARGET_MOUNT="/mnt/ssd"
     TARGET_UUID=""
@@ -297,9 +297,11 @@ config_load() {
             ;;
     esac
 
+    TARGET_MOUNT=$(config_normalize_path "$TARGET_MOUNT" target_mount) || return 1
+    # Derive only after both overlays, and only when no root was configured.
+    [ "${BACKUP_ROOT+x}" ] || BACKUP_ROOT="$TARGET_MOUNT/SDMirrors"
     BACKUP_ROOT=$(config_normalize_path "$BACKUP_ROOT" backup_root) || return 1
     MOUNT_POINT=$(config_normalize_path "$MOUNT_POINT" mount_point) || return 1
-    TARGET_MOUNT=$(config_normalize_path "$TARGET_MOUNT" target_mount) || return 1
     # config_normalize_optional_path always returns 0 by design (LED paths
     # must never veto config_load; see its own comment) -- no `|| return 1`
     # here, since one would be dead code pretending to be a safety gate
@@ -321,7 +323,7 @@ config_load() {
 }
 
 # Validate layout intent without tools, media reads or shared writes.
-# Args: none. Returns 0/1; offset is required only when initializing a date library.
+# Args: none. Returns 0/1; offset selection belongs to owner-only library admission.
 config_validate_layout() {
     case "$BACKUP_LAYOUT" in mirror|date) ;; *)
         config_error 'backup_layout must be mirror or date'; return 1 ;;

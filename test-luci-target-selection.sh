@@ -15,7 +15,11 @@ fi
 
 mkdir -p /var/lock
 opkg update >/dev/null
-opkg install lua luci-compat uci libuci-lua >/dev/null
+opkg install lua luci-compat uci libuci-lua node >/dev/null
+
+# Native CBI consumes the production DOM's actual final values, even on RED.
+dom_rc=0
+TARGET_SELECTION_DOM_EVIDENCE=/tmp/target-selection-dom.json node /src/test-target-selection-ui.js || dom_rc=$?
 
 lua - /src/luci-app-outdoor-backup/luasrc/model/cbi/outdoor-backup/config.lua <<'LUA'
 local model = assert(arg[1], "missing config model")
@@ -172,7 +176,7 @@ local function render_target_template(contents, selector)
     return table.concat(chunks)
 end
 
-local function submit(map, values, omit_token)
+local function submit(map, values, omit_token, omit_offset)
     forms = { ["cbi.submit"] = "1", token = not omit_token and "target-fixture-token" or nil,
         [form_value("backup_layout")] = "mirror", [form_value("library_root")] = "",
         [form_value("archive_offset_minutes")] = "" }
@@ -186,6 +190,7 @@ local function submit(map, values, omit_token)
             forms[form_value(name)] = value
         end
     end
+    if omit_offset then forms[form_value("archive_offset_minutes")] = nil end
     map:parse()
 end
 
@@ -508,9 +513,209 @@ for index, source in ipairs({
     end
 end
 
-check(cases == 31, "all required cases executed")
-if assertions ~= 246 then
-    fail(string.format("all required assertions executed (expected=246, actual=%d)", assertions))
+-- Defaults are rendered through cfgvalue, then submitted through native Map.parse.
+local function option(map, name)
+    for _, field in ipairs(map.children[1].children) do
+        if field.option == name then return field end
+    end
+    error("missing option " .. name)
+end
+
+begin("D01", "empty config displays fixed offset and target-derived roots without date intent")
+do
+    local map, root = load_map("defaults", {}, json({}, "/mnt/ssd", "/mnt/ssd/SDMirrors"))
+    check(option(map, "archive_offset_minutes"):cfgvalue("config") == "480", "D01 offset default")
+    check(option(map, "library_root"):cfgvalue("config") == "/mnt/ssd/MediaLibrary", "D01 date root default")
+    check(option(map, "backup_root"):cfgvalue("config") == "/mnt/ssd/SDMirrors", "D01 mirror root default")
+    check(reloaded(root, "library_root") == nil, "D01 page load wrote intent")
+end
+
+for _, mode in ipairs({"manual", "selected"}) do
+    begin("D02-" .. mode, "default paths follow target changes through native save")
+    local values = {enabled="0", target_mount="/mnt/old-target", mount_point="/virtual/source"}
+    local map, root = load_map("rebase-" .. mode, values,
+        json(one_target, "/mnt/old-target", "/mnt/old-target/SDMirrors"))
+    submit(map, {enabled="0", _target_selector=mode == "manual" and "manual" or "7:SSD-ONE/mnt/target-one",
+        target_mount="/mnt/target-one", target_uuid="SSD-ONE", backup_root="/mnt/old-target/SDMirrors",
+        mount_point="/virtual/source", library_root="/mnt/old-target/MediaLibrary", archive_offset_minutes="480"})
+    check(map.save, "D02 default rebase rejected")
+    check(reloaded(root, "backup_root") == "/mnt/target-one/SDMirrors", "D02 mirror not rebased")
+    check(reloaded(root, "library_root") == nil, "D02 display default became intent")
+    check(reloaded(root, "archive_offset_minutes") == nil, "D02 untouched offset persisted")
+end
+
+begin("D03", "legacy mirror named MediaLibrary allows unrelated save with displayed defaults")
+do
+    local values = base_values()
+    values.backup_root = "/mnt/old-target/MediaLibrary"
+    local map, root = load_map("mirror-name", values, json({}, values.target_mount, values.backup_root))
+    submit(map, {enabled="1", _target_selector="manual", target_mount=values.target_mount,
+        target_uuid=values.target_uuid, backup_root=values.backup_root, mount_point="/virtual/source",
+        library_root="/mnt/old-target/MediaLibrary", archive_offset_minutes="480", debug="1"})
+    check(map.save, "D03 display default manufactured overlap")
+    check(reloaded(root, "library_root") == nil, "D03 persisted display intent")
+    check(reloaded(root, "debug") == "1", "D03 unrelated change not saved")
+end
+
+begin("D04", "explicit zero and custom date root remain configured")
+do
+    local values = base_values()
+    values.library_root = "/mnt/old-target/CustomDate"
+    values.archive_offset_minutes = "0"
+    local map, root = load_map("custom", values, json({}, values.target_mount, values.backup_root))
+    check(option(map, "archive_offset_minutes"):cfgvalue("config") == "0", "D04 explicit zero lost")
+    check(option(map, "library_root"):cfgvalue("config") == values.library_root, "D04 custom root lost")
+    submit(map, {enabled="1", _target_selector="manual", target_mount=values.target_mount,
+        target_uuid=values.target_uuid, backup_root=values.backup_root, mount_point="/virtual/source",
+        library_root=values.library_root, archive_offset_minutes="0"})
+    check(map.save, "D04 custom settings rejected")
+    check(reloaded(root, "library_root") == values.library_root, "D04 custom root overwritten")
+end
+
+begin("D05", "new date config accepts blank offset and derives roots without creating directories")
+do
+    local map, root = load_map("new-date", {}, json({}, "/mnt/ssd", "/mnt/ssd/SDMirrors"))
+    local target = root .. "/offline-target"
+    submit(map, {enabled="0", _target_selector="manual", target_mount=target, target_uuid="",
+        backup_root="/mnt/ssd/SDMirrors", mount_point="/virtual/source", backup_layout="date",
+        library_root="/mnt/ssd/MediaLibrary", archive_offset_minutes=""})
+    check(map.save, "D05 date defaults rejected")
+    check(reloaded(root, "library_root") == target .. "/MediaLibrary", "D05 date default not rebased: " .. tostring(reloaded(root, "library_root")))
+    check(not require("nixio.fs").lstat(target), "D05 configuration created target")
+end
+
+for _, submitted_offset in ipairs({"0", "", "480"}) do
+    local changed = submitted_offset == "480"
+    begin("D06-" .. submitted_offset, "existing zero policy displays/inherits zero and rejects changes")
+    local values = base_values()
+    values.backup_layout = "date"
+    local map, root = load_map("policy-" .. tostring(changed), values, json({}, values.target_mount, values.backup_root))
+    local library = root .. "/target/MediaLibrary"
+    assert(os.execute("mkdir -p " .. library .. "/.outdoor-backup") == 0)
+    local policy = {version=1, library_id="22222222-2222-4222-8222-222222222222",
+        layout="date", parser_profile="media-date-v1", archive_offset_minutes=0}
+    local file = assert(io.open(library .. "/.outdoor-backup/library.json", "w"))
+    file:write(require("luci.jsonc").stringify(policy)); file:close()
+    values.target_mount = root .. "/target"
+    values.backup_root = values.target_mount .. "/SDMirrors"
+    values.library_root = library
+    write_config(current_confdir, values)
+    fixture:configure(values)
+    fixture.libraries = {[library]=policy}
+    queue(helper(json({}, values.target_mount, values.backup_root)))
+    map = assert(dofile(model))
+    check(option(map, "archive_offset_minutes"):cfgvalue("config") == "0", "D06 old policy zero not displayed")
+    submit(map, {enabled="1", _target_selector="manual", target_mount=values.target_mount,
+        target_uuid=values.target_uuid, backup_root=values.backup_root, mount_point="/virtual/source",
+        backup_layout="date", library_root=library, archive_offset_minutes=submitted_offset})
+    check(not not map.save == not changed, "D06 wrong policy admission")
+    check(reloaded(root, "archive_offset_minutes") == nil, "D06 policy change wrote offset")
+    check(require("nixio.fs").readfile(library .. "/.outdoor-backup/library.json") == require("luci.jsonc").stringify(policy), "D06 policy marker modified")
+    fixture.libraries = nil
+end
+
+for index, library in ipairs({"relative/date", "/mnt/old-target/Date/child",
+    "/mnt/old-target/CustomMirrors", "/mnt/old-target/CustomMirrors/child",
+    "/mnt/old-target/Date\nunsafe", "/virtual/source"}) do
+    begin("D07-" .. index, "unsafe or intersecting explicit date root rejects native save")
+    local values = base_values()
+    local map, root = load_map("invalid-date-" .. index, values, json({}, values.target_mount, values.backup_root))
+    submit(map, {enabled="1", _target_selector="manual", target_mount=values.target_mount,
+        target_uuid=values.target_uuid, backup_root=values.backup_root, mount_point="/virtual/source",
+        backup_layout="date", library_root=library, archive_offset_minutes="480", debug="1"})
+    check(not map.save, "D07 invalid date root saved")
+    check(saved_config(root) == "", "D07 invalid transaction wrote savedir")
+    check(reloaded(root, "backup_root") == values.backup_root, "D07 invalid transaction changed mirror")
+    check(reloaded(root, "library_root") == nil, "D07 invalid transaction persisted intent")
+end
+
+begin("D08", "selected target preserves explicit custom date root in mirror mode")
+do
+    local values = base_values()
+    values.library_root = "/mnt/old-target/CustomDate"
+    local map, root = load_map("selected-custom", values, json(one_target, values.target_mount, values.backup_root))
+    submit(map, {enabled="1", _target_selector="7:SSD-ONE/mnt/target-one", target_mount=values.target_mount,
+        target_uuid=values.target_uuid, backup_root=values.backup_root, mount_point="/virtual/source",
+        library_root=values.library_root, archive_offset_minutes="0"})
+    check(map.save, "D08 selected custom date root rejected")
+    check(reloaded(root, "library_root") == values.library_root, "D08 custom date root overwritten")
+    check(reloaded(root, "archive_offset_minutes") == "0", "D08 explicit zero not saved")
+end
+
+begin("D09", "existing date defaults follow manual mount while explicit integer remains")
+do
+    local values = {enabled="0", target_mount="/mnt/old-target", backup_layout="date", archive_offset_minutes="-60"}
+    local map, root = load_map("date-rebase", values, json({}, values.target_mount, "/mnt/old-target/SDMirrors"))
+    check(option(map, "archive_offset_minutes"):cfgvalue("config") == "-60", "D09 explicit negative integer lost")
+    submit(map, {enabled="0", _target_selector="manual", target_mount=root .. "/offline",
+        backup_root="/mnt/old-target/SDMirrors", target_uuid="", mount_point="/virtual/source",
+        backup_layout="date", library_root="/mnt/old-target/MediaLibrary", archive_offset_minutes="-60"})
+    check(map.save, "D09 existing date default rebase rejected")
+    check(reloaded(root, "library_root") == root .. "/offline/MediaLibrary", "D09 date root not rebased")
+    check(reloaded(root, "archive_offset_minutes") == "-60", "D09 integer overwritten")
+end
+
+-- Independent GET and POST Maps: never render POST offset before Map.parse.
+for _, source_policy in ipairs({false, true}) do
+    for _, omit_offset in ipairs({false, true}) do
+        begin("F1-" .. tostring(source_policy) .. "-" .. tostring(omit_offset), "GET offset inheritance is stable across POST target staging")
+        local root = temporary_dir("get-post")
+        current_confdir, current_savedir = root .. "/conf", root .. "/save"
+        local source_target, destination = root .. "/A", root .. "/B"
+        local stored = {enabled="0", target_mount=source_target, mount_point="/virtual/source"}
+        write_config(current_confdir, stored)
+        fixture:configure(stored)
+        fixture:authenticate()
+        local library = (source_policy and source_target or destination) .. "/MediaLibrary"
+        assert(os.execute("mkdir -p " .. library .. "/.outdoor-backup") == 0)
+        local policy = {version=1, library_id="22222222-2222-4222-8222-222222222222",
+            layout="date", parser_profile="media-date-v1", archive_offset_minutes=0}
+        local marker = library .. "/.outdoor-backup/library.json"
+        local content = require("luci.jsonc").stringify(policy)
+        local file = assert(io.open(marker, "w")); file:write(content); file:close()
+        fixture.libraries = {[library]=policy}
+        local targets = {{device="/dev/sdb1", uuid="SSD-ONE", mount=destination, fstype="ext4"}}
+        local document = json(targets, source_target, source_target .. "/SDMirrors")
+        queue(helper(document), helper(document), helper(document))
+        forms = {}
+        local get_map = assert(dofile(model))
+        local shown = option(get_map, "archive_offset_minutes"):cfgvalue("config")
+        check(shown == (source_policy and "0" or "480"), "F1 incorrect GET display")
+        check(saved_config(root) == "", "F1 GET wrote UCI")
+        local post_map = assert(dofile(model))
+        submit(post_map, {enabled="0", _target_selector="7:SSD-ONE" .. destination,
+            target_mount=source_target, target_uuid="", backup_root=source_target .. "/SDMirrors",
+            mount_point="/virtual/source", backup_layout="date",
+            library_root=source_target .. "/MediaLibrary", archive_offset_minutes=shown}, nil, omit_offset)
+        check(post_map.save, "F1 independent POST rejected unchanged/absent offset")
+        check(reloaded(root, "archive_offset_minutes") == nil, "F1 display/fallback became explicit offset")
+        check(reloaded(root, "library_root") == destination .. "/MediaLibrary", "F1 date root not selected")
+        check(reloaded(root, "backup_root") == destination .. "/SDMirrors", "F1 mirror root not selected")
+        check(require("nixio.fs").readfile(marker) == content, "F1 policy marker modified")
+        fixture.libraries = nil
+    end
+end
+
+begin("F2", "actual DOM clearing/retyping values save through native CBI unchanged")
+do
+    local file = assert(io.open("/tmp/target-selection-dom.json", "r"), "missing actual DOM evidence")
+    local values = assert(require("luci.jsonc").parse(file:read("*a"))); file:close()
+    local stored = {enabled="0", target_mount="/mnt/old", mount_point="/virtual/source"}
+    local map, root = load_map("dom-input-save", stored, json({}, "/mnt/old", "/mnt/old/SDMirrors"))
+    check(values.target_mount == "/mnt/new", "F2 missing actual final input")
+    values.enabled, values._target_selector, values.target_uuid = "0", "manual", ""
+    values.mount_point, values.backup_layout, values.archive_offset_minutes = "/virtual/source", "date", "480"
+    submit(map, values)
+    check(map.save, "F2 actual DOM values rejected by native save")
+    check(reloaded(root, "target_mount") == values.target_mount, "F2 mount not saved")
+    check(reloaded(root, "backup_root") == "/mnt/new/SDMirrors", "F2 generated mirror not saved")
+    check(reloaded(root, "library_root") == "/mnt/new/MediaLibrary", "F2 generated date root not saved")
+    check(reloaded(root, "archive_offset_minutes") == nil, "F2 display offset persisted")
+end
+
+check(cases == 53, "all required cases executed")
+if assertions ~= 380 then
+    fail(string.format("all required assertions executed (expected=380, actual=%d)", assertions))
 end
 if failed ~= 0 then
     print(string.format("cases=%d assertions=%d failed=%d", cases, assertions, failed))
@@ -518,3 +723,4 @@ if failed ~= 0 then
 end
 print(string.format("cases=%d assertions=%d failed=0", cases, assertions))
 LUA
+[ "$dom_rc" -eq 0 ]

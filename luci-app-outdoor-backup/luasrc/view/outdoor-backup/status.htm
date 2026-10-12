@@ -318,6 +318,50 @@
     color: #721c24;
 }
 
+/* Date task presentation stays within CBI sections; no theme palette override. */
+.outdoor-task-summary {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+}
+.outdoor-task-info {
+    margin: 1em 0;
+    min-width: 0;
+}
+.outdoor-task-info legend {
+    font-size: 1em;
+    line-height: 1.4;
+}
+.outdoor-task-labels {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5em;
+    margin: 0.5em 0;
+}
+.outdoor-task-counts {
+    width: 100%;
+    table-layout: fixed;
+}
+.outdoor-task-counts th,
+.outdoor-task-counts td {
+    text-align: left;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+.outdoor-task-details {
+    margin: 0.75em 0;
+    min-width: 0;
+}
+.outdoor-task-details summary {
+    cursor: pointer;
+    line-height: 1.4;
+}
+.outdoor-task-path {
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: monospace;
+}
 /* Responsive Design */
 @media (max-width: 768px) {
     .outdoor-backup-modal-content {
@@ -365,35 +409,184 @@ function validTask(task) {
         !exactKeys(task.replaced, ['files_count','path']) || !Array.isArray(task.warnings)) return false;
     var counts = Object.keys(task.archive);
     for (var i = 0; i < counts.length; i++) if (!nullableCount(task.archive[counts[i]])) return false;
-    var codes = ['xml_too_large','metadata_parse_failed','metadata_parse_warning','metadata_candidate_limit',
-        'ambiguous_date_semantics','ambiguous_recording_identity','unverified_time_profile','ambiguous_pairing',
-        'primary_not_present','no_capture_date','conflicting_capture_date'];
     for (var j = 0; j < task.warnings.length; j++) {
         var warning = task.warnings[j];
-        if (!exactKeys(warning, ['code','count']) || codes.indexOf(warning.code) < 0 ||
+        // A newer producer's code must not erase an otherwise readable task.
+        // Unknown codes are text-only technical details, never HTML or status.
+        if (!exactKeys(warning, ['code','count']) || typeof warning.code !== 'string' || !warning.code.trim() ||
             !isNonNegativeFinite(warning.count) || Math.floor(warning.count) !== warning.count) return false;
     }
     return nullableCount(task.replaced.files_count) &&
         (task.replaced.path === null || typeof task.replaced.path === 'string');
 }
-// Returns escaped presentation HTML. Null means unknown; numeric zero stays zero.
-function taskSummary(task) {
-    if (!validTask(task)) return '<p>Task information unavailable (unsupported schema)</p>';
-    var html = '<div class="info-box"><p>Layout: ' + task.layout + '; comparison mode: ' + task.comparison_mode + '</p>';
-    html += '<p>' + (task.comparison_mode === 'quick' ?
-        'Quick compares size/mtime; same size/mtime content changes may be missed. Mtime-only changes may retain identical old content in replaced.' :
-        'Checksum reads current source and corresponding destination media in full; it does not audit historical media absent from this card.') + '</p>';
+/** Build one presentation node; text (including paths/codes) is never markup.
+ * @param {string} tag HTML element name.
+ * @param {string} className Static application/CBI class names.
+ * @param {string|number} text Optional literal content.
+ * @returns {Element} Detached node.
+ */
+function taskNode(tag, className, text) {
+    var node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+}
+/** @param {string} title Section title. @returns {Element} Bounded CBI fieldset. */
+function taskSection(title) {
+    var section = taskNode('fieldset', 'cbi-section outdoor-task-info');
+    section.appendChild(taskNode('legend', '', title));
+    return section;
+}
+/** @param {string} title Toggle label. @param {string} role Stable UI role. @returns {Element} Initially closed help. */
+function taskDetails(title, role) {
+    var details = taskNode('details', 'outdoor-task-details');
+    details.setAttribute('data-task-detail', role);
+    details.appendChild(taskNode('summary', '', title));
+    return details;
+}
+/** @param {Object} task Valid date task. @returns {Element} Archive counts, not transfer progress. */
+function archiveSummary(task) {
+    var section = taskSection('日期归档信息');
+    var labels = taskNode('p', 'outdoor-task-labels');
+    labels.appendChild(taskNode('span', 'status-badge', '日期归档 · date'));
+    labels.appendChild(taskNode('span', 'status-badge', task.comparison_mode === 'quick' ?
+        '快速比较 · quick' : '校验比较 · checksum'));
+    section.appendChild(labels);
+    var table = taskNode('table', 'cbi-section-table outdoor-task-counts');
+    var body = taskNode('tbody');
     var names = {files_total:'Accepted files', routes_total:'Retained routes', excluded_total:'Excluded', undated_total:'Undated'};
     Object.keys(names).forEach(function(key) {
-        html += '<p>' + names[key] + ': ' + (task.archive[key] === null ? 'Unknown' : task.archive[key]) + '</p>';
+        var row = taskNode('tr', 'cbi-section-table-row');
+        var label = taskNode('th', 'cbi-section-table-cell', names[key]);
+        label.setAttribute('scope', 'row');
+        row.appendChild(label);
+        row.appendChild(taskNode('td', 'cbi-section-table-cell', task.archive[key] === null ? 'Unknown / 未知' : task.archive[key]));
+        body.appendChild(row);
     });
+    table.appendChild(body);
+    section.appendChild(table);
+    section.appendChild(taskNode('p', 'cbi-section-descr', 'Accepted 是本次接受的文件；Retained routes 包含历史固定位置，路由数不是已复制完成数。'));
+    if (task.archive.undated_total > 0) section.appendChild(taskNode('p', 'alert-info',
+        'Undated：有文件待确认拍摄日期，仍保留在未定日期目录；不是 rsync 失败。'));
+    return section;
+}
+/** @param {Object} task Valid date task. @returns {Element} Friendly nonfatal notices and technical codes. */
+function metadataSummary(task) {
+    var section = taskSection('元数据提示');
+    var messages = {
+        xml_too_large:'XML 超出读取大小限制', metadata_parse_failed:'无法解析部分元数据',
+        metadata_parse_warning:'元数据读取提示：部分字段需要核对', metadata_candidate_limit:'日期候选过多',
+        ambiguous_date_semantics:'日期含义不明确', ambiguous_recording_identity:'录制身份不明确',
+        unverified_time_profile:'时间规则尚未确认', ambiguous_pairing:'素材与旁车配对不明确',
+        primary_not_present:'未找到对应主素材', no_capture_date:'未找到可靠拍摄日期',
+        conflicting_capture_date:'拍摄日期存在冲突'
+    };
+    if (task.warnings.length === 0) {
+        section.appendChild(taskNode('p', '', '无元数据提示'));
+        return section;
+    }
+    var notices = taskNode('ul', 'outdoor-task-notices');
+    var details = taskDetails('元数据技术详情', 'metadata');
     task.warnings.forEach(function(warning) {
-        html += '<p>Warning: ' + escapeHtml(warning.code) + ' (' + warning.count + ')</p>';
+        var known = Object.prototype.hasOwnProperty.call(messages, warning.code);
+        notices.appendChild(taskNode('li', '', (known ? messages[warning.code] : '未识别的元数据提示') + ' — ' + warning.count + ' 次'));
+        details.appendChild(taskNode('p', 'outdoor-task-path', warning.code + ' — ' + warning.count + ' 次'));
     });
-    html += '<p>Retained old files (not proof of different content): ' +
-        (task.replaced.files_count === null ? 'Unknown' : task.replaced.files_count) + '</p>';
-    if (task.replaced.path !== null) html += '<p>Retained path: ' + escapeHtml(task.replaced.path) + '</p>';
-    return html + '</div>';
+    section.appendChild(notices);
+    section.appendChild(taskNode('p', 'cbi-section-descr', '这些是日期元数据提示，不等于备份任务失败；任务结果以主状态为准。'));
+    section.appendChild(details);
+    return section;
+}
+/** @param {Object} replaced Valid retained-old-file summary. @returns {Element} Honest count and optional path. */
+function replacedSummary(replaced) {
+    var section = taskSection('旧版本保留');
+    var count = replaced.files_count;
+    var text = count === null ? '旧文件数量：未知（未提供计数）' :
+        (count === 0 ? '未保留旧文件（0）' : '已保留旧文件：' + count);
+    section.appendChild(taskNode('p', '', text));
+    section.appendChild(taskNode('p', 'cbi-section-descr', '保留目录存在不代表已保留文件；旧版本也不证明内容不同。'));
+    if (replaced.path !== null) {
+        var details = taskDetails('保留目录路径', 'retained-path');
+        details.appendChild(taskNode('code', 'outdoor-task-path', replaced.path));
+        section.appendChild(details);
+    }
+    return section;
+}
+/** @param {Object} task Valid date task. @returns {Element} Collapsed comparison/help, no write actions. */
+function comparisonHelp(task) {
+    var details = taskDetails('比较方式与操作边界', 'comparison');
+    details.appendChild(taskNode('p', '', task.comparison_mode === 'quick' ?
+        'Quick compares size/mtime; same size/mtime content changes may be missed. Mtime-only changes may retain identical old content in replaced.' :
+        'Checksum reads current source and corresponding destination media in full; it does not audit historical media absent from this card.'));
+    details.appendChild(taskNode('p', '', '手动 checksum 与独立卡初始化仅限管理员 CLI，WebUI 不提供这些写操作。Completed 不代表全库逐字审计；受管库路径不得手工改名。'));
+    return details;
+}
+/** @param {Object|null} task Published task snapshot. @returns {Element|null} Date presentation; legacy/mirror has no box. */
+function taskSummary(task) {
+    if (task === undefined || task === null) return null;
+    if (!validTask(task)) return taskNode('p', 'cbi-section-descr', 'Task information unavailable (unsupported schema)');
+    if (task.layout !== 'date') return null;
+    var view = taskNode('div', 'outdoor-task-summary');
+    view.appendChild(archiveSummary(task));
+    view.appendChild(metadataSummary(task));
+    view.appendChild(replacedSummary(task.replaced));
+    view.appendChild(comparisonHelp(task));
+    return view;
+}
+/** @param {Object} record Published current/history entry. @param {boolean} historical Entry kind.
+ * @returns {string|null} Stable published job identity; insufficient legacy fields cannot inherit choices.
+ */
+function taskRecordIdentity(record, historical) {
+    if (!record || !validTask(record.task) || record.task.layout !== 'date' ||
+        typeof record.uuid !== 'string' || !record.uuid.trim()) return null;
+    var timestamp = historical ? record.last_backup_at : record.started_at;
+    if (!isNonNegativeFinite(timestamp) || timestamp === 0) return null;
+    if (!historical && (typeof record.device !== 'string' || !record.device.trim())) return null;
+    return JSON.stringify(historical ? ['history', record.uuid, timestamp] :
+        ['current', record.uuid, timestamp, record.device]);
+}
+/** @param {Element} owner Current container or history tbody. @returns {Object} One-refresh choices.
+ * Read actual DOM state, including user-closed details. Drop old view references
+ * before rebuilding: removed records/roles have no cache to resurrect later.
+ */
+function takeTaskDetails(owner) {
+    var saved = Object.create(null);
+    var views = owner._outdoorTaskViews || [];
+    owner._outdoorTaskViews = [];
+    views.forEach(function(view) {
+        var choices = Object.create(null);
+        var details = view.querySelectorAll('[data-task-detail]');
+        for (var i = 0; i < details.length; i++) {
+            choices[details[i].getAttribute('data-task-detail')] = details[i].open;
+        }
+        saved[view._outdoorTaskIdentity] = choices;
+    });
+    return saved;
+}
+/** @param {Element} container Refreshed current/history cell. @param {Object} task Optional task.
+ * @param {string|null} identity Stable record key. @param {Object} saved Previous DOM choices.
+ * @param {Element} owner Optional history tbody; current uses container. @returns {void}
+ */
+function appendTaskSummary(container, task, identity, saved, owner) {
+    var summary = taskSummary(task);
+    if (!summary) return;
+    container.appendChild(summary);
+    if (!identity) return;
+    var choices = saved[identity] || Object.create(null);
+    var details = summary.querySelectorAll('[data-task-detail]');
+    for (var i = 0; i < details.length; i++) {
+        details[i].open = choices[details[i].getAttribute('data-task-detail')] === true;
+    }
+    summary._outdoorTaskIdentity = identity;
+    (owner || container)._outdoorTaskViews.push(summary);
+}
+/** @param {Object} backup Active snapshot. @returns {string} Existing main identity region with escaped text. */
+function backupIdentity(backup) {
+    return '<div class="info-box">' +
+        '<div class="info-box-row"><strong>Card Name:</strong> <span>' + escapeHtml(backup.name || 'Unknown') + '</span></div>' +
+        '<div class="info-box-row"><strong>UUID:</strong> <span style="font-family: monospace;">' + escapeHtml(backup.uuid || 'N/A') + '</span></div>' +
+        '<div class="info-box-row"><strong>Device:</strong> <span>/dev/' + escapeHtml(backup.device || 'N/A') + '</span></div>' +
+        '<div class="info-box-row"><strong>Started:</strong> <span>' + (backup.started_at ? formatRelativeTime(backup.started_at) : 'N/A') + '</span></div></div>';
 }
 function csrfToken() { return document.getElementById('outdoor-backup-token').value; }
 
@@ -451,23 +644,26 @@ function isNonNegativeFinite(value) {
 
 function updateCurrentBackup(backup) {
     var container = document.getElementById('current-backup');
+    var detailState = takeTaskDetails(container);
+    var taskIdentity = taskRecordIdentity(backup, false);
 
     if (!backup || !backup.active) {
         container.innerHTML = '<p style="color: #888; font-style: italic;">No backup in progress</p>';
         return;
     }
 
-    if (backup.task !== undefined && backup.task !== null) {
-        if (!validTask(backup.task)) {
-            container.innerHTML = taskSummary(backup.task);
-            return;
-        }
-        if (backup.task.phase !== 'transferring') {
-            container.innerHTML = '<p>Card: ' + escapeHtml(backup.name || 'Unknown') + '</p><p>' +
-                (backup.task.phase === 'planning' ? '正在分析素材 / Analyzing media; progress unknown; no ETA' :
-                    'Finalizing / 正在完成同步、摘要与最终检查; no ETA') + '</p>' + taskSummary(backup.task);
-            return;
-        }
+    var taskValid = validTask(backup.task);
+    if (backup.task !== undefined && backup.task !== null && !taskValid) {
+        container.innerHTML = backupIdentity(backup);
+        appendTaskSummary(container, backup.task, taskIdentity, detailState);
+        return;
+    }
+    if (taskValid && backup.task.phase !== 'transferring') {
+        container.innerHTML = backupIdentity(backup) + '<p>' +
+            (backup.task.phase === 'planning' ? '正在分析素材 / Analyzing media; progress unknown; no ETA' :
+                'Finalizing / 正在完成同步、摘要与最终检查; no ETA') + '</p>';
+        appendTaskSummary(container, backup.task, taskIdentity, detailState);
+        return;
     }
 
     var liveProgress = backup.live_progress;
@@ -495,12 +691,7 @@ function updateCurrentBackup(backup) {
     var progressText = hasLiveProgress && !hasEntryCounts ? '' : percent.toFixed(1) + '%';
 
     var html = '<div>';
-    html += '<div class="info-box">';
-    html += '<div class="info-box-row"><strong>Card Name:</strong> <span>' + escapeHtml(backup.name || 'Unknown') + '</span></div>';
-    html += '<div class="info-box-row"><strong>UUID:</strong> <span style="font-family: monospace;">' + escapeHtml(backup.uuid || 'N/A') + '</span></div>';
-    html += '<div class="info-box-row"><strong>Device:</strong> <span>/dev/' + escapeHtml(backup.device || 'N/A') + '</span></div>';
-    html += '<div class="info-box-row"><strong>Started:</strong> <span>' + (backup.started_at ? formatRelativeTime(backup.started_at) : 'N/A') + '</span></div>';
-    html += '</div>';
+    html += backupIdentity(backup);
 
     html += '<div class="progress-bar" style="margin: 15px 0;">';
     html += '<div class="progress-bar-fill" style="width: ' + percent + '%;">' + progressText + '</div>';
@@ -527,7 +718,8 @@ function updateCurrentBackup(backup) {
     html += '</div>';
 
     html += '</div>';
-    container.innerHTML = html + (backup.task ? taskSummary(backup.task) : '');
+    container.innerHTML = html;
+    appendTaskSummary(container, backup.task, taskIdentity, detailState);
 }
 
 function updateStorageInfo(storage) {
@@ -560,6 +752,7 @@ function updateStorageInfo(storage) {
 
 function updateHistoryTable(history) {
     var tbody = document.getElementById('history-table');
+    var detailState = takeTaskDetails(tbody);
 
     if (!history || history.length === 0) {
         tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #888; font-style: italic;">No backup history found</td></tr>';
@@ -585,10 +778,20 @@ function updateHistoryTable(history) {
         html += '<td><span class="status-badge ' + statusClass + '">' + escapeHtml(statusText) + '</span></td>';
         html += '<td><a class="action-link" data-history-index="' + i + '">Edit</a></td>';
         html += '</tr>';
-        if (item.task) html += '<tr><td colspan="6">' + taskSummary(item.task) + '</td></tr>';
+        if (item.task && item.task.layout !== 'mirror') {
+            html += '<tr><td colspan="6" data-task-index="' + i + '"></td></tr>';
+        }
     }
 
     tbody.innerHTML = html;
+    if (html.indexOf('data-task-index=') !== -1) {
+        var taskCells = tbody.querySelectorAll('[data-task-index]');
+        for (var taskIndex = 0; taskIndex < taskCells.length; taskIndex++) {
+            var cell = taskCells[taskIndex];
+            var record = history[Number(cell.getAttribute('data-task-index'))];
+            appendTaskSummary(cell, record.task, taskRecordIdentity(record, true), detailState, tbody);
+        }
+    }
     var links = tbody.querySelectorAll('[data-history-index]');
     for (var linkIndex = 0; linkIndex < links.length; linkIndex++) {
         links[linkIndex].onclick = function() {
@@ -796,7 +999,10 @@ document.addEventListener('DOMContentLoaded', function() {
 <h2 name="content"><%:Status%></h2>
 
 <input type="hidden" id="outdoor-backup-token" <%=attr("value", require("luci.dispatcher").context.authtoken or "")%>>
-<p>Automatic date tasks use quick comparison. Administrator-only manual checksum and independent card initialization are CLI operations, not WebUI write actions. Checksum may read all current card and matching destination media; it does not verify historical files absent from the card. Completed is not a full-library content audit. Managed library paths must not be renamed manually.</p>
+<details class="outdoor-task-details">
+    <summary>日期归档帮助 / Date archive help</summary>
+    <p>Automatic date tasks use quick comparison. Administrator-only manual checksum and independent card initialization are CLI operations, not WebUI write actions. Checksum may read all current card and matching destination media; it does not verify historical files absent from the card. Completed is not a full-library content audit. Managed library paths must not be renamed manually.</p>
+</details>
 
 <!-- Current Backup Section -->
 <fieldset class="cbi-section">

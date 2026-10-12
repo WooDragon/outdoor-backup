@@ -318,12 +318,12 @@ scenario('L14 real date save requires actual capability', function()
     media.probe=function() return nil,'missing optional package' end
     check(not submit(map,{backup_layout='date',archive_offset_minutes='480'}),'missing date package saved')
 end)
-scenario('L15 valid date/direct child/explicit offset save', function()
+scenario('L15 valid date/direct child/display default offset save', function()
     local map=map_fixture({})
     local saved=submit(map,{backup_layout='date',archive_offset_minutes='480'})
     check(saved and (saved:get('outdoor-backup','config','library_root') or config.library_root)==config.library_root,'date effective root changed')
     check(saved:get('outdoor-backup','config','backup_layout')=='date','date layout not persisted')
-    check(saved:get('outdoor-backup','config','archive_offset_minutes')=='480','offset not saved')
+    check(saved:get('outdoor-backup','config','archive_offset_minutes')==nil,'display default became explicit offset')
 end)
 for _, invalid in ipairs({'/tmp/luci-ssd','/tmp/luci-ssd/a/b','/tmp/luci-ssd/SDMirrors','/tmp/luci-ssd/SDMirrors/sub','/tmp/luci-ssd/../bad'}) do
     scenario('L16 date root rejects ' .. invalid,function()
@@ -332,9 +332,10 @@ for _, invalid in ipairs({'/tmp/luci-ssd','/tmp/luci-ssd/a/b','/tmp/luci-ssd/SDM
     end)
 end
 for _, invalid in ipairs({'','841','-841','01','1.5','+480','-0'}) do
-    scenario('L17 offset rejects ' .. invalid,function()
+    scenario('L17 offset partition ' .. invalid,function()
         local map=map_fixture({})
-        check(not submit(map,{backup_layout='date',archive_offset_minutes=invalid}),'invalid offset saved')
+        local saved = submit(map,{backup_layout='date',archive_offset_minutes=invalid})
+        check((saved ~= nil) == (invalid == ''),'blank must default; malformed offset must reject')
     end)
 end
 scenario('L18 existing policy cannot change online', function()
@@ -414,7 +415,8 @@ scenario('L30 real legacy effective values rendered by CBI without rewriting',fu
     for _, field in ipairs(map.children[1].children) do fields[field.option]=field end
     check(fields.backup_root:cfgvalue('config')==effective.backup_root,'legacy mirror root not rendered')
     check(fields.target_mount:cfgvalue('config')==effective.target_mount,'legacy target not rendered')
-    check(fields.library_root:cfgvalue('config')==effective.library_root,'effective date root not rendered')
+    local displayed_root = effective.library_root ~= '' and effective.library_root or effective.target_mount .. '/MediaLibrary'
+    check(fields.library_root:cfgvalue('config')==displayed_root,'effective/default date root not rendered')
     local saved=submit(map,{backup_root=effective.backup_root,target_mount=effective.target_mount,mount_point=config.mount_point})
     check(saved and not saved:get('outdoor-backup','config','backup_root'),'unchanged effective legacy root overwritten')
 end)

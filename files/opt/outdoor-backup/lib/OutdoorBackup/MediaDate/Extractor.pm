@@ -68,10 +68,9 @@ sub normalize {
         die "invalid_metadata_field\n" if grep { !OutdoorBackup::MediaDate::JSON::string($_) } @{$tags->{$key}};
     }
     my $result = { version => 1, kind => $kind, dates => [], umid => undef, warnings => [] };
-    if ($tags->{Error} || $tags->{Warning}) {
-        push @{$result->{warnings}}, 'metadata_parse_warning';
-        return $result;
-    }
+    # Warning is diagnostic, not a veto on independently validated fields.
+    push @{$result->{warnings}}, 'metadata_parse_warning' if $tags->{Error} || $tags->{Warning};
+    return $result if $tags->{Error};
     _photo($result, $tags) if $kind eq 'photo';
     _sony($result, $tags) if $kind eq 'video' || $kind eq 'xml';
     _dji($result, $tags) if $kind eq 'video';

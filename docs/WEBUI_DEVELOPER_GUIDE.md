@@ -139,7 +139,7 @@ luci-app-outdoor-backup/
 
 `target-list.sh` 只返回已挂载、读写、direct physical、非系统盘且 UUID 有效并可验证的存储。USB SSD、NVMe 和匿名 Btrfs `0:N` 映射属于支持输入。rotational 属性不是 SSD 判据。未挂载或不符合这些条件的设备不能进入 CBI 选择器。
 
-manual 默认值为 `Manual / keep current`。它保留 `target_mount`、`target_uuid` 和 `backup_root` 的手工语义，包括 empty UUID 的 `rmempty` 行为。选择模式只产生 3 个 formvalues；现有 `Map.parse()` 和 `Map.save()` 仍是唯一的持久化路径。
+manual 默认值为 `Manual / keep current`。它保留 `target_mount`、`target_uuid` 和 `backup_root` 的手工语义，包括 empty UUID 的 `rmempty` 行为。选择模式生成 mount、UUID 和镜像根三个目标 formvalues；日期根的显示与提交另遵循下方日期 CBI 合同。现有 `Map.parse()` 和 `Map.save()` 仍是唯一的持久化路径。
 
 选择器使用原生 `<select>`。它的 `id` 和 `name` 均遵循 CBI `cbid`。CBI 根据 `keylist` 和 `vallist` 渲染选项。`attr()` 转义 HTML 属性值。`pcdata()` 转义标签文本。实现不依赖 widget 内部 ID。JavaScript 只负责预览和字段显隐。保存时，服务端仍会重新枚举候选。它按 UUID 与 mount 匹配选择。
 
@@ -190,15 +190,27 @@ status.json 保持 `version:"1.0"` 与既有 `current_backup/storage/history`。
 
 planning/finalizing 不显示虚构进度或 ETA。transferring 从既有同步 runner wait loop 采样；live_progress 的 entries 包含目录，files_known 决定普通文件数是否可显示。运行百分比最高为 99，completed 只在 manager 最终门通过后发布。history 保持 UUID 唯一、最多 20 个最新终态；task 随终态保留。所有 history/task 文本字段应转义，不能把路径、别名或警告插入未转义 HTML。
 
+`status.htm` 用生产 DOM renderer 分区显示“日期归档信息”“元数据提示”和“旧版本保留”，并把技术详情、保留路径及比较帮助折叠。Accepted files 是本次接受文件，Retained routes 包含历史固定位置，不是已复制完成数。null 计数显示 `Unknown / 未知`，不转为 0，也不转为任务错误。旧版本计数分别显示未知、0 或正数；保留目录存在不证明实际已有旧文件，保留文件也不证明内容不同。
+
+S1 在同任务或同历史记录刷新时保留用户实际的 `details.open`，包括用户主动关闭后的状态。当前身份由 `uuid + started_at + device` 构成，历史身份由 `uuid + last_backup_at` 构成。renderer 在替换 DOM 前按稳定详情角色读取实际开闭状态，并仅向下一轮相同身份恢复。新 job 默认折叠；身份字段缺失、task 无效或不是 date 时不猜测继承。消失的记录或详情角色不保留无界跨轮缓存。该行为只维护页面展开状态，不修改任务快照或增加 WebUI 写操作。
+
+Warning 和 Undated 是日期诊断，不等于任务失败；结果仍由主状态决定。已知 warning code 有友好说明；较新 producer 的未知非空 code 只在 text-safe 技术详情显示，不抹掉其余合法 task。畸形 task 显示信息不可用并保留来源身份，不捏造 phase 或进度。mirror、缺 task 的旧 snapshot 和历史刷新继续兼容，不残留日期分区。界面没有新增写操作。
+
 默认 quick 可能跳过同 size/mtime 的内容变化。mtime-only 可产生同内容 retained old file。checksum 只核验当前 source 对应 target，不审计历史全库；配置/API snapshot 不改变正在运行的任务。
 
 ### 日期 CBI 与日志边界
 
-[`config.lua`](../luci-app-outdoor-backup/luasrc/model/cbi/outdoor-backup/config.lua) 新增 backup_layout、library_root 和 archive_offset_minutes。date 保存时加载真实 helper 能力/schema，检查目标直接子根与隔离，读取既有 policy 并拒绝在线 offset 改变。新库无显式 offset 时拒绝。mirror 无 library_root 时保持空 intent。CBI Map.parse 的 submit 同样执行 write/session/POST/token 检查。运行时目标/来源守卫仍是最终准入权威。
+[`config.lua`](../luci-app-outdoor-backup/luasrc/model/cbi/outdoor-backup/config.lua) 管理 backup_layout、library_root 和 archive_offset_minutes。date 保存时加载真实 helper 能力/schema，检查目标直接子根与隔离，读取既有 policy 并拒绝在线 offset 改变。新库空 offset 合法，显示默认值；既有库空 offset 显示并继承 policy，包括 `0`。原规范整数验证保持。默认值及运行期选取时机应先读取 [implementation 配置合同](media-date-library-implementation.md#1-配置合同)。
+
+`library_root.cfgvalue` 可显示 `target_mount/MediaLibrary`，但显示不是持久 intent。没有日期 intent 的 mirror 保存应保持空 `library_root.formvalue`；不能把自动显示值写回 UCI 或据此拒绝合法同名镜像根。date 的默认根通过 `forcewrite` 正常保存。
+
+F1 的 offset 显示基准在 CBI model 构造时固定一次，先于 native parse 暂存任何 target/library 变更。基准来自初始有效显式 offset，或初始库 policy/新库默认值；`cfgvalue` 不按暂存后的目标重新求值。没有显式 offset，且用户未修改显示值或未提交该字段时，`formvalue` 保持空并沿用继承分支。目标变化不能把显示默认值误认为对既有 policy `0` 的显式修改，也不能把旧库显示的 `0` 意外写成新库策略。只有用户显式修改的值进入原规范整数与既有 policy 校验。独立 GET/POST 的 native 证据应先读取 [implementation 第 6.6 节](media-date-library-implementation.md#66-issue-65warning默认配置与日期状态展示)。
+
+`target-selection.htm` 从已验证的 `selection_mounts` 与 `selection_roots` 预览路径。未被手工修改的常规日期根随目标选择或手工 mount 改变；常规镜像根随手工 mount 改变。F2 中，空手工 mount input 不推进 `previousMount` 或 `previousManualMount` 的重基基准；恢复非空值后，常规根继续跟随最后一个非空基准。自定义路径不由 JavaScript 覆盖。空输入不构成有效保存，服务端路径验证保持。目标选择器仍按合法旧 mirror 后缀生成镜像根；服务端 `Map.parse()` 重新枚举并验证目标及完整表单，不能用预览替代安全校验。CBI 保存不创建目录、库或卡配置，不执行备份或迁移。CBI submit 的 write/session/POST/token 检查保持，运行时目标/来源守卫仍是最终准入权威。
 
 [`log.htm`](../luci-app-outdoor-backup/luasrc/view/outdoor-backup/log.htm) 的 Download Full Log 标签保留旧名，但当前行为仅从已授权显示的 textContent 创建 text/plain Blob。没有原始 backup.log URL 或未经权限校验的全文件下载接口。日志页面的读取 handler 校验 read 权限，服务端 pcdata 和前端文本转义保留。
 
-主体本地实现与定向验证已闭合，有限范围复核 APPROVED；修后未重跑全量，不能发布。隔离 guest 使用 root 启动的测试专属 ubusd/rpcd，并只清理自己拥有的 PID 和 socket。CI 准备真实 luci-compat、ubusd、ubus、rpcd 和 libuci-lua；权限验证使用真实 RPC session/access，不 mock 授权。已有 real RPC/CBI/XHR/DOM 场景不等于 browser/full CGI auth 或真机端到端。证据与 G1–G6 应先读取 [implementation 验证节](media-date-library-implementation.md#6-验收证据的边界)；本次范围不验收 PhotoPrism 自动 index。
+主体本地实现已有定向证据；有限范围 APPROVED 属于历史轮次，不扩大到本轮 Issue #65。修后全量、root CI、SDK 与固件尚未执行。隔离 guest 使用 root 启动的测试专属 ubusd/rpcd，并只清理自己拥有的 PID 和 socket。CI 准备真实 luci-compat、ubusd、ubus、rpcd 和 libuci-lua；权限验证使用真实 RPC session/access，不 mock 授权。已有 real RPC/CBI/XHR/DOM 场景不等于 browser/full CGI auth 或真机端到端。证据与 G1–G6 应先读取 [implementation 验证节](media-date-library-implementation.md#6-验收证据的边界)；本次范围不验收 PhotoPrism 自动 index。
 
 ---
 

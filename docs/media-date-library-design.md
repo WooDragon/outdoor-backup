@@ -2,7 +2,7 @@
 
 > 状态：默认关闭 checksum 的增量设计复核 APPROVED（仅设计）。主体本地实现与定向验证已闭合，有限范围实现复核 APPROVED；修后未重跑全量，不能发布。本文不是部署手册。
 > 评审记录：[media-date-library-review.md](media-date-library-review.md)。实现与发布门槛仍按第 16 节验收。
-> 实现导航：[media-date-library-implementation.md](media-date-library-implementation.md) 记录现行接口、源码入口及未验收边界；[media-date-library-operations.md](media-date-library-operations.md) 提供 root CLI 操作。下方已批准产品设计正文保留；其中历史“当前/待实现”措辞不是本地实现状态。
+> 实现导航：[media-date-library-implementation.md](media-date-library-implementation.md) 记录现行接口、源码入口及未验收边界；[media-date-library-operations.md](media-date-library-operations.md) 是日期操作权威。本文保留历史设计与验收矩阵，并按 Issue #65 同步当前默认策略和 Warning 合同；历史“当前/待实现”措辞及 APPROVED 不构成本次改动的评审或测试结论。
 > 范围：outdoor-backup 的照片、视频及伴生文件自动归档。本文不授权代码实现、部署、历史迁移或删除数据。
 
 **前置阅读**：现有 owner、目标 FD 锚定和取消契约属于运行时基线。修改相关接口前应先读取 [component-implementation.md](component-implementation.md)，并核对本文第 3 节所列源码；旧文档中的示例代码不代表现行实现。
@@ -122,7 +122,7 @@ helper 的输入应是 manager 构造的 argv 和版本化 JSON 数据；输出�
 
 ### 5.1 日期表示和固定策略
 
-日期库初始化时应固定：路由 schema、解析 profile、无 offset 时间的解释规则，以及 UTC 时间的归档时区。首版采用管理员显式给定的固定分钟偏移量；例如 +08:00，不依赖设备启动时的 TZ。首版不提供自动旅行时区或 DST 猜测。
+日期库初始化时应固定：路由 schema、解析 profile、无 offset 时间的解释规则，以及 UTC 时间的归档时区。新库未配置固定分钟偏移量时采用 UTC+08:00；管理员可显式选择合法偏移量。既有库在配置为空时沿用已固定的 policy，包括 UTC；显式不同值应拒绝。运行时只在新库准入后的初始化分支补默认值，不依赖设备启动时的 TZ。系统不提供自动旅行时区或 DST 猜测。旧“新库必须逐次显式填 offset”的要求已由 [Issue #65](https://github.com/WooDragon/outdoor-backup/issues/65) 替代；既有库策略不变。
 
 含显式 offset 的拍摄字段按它记录的当地日期归档。已确认 UTC 语义、但不含拍摄地点 offset 的时间，转换到库的固定归档偏移量后取日期。没有 offset 的 EXIF 拍摄日期保留相机记录的当地日，不先伪装成 UTC 再转换。
 
@@ -137,6 +137,8 @@ helper 的输入应是 manager 构造的 argv 和版本化 JSON 数据；输出�
 | Sony 外 XML | 已关联则采用主视频路由；独立 XML 可用它自己的合法 CreationDate | 无日期或关联矛盾则 Undated |
 | DJI 视频 | 受测设备 profile 的 QuickTime CreateDate，按该 profile 的 UTC/当地语义解释 | 不确定时区语义的型号进入 Undated |
 | 其他普通文件 | 已可靠关联则采用主素材路由；否则只有经过适配的拍摄字段可决定日期 | Undated |
+
+ExifTool `Warning` 是诊断，不是对所有字段的否决。提取器应保留 `metadata_parse_warning`，继续使用独立验证合法的 photo/video/XML 字段与 UMID。真正读取失败或 `Error` 仍走空候选兜底。系统不按 Warning 文本建立允许名单，不增加深扫，不改变受测 profile、优先级、冲突、隐私或固定 routes 规则。
 
 日期解析应验证字段格式、日期有效性、offset 范围、零日期和格式定义的未知占位值。不得按“当前年份附近”删除合法历史日期。`CreationDate` 与 `lastUpdate` 不同，Sony lastUpdate 不参与拍摄日选择。
 
@@ -364,7 +366,7 @@ outdoor-backup 负责业务与 BDD。mCPE-Release 后续仅负责 provider、设
 | M04 | Sony 内 XML / 仅外 XML / 受测 QuickTime 回退 | 按优先级选择；lastUpdate 不作日期 | P0 |
 | M05 | DJI UTC profile / 未受测时区 profile | 转换固定偏移 / Undated 并警告 | P0 |
 | M06 | 开始于午夜前、结束于次日的视频 | 按开始日，不切文件 | P1 |
-| M07 | 空、零、非法闰日、非法 offset、解析警告 | 无可靠日期则 Undated；合法历史日不被拒绝 | P0 |
+| M07 | 空、零、非法闰日、非法 offset；Warning 与合法字段共存；读取失败/Error | Warning 保留提示且合法字段继续归档/配对；无可靠日期则 Undated；合法历史日不被拒绝 | P0 |
 | M08 | 可信 peer 字段统一日期坐标后确实跨日冲突 | Undated 并报告明确原因；不拿 fallback 反驳主字段 | P0 |
 | M09 | XML UMID 唯一相等 / 不等 / 多视频重复 | 配组 / 不猜配并保存 / 报歧义 | P0 |
 | M10 | 同目录同 stem 旁车 / 多个主素材 | 可靠配组 / 不按顺序猜选 | P0 |
