@@ -57,10 +57,10 @@ with tempfile.TemporaryDirectory(prefix='media-date-manager-') as tmp:
 
     case('M50 default mirror preserves empty library intent', lambda: config_case(
         'TARGET_MOUNT="/fixture/target"\n', True,
-        ['mirror', '', '/mnt/ssd/SDMirrors']))
+        ['mirror', '', '/fixture/target/SDMirrors']))
     case('M33 date dynamic library root', lambda: config_case(
         'BACKUP_LAYOUT=date\nTARGET_MOUNT="/fixture/target"\nARCHIVE_OFFSET_MINUTES=480\n', True,
-        ['date', '/fixture/target/MediaLibrary', '/mnt/ssd/SDMirrors']))
+        ['date', '/fixture/target/MediaLibrary', '/fixture/target/SDMirrors']))
     for name, text in [
         ('layout', 'BACKUP_LAYOUT=guess\n'),
         ('same', 'LIBRARY_ROOT="/mnt/ssd/SDMirrors"\n'),

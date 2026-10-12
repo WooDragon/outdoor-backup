@@ -7,6 +7,16 @@ local effective = media.config()
 local m, s, o
 local selected_values = {}
 
+-- Derive conventional children from a normalized mount, never from timezone or
+-- browser selector text. Args: mount and child name. Returns a path or nil.
+local function child_root(mount, child)
+    return type(mount) == "string" and mount:gsub("/+$", "") .. "/" .. child or nil
+end
+
+local function configured(value)
+    return type(value) == "string" and value ~= ""
+end
+
 local function submitted_or_saved(option, section)
     local value = option:formvalue(section)
     if value ~= nil then
@@ -79,6 +89,7 @@ o.default = "manual"
 o:value("manual", translate("Manual / keep current settings"))
 o.template = "outdoor-backup/target-selection"
 o.selection_roots = {}
+o.selection_mounts = {}
 
 local initial_document, initial_error = target_discovery.list()
 if initial_document then
@@ -87,6 +98,7 @@ if initial_document then
         local selection = selector_value(candidate)
         local root = candidate.mount .. initial_suffix
         o.selection_roots[selection] = root
+        o.selection_mounts[selection] = candidate.mount
         o:value(selection, string.format("%s — UUID %s — %s — %s — Backup root %s",
             candidate.device, candidate.uuid, candidate.mount, candidate.fstype, root))
     end
@@ -236,10 +248,13 @@ o.placeholder = "/mnt/ssd/MediaLibrary"
 -- Empty means inherit the date-only derived root, not explicit root intent.
 o.default = (effective and effective.library_root) or ""
 o.rmempty = true
+-- cfgvalue may already reflect target_mount staged earlier in native parse.
+-- Date defaults must still be written; absent mirror intent has empty formvalue.
+o.forcewrite = true
 local library_root = o
 
 o = s:option(Value, "archive_offset_minutes", translate("Fixed Archive Offset (minutes)"),
-    translate("Explicit integer -840..840 (480 = UTC+08:00) for a new date library. An existing library policy cannot be changed online; changing UCI cannot rewrite it or a running snapshot. No travel timezone or DST guessing."))
+    translate("Canonical integer -840..840; new date libraries default to 480 (UTC+08:00). An unconfigured offset inherits an existing library policy, which cannot be changed online; changing UCI cannot rewrite it or a running snapshot. No travel timezone or DST guessing."))
 o.rmempty = true
 local offset = o
 
@@ -250,6 +265,61 @@ for _, field in ipairs({target_mount, target_uuid, backup_root, source_mount, la
         local saved = self.map.uci:get("outdoor-backup", section, self.option)
         return saved or (effective and effective[self.option]) or self.default
     end
+end
+
+-- Display defaults are not date intent. Preserve explicit UCI/legacy values;
+-- only untouched conventional roots follow a manually changed target mount.
+local initial_target = target_mount:cfgvalue("config")
+local initial_library = library_root:cfgvalue("config")
+local initial_backup = backup_root:cfgvalue("config")
+local library_intent = configured(initial_library)
+
+library_root.cfgvalue = function(self, section)
+    local saved = self.map.uci:get("outdoor-backup", section, self.option)
+    return configured(saved) and saved or
+        (configured(initial_library) and initial_library or child_root(target_mount:cfgvalue(section), "MediaLibrary"))
+end
+library_root.formvalue = function(self, section)
+    local value = self.map:formvalue(self:cbid(section))
+    local target = submitted_or_saved(target_mount, section)
+    local conventional = child_root(initial_target, "MediaLibrary")
+    if (not library_intent or initial_library == conventional) and
+        (value == "" or value == conventional or value == child_root(target, "MediaLibrary")) then
+        local date_intent = library_intent or submitted_or_saved(layout, section) == "date"
+        return date_intent and child_root(target, "MediaLibrary") or ""
+    end
+    return value
+end
+
+local original_backup_formvalue = backup_root.formvalue
+backup_root.formvalue = function(self, section)
+    local value = original_backup_formvalue(self, section)
+    if not selected_values[section] and initial_backup == child_root(initial_target, "SDMirrors") and
+        value == initial_backup then
+        return child_root(submitted_or_saved(target_mount, section), "SDMirrors")
+    end
+    return value
+end
+
+-- Marker I/O is a read-only UI concern; runtime config_load remains pure. Empty
+-- configured offset adopts an existing policy (including 0), not the new default.
+local initial_offset = offset:cfgvalue("config")
+local displayed_offset
+local function default_offset(section)
+    if displayed_offset then return displayed_offset end
+    local root = library_root:cfgvalue(section)
+    local marker = root and require("nixio.fs").lstat(root .. "/.outdoor-backup/library.json")
+    local policy = marker and media.library(root)
+    displayed_offset = policy and tostring(policy.archive_offset_minutes) or "480"
+    return displayed_offset
+end
+offset.cfgvalue = function(self, section)
+    return configured(initial_offset) and initial_offset or default_offset(section)
+end
+offset.formvalue = function(self, section)
+    local value = self.map:formvalue(self:cbid(section))
+    if not configured(initial_offset) and value == default_offset(section) then return "" end
+    return value
 end
 
 offset.validate = function(self, value)
@@ -273,7 +343,7 @@ layout.validate = function(self, value, section)
     local mirror = submitted_or_saved(backup_root, section)
     local library = submitted_or_saved(library_root, section)
     if library == "" or library == nil then
-        library = type(target) == "string" and (target .. "/MediaLibrary") or nil
+        library = child_root(target, "MediaLibrary")
     end
     local source = submitted_or_saved(source_mount, section)
     if not valid_mount(target) or not valid_mount(library) or not valid_mount(mirror) or
@@ -293,8 +363,6 @@ layout.validate = function(self, value, section)
         if configured_offset ~= "" and tonumber(configured_offset) ~= policy.archive_offset_minutes then
             return nil, translate("Existing library offset cannot be changed online")
         end
-    elseif configured_offset == "" then
-        return nil, translate("An explicit fixed offset is required for a new date library")
     end
     return value
 end
@@ -304,7 +372,7 @@ library_root.validate = function(self, value, section)
     if (value == "" or value == nil) and not date_layout then return value end
     if value == "" or value == nil then
         local target = submitted_or_saved(target_mount, section)
-        value = type(target) == "string" and (target .. "/MediaLibrary") or nil
+        value = child_root(target, "MediaLibrary")
     end
     local mirror = submitted_or_saved(backup_root, section)
     local source = submitted_or_saved(source_mount, section)

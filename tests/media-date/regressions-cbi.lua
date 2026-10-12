@@ -27,10 +27,13 @@ local function run(name, effective, saved, form, value, accepted)
     TypedSection = {}; Value = {}; ListValue = {}; Flag = {}; DummyValue = {}
     dofile(root .. '/luci-app-outdoor-backup/luasrc/model/cbi/outdoor-backup/config.lua')
     local library = options.library_root
-    local checked = library:validate(value == false and library:cfgvalue('config') or value, 'config')
+    -- Absent browser fields take native CBI's empty/remove branch, not the
+    -- rendered cfgvalue. This adapter checks validators, never claims a save.
+    local inherited = effective.library_root ~= '' and library:cfgvalue('config') or ''
+    local checked = library:validate(value == false and (library:formvalue('config') or inherited) or value, 'config')
     assert((checked ~= nil) == accepted, name .. ': ' .. tostring(checked))
     if not saved.library_root and effective.library_root == '' then
-        assert(library:cfgvalue('config') == '', 'default presence became explicit root')
+        assert(library:cfgvalue('config') == '/mnt/ssd/MediaLibrary', 'default root not displayed')
         assert(library.rmempty, 'blank root would be persisted as explicit derived root')
     end
     ran = ran + 1

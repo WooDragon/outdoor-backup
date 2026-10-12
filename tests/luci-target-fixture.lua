@@ -36,9 +36,10 @@ function M.install(luasrc, target_popen, forms)
         self.effective = {
             backup_layout = values.backup_layout or "mirror",
             target_mount = values.target_mount or "/mnt/ssd", target_uuid = values.target_uuid or "",
-            backup_root = values.backup_root or "/mnt/ssd/SDMirrors",
+            backup_root = values.backup_root or (values.target_mount or "/mnt/ssd") .. "/SDMirrors",
             mount_point = values.mount_point or "/mnt/sdcard",
-            library_root = values.library_root or "",
+            library_root = values.library_root or (values.backup_layout == "date" and
+                (values.target_mount or "/mnt/ssd") .. "/MediaLibrary" or ""),
             archive_offset_minutes = values.archive_offset_minutes or ""
         }
     end
@@ -52,7 +53,14 @@ function M.install(luasrc, target_popen, forms)
         local document
         if command == wrapped(config_command) then document = fixture.effective
         elseif command == wrapped(probe_command) then document = fixture.probe
-        else error("unexpected runtime command: " .. tostring(command)) end
+        else
+            for root, policy in pairs(fixture.libraries or {}) do
+                local library_command = '/usr/bin/perl /opt/outdoor-backup/scripts/media-date-plan.pl validate-library ' ..
+                    util.shellquote(root .. '/.outdoor-backup/library.json')
+                if command == wrapped(library_command) then document = policy end
+            end
+            assert(document, "unexpected runtime command: " .. tostring(command))
+        end
         fixture.calls = fixture.calls + 1
         return {
             read = function(_, format)

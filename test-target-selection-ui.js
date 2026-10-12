@@ -4,7 +4,11 @@
  */
 'use strict';
 
-const assert = require('node:assert/strict');
+const nativeAssert = require('node:assert/strict');
+let assertions = 0;
+const assert = Object.fromEntries(['ok', 'equal', 'deepEqual', 'match'].map((method) => [method,
+    (...args) => { assertions += 1; return nativeAssert[method](...args); }
+]));
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
@@ -20,9 +24,9 @@ const MANUAL_SUMMARY = 'Manual mode: the fields below are saved as entered.';
 const SELECTED_SUMMARY = 'Selected target will save backup root: ';
 const FIELD_NAMES = [ 'target_mount', 'target_uuid', 'backup_root' ];
 const ORIGINAL_FIELD_VALUES = {
-    target_mount: 'original mount value',
+    target_mount: '/mnt/old',
     target_uuid: 'original UUID value',
-    backup_root: 'original backup root value'
+    backup_root: '/mnt/old/SDMirrors'
 };
 
 const sourceTemplate = fs.readFileSync(TEMPLATE_PATH, 'utf8');
@@ -89,8 +93,8 @@ function createFixture(roots) {
     const data = {
         parentNode: body,
         getAttribute(attributeName) {
-            assert.equal(attributeName, 'data-roots', 'Production script must read data-roots');
-            return JSON.stringify(roots);
+            assert.ok(['data-roots', 'data-mounts'].includes(attributeName), 'Unexpected data attribute');
+            return JSON.stringify(attributeName === 'data-mounts' ? { [SELECTED_VALUE]: '/mnt/ssd' } : roots);
         }
     };
     const summary = { textContent: '', parentNode: body };
@@ -122,6 +126,13 @@ function createFixture(roots) {
         elements.set(fieldId, field);
     }
 
+    const libraryField = {value: '/mnt/old/MediaLibrary', parentNode: body};
+    elements.set('cbid.outdoor-backup.config.library_root', libraryField);
+    manualFields.target_mount.value = '/mnt/old';
+    manualFields.backup_root.value = '/mnt/old/SDMirrors';
+    const mountListeners = {};
+    manualFields.target_mount.addEventListener = function(name, listener) { mountListeners[name] = listener; };
+
     const document = {
         body,
         getElementById(elementId) {
@@ -140,6 +151,12 @@ function createFixture(roots) {
 
     return {
         actualSelect,
+        libraryField,
+        changeMount(value) {
+            manualFields.target_mount.value = value;
+            assert.equal(typeof mountListeners.change, 'function', 'Missing mount listener');
+            mountListeners.change();
+        },
         manualFields,
         manualRows,
         summary,
@@ -172,6 +189,43 @@ function fieldValues(fields) {
 }
 
 const cases = [
+    {
+        name: '6 manual mount rebases both generated roots',
+        run() {
+            const fixture = createFixture({ [SELECTED_VALUE]: SELECTED_ROOT });
+            fixture.fireLoad();
+            fixture.changeMount('/mnt/new');
+            assert.equal(fixture.manualFields.backup_root.value, '/mnt/new/SDMirrors');
+            assert.equal(fixture.libraryField.value, '/mnt/new/MediaLibrary');
+        }
+    },
+    {
+        name: '7 selected target rebases default date root and restores manual default',
+        run() {
+            const fixture = createFixture({ [SELECTED_VALUE]: SELECTED_ROOT });
+            fixture.fireLoad();
+            fixture.actualSelect.value = SELECTED_VALUE;
+            fixture.fireChange();
+            assert.equal(fixture.libraryField.value, '/mnt/ssd/MediaLibrary');
+            fixture.actualSelect.value = 'manual';
+            fixture.fireChange();
+            assert.equal(fixture.libraryField.value, '/mnt/old/MediaLibrary');
+        }
+    },
+    {
+        name: '8 custom/manual roots are never overwritten',
+        run() {
+            const fixture = createFixture({ [SELECTED_VALUE]: SELECTED_ROOT });
+            fixture.manualFields.backup_root.value = '/mnt/old/Custom';
+            fixture.libraryField.value = '/mnt/old/CustomDate';
+            fixture.fireLoad();
+            fixture.changeMount('/mnt/new');
+            fixture.actualSelect.value = SELECTED_VALUE;
+            fixture.fireChange();
+            assert.equal(fixture.manualFields.backup_root.value, '/mnt/old/Custom');
+            assert.equal(fixture.libraryField.value, '/mnt/old/CustomDate');
+        }
+    },
     {
         name: '1 load Manual',
         run() {
@@ -248,7 +302,8 @@ for (const testCase of cases) {
     }
 }
 
-console.log(`cases=${cases.length} passed=${passed} failed=${failed}`);
+assert.equal(cases.length, 8, 'Every required DOM scenario must execute');
+console.log(`cases=${cases.length} assertions=${assertions} passed=${passed} failed=${failed}`);
 if (failed > 0) {
     process.exitCode = 1;
 }

@@ -6,7 +6,7 @@ Automatic SD card backup system for OpenWrt routers with internal storage (SSD/H
 
 ## Media date library — local implementation status
 
-媒体日期库主体本地实现与定向验证已闭合。首轮实现修订及 CI Lua 修订已闭合，有限范围复核为 APPROVED。修后未重跑全量；不能发布。下方既有镜像功能、性能预期及兼容性描述不构成日期模式的发布或目标设备验收。
+媒体日期库已有本地实现与定向验证。首轮实现及 CI Lua 的闭合和有限范围 APPROVED 属于历史记录，不扩大到本轮 [Issue #65](https://github.com/WooDragon/outdoor-backup/issues/65)。本轮让元数据 Warning 保留提示且继续使用合法字段，并更新未配置根/策略的默认行为与日期状态分区。修后全量、root CI、SDK 与固件尚未执行，不能据局部结果称为发布通过。下方既有镜像功能、性能预期及兼容性描述不构成日期模式的发布或目标设备验收。
 
 - [现行实现与接口](docs/media-date-library-implementation.md)：date/mirror 分离、只读来源、固定路由、可选 helper 与 G1–G6 证据边界。
 - [root CLI 操作与恢复](docs/media-date-library-operations.md)：新库配置、显式卡初始化、本次 quick/checksum 和受管镜像 cleanup。
@@ -147,7 +147,7 @@ The runtime loader applies values in this order:
 2. The root-owned legacy file `/opt/outdoor-backup/conf/backup.conf`.
 3. Explicit options in the named UCI section `outdoor-backup.config`.
 
-`TARGET_MOUNT` defaults to `/mnt/ssd`. `TARGET_UUID` defaults to an empty value. The loader reads UCI through the `uci` CLI. It does not `source` or `eval` `/etc/config/outdoor-backup`; a UCI value is data, not shell code. The legacy file remains sourced for backward compatibility and can retain legacy-only settings.
+`TARGET_MOUNT` defaults to `/mnt/ssd`. `TARGET_UUID` defaults to an empty value. When neither legacy nor UCI configures `backup_root`, the loader derives `target_mount/SDMirrors` after it resolves the effective target. Explicit legacy and UCI roots keep their existing precedence. The packaged legacy template no longer assigns a static mirror root. The loader reads UCI through the `uci` CLI. It does not `source` or `eval` `/etc/config/outdoor-backup`; a UCI value is data, not shell code. The legacy file remains sourced for backward compatibility and can retain legacy-only settings.
 
 The factory UCI conffile contains only `config outdoor-backup 'config'`. OpenWrt preserves a modified conffile during upgrades. The package does not migrate values from `backup.conf`, remove that file, or delete existing UCI options. Therefore, an existing explicit UCI option continues to override the legacy value after an upgrade.
 
@@ -181,7 +181,7 @@ The target UUID is a required administrator choice. The manager rejects an `add`
 
    Confirm that the same UUID is mounted at exactly `$TARGET_MOUNT` and that the mount is writable. Do not configure a subdirectory as `target_mount`.
 
-3. Configure the manager. `backup_root` must be a strict child of `target_mount`.
+3. Configure the manager. `backup_root` must be a strict child of `target_mount`. The example explicitly selects the conventional mirror root; when no legacy or UCI root is configured, the runtime derives that child without this override.
 
    ```sh
    BACKUP_ROOT="$TARGET_MOUNT/SDMirrors"

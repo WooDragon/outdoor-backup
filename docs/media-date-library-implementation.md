@@ -1,6 +1,6 @@
 # 媒体日期库：本地实现与接口
 
-> 状态：主体本地实现与定向验证已闭合。首轮 F1–F8、R1（CI Lua）修订已闭合，有限范围实现复核及新增 fixture/RPC bootstrap 复核均为 APPROVED。修后未重新执行全量；不能发布。本文不是部署批准。
+> 状态：现行源码合同已按 Issue #65 同步。本轮只有定向证据；全量、root CI、SDK/IPK 与固件尚未执行。首轮 F1–F8、R1（CI Lua）及 fixture/RPC bootstrap 的闭合与 APPROVED 属于历史轮次，不扩大到本轮。本文不是部署批准。
 > 读者：维护 OpenWrt shell、Perl 和 Lua LuCI 接口的开发者。synthetic 指人工构造的隔离素材或存储夹具，不是真实原卡验收。
 
 **前置阅读**：产品不变量、日期规则和 G1–G6 门槛在 [media-date-library-design.md](media-date-library-design.md)。变更产品合同前应先读取该设计。执行设备命令前应先读取 [media-date-library-operations.md](media-date-library-operations.md)。历史设计与本地实现评审状态在 [media-date-library-review.md](media-date-library-review.md)。本文只记录现行实现，不复制设计取舍。
@@ -12,12 +12,12 @@
 | UCI option | 现行含义与边界 |
 |---|---|
 | `backup_layout` | `mirror` 为默认；`date` 需显式选择。非法枚举拒绝。 |
-| `backup_root` | 镜像根；保持目标挂载点严格子目录的既有合同，不作为日期媒体根。 |
+| `backup_root` | 镜像根；保持目标挂载点严格子目录的既有合同，不作为日期媒体根。legacy 与 UCI 均未配置时，loader 在有效 `target_mount` 确定并正规化后派生 `target_mount/SDMirrors`。显式 legacy/UCI 根仍按原优先级生效；打包 legacy 模板不再赋静态根。 |
 | `library_root` | 日期根；date 模式要求它是 `target_mount` 的直接子目录，与镜像根、来源挂载点互不包含且不相等。date 未填时派生 `target_mount/MediaLibrary`。mirror 未配置此值时保持空 intent，不凭显示默认值制造与现有镜像根的冲突。显式非空值仍检查隔离。 |
-| `archive_offset_minutes` | 新库要求显式规范整数，范围为 `-840..840`。既有库读取固定 policy；显式不同 offset 拒绝，不在线改策略，也不跟随 TZ、旅行时区或 DST。 |
+| `archive_offset_minutes` | 显式值应为 `-840..840` 的规范整数。新库未配置时，`media_date_library_check` 在 owner/FD 9 准入后的初始化分支补入 `480`（UTC+08:00）。既有库未配置时沿用固定 policy，包括 `0`；显式不同值拒绝。`config_load` 保留空 offset，不读取库 marker，也不猜 TZ、旅行时区或 DST。 |
 | `target_mount` / `target_uuid` | 已挂载目标的路径与实际 UUID；不猜盘，不格式化，不挂载，不修改 fstab。 |
 
-CBI 的能力检查加载真实 helper schema 和模块，而非只检查文件存在。运行时还会检查工具和目标能力；配置页通过不等于任务准入通过。目标选择器仍只派生 mount、UUID 与镜像根，不迁移日期库。
+CBI 的能力检查加载真实 helper schema 和模块，而非只检查文件存在。运行时还会检查工具和目标能力；配置页通过不等于任务准入通过。CBI 显示目标下的默认日期根，以及新库默认 offset 或既有 policy。默认路径随目标选择或手工 mount 改变，自定义路径保留并继续验证；选择器保留合法旧 mirror 后缀。显示默认值不等于持久 intent：mirror 无日期 intent 时不写 `library_root`，不因显示值制造重叠；date 默认根应正常保存。CBI 保存不创建目录、库或卡配置。表单细节以 [WEBUI_DEVELOPER_GUIDE 的日期 CBI 合同](WEBUI_DEVELOPER_GUIDE.md#日期-cbi-与日志边界) 为权威。
 
 ## 2. manager 的公开动作
 
@@ -61,6 +61,8 @@ manual 与 initialize 复用 service admission、锁、来源 snapshot、挂载�
 
 现行 `Extractor.pm` 使用 Image::ExifTool API 的 fast 白名单，不使用 fast2、ee 或完整 dump。EXIF 照片字段按当地时间规则解释；Sony XML 只使用有 offset 的 profile。源码没有启用 Sony QuickTime UTC fallback。DJI UTC profile 限于精确 Encoder `DJI OsmoAction5 Pro`；未知型号不能外推该语义。无可靠日期的普通文件保留到 Undated。原卡 Sony 照片、视频/外 XML 配对与当前 DJI 设备仍待 G1 验收。
 
+Extractor 遇到 ExifTool `Warning` 时保留 `metadata_parse_warning`，继续提取并验证 photo/video/XML 的合法字段与 UMID。它不按 Warning 文本建立允许名单，也不增加深扫。`ExtractInfo` 真正失败时仍返回 `metadata_parse_failed` 和空候选；`Error` 仍保留诊断并返回空候选。原字段优先级、受测 profile、格式验证、冲突判断、配对及隐私规则不变。新字段可用于新路由，但已有 routes 不自动移日或搬迁；需要改变固定位置的关联仍由原合同阻断。
+
 公开错误只接受固定 schema 和受控枚举。任意 stderr、GPS、序列号、原始 UMID 和完整 XML 不写入共享状态。原始 UMID 只在私有提取内存中参与配对；持久 identity 使用摘要，不是媒体内容 hash。
 
 ## 5. 比较、空间与恢复限制
@@ -73,7 +75,7 @@ manager 复用原 owner、FD 8 lease、FD 9 anchor 和 runner/drain。所有 rea
 
 ## 6. 验收证据的边界
 
-下列状态来自既有 evidence 及已定稿的有限范围评审，不是本次文档任务重新执行的测试结论。主体本地实现与定向验证已闭合；修后未重新执行全量，不能称为 release passed。评审轮次应先读取 [评审记录第 7 节](media-date-library-review.md#7-本地实现修订闭合与有限范围复核)。本节是本次验证数字与证据边界的单一事实源。
+本节是验证数字与证据边界的单一事实源。本次文档维护只核对既有日志，没有重新执行测试。第 6.1–6.5 节及 PR #60 第 1 轮记录属于历史执行与修订；其中“本次/当前”按该轮解释，不代替 Issue #65 的状态。历史评审应先读取 [评审记录第 7 节](media-date-library-review.md#7-本地实现修订闭合与有限范围复核)。本轮证据在第 6.6 节；修后全量尚未执行，不能称为 release passed。
 
 ### 6.1 唯一收尾全量与分层计数
 
@@ -198,7 +200,7 @@ LuCI 后续证据根为 `/private/tmp/outdoor-luci-bootstrap.fUbP24/`：`red/` �
 
 外层场景与嵌套 CBI 不相加为总覆盖。上述定向结果不改变历史全量分类，也不关闭 G1–G6 或 Issue #59。guest 加载真实 helper/module 的 synthetic 证据不替代目标 provider IPK、SDK、真实介质或真机验收。
 
-### 6.5 实际交付文件
+### 6.5 实际交付文件（历史交付快照）
 
 以下索引依据当前实际 tracked diff 与未跟踪源码核对。列入索引不表示所有差异都由本次生成。根目录 `README.md`、`CLAUDE.md` 及 `docs/` 下的设计文档和评审文档含有既有内容。生成日志与 `tags` 不列为功能源码。
 
@@ -222,3 +224,19 @@ LuCI 后续证据根为 `/private/tmp/outdoor-luci-bootstrap.fUbP24/`：`red/` �
 `package-perlbase.mk` 与 `package-perlver.mk` 是原始上游 recipe 快照。`package-target-proof.json` 是 target proof。这些文件属于 fixture/proof，不是 SDK 构建产物。
 
 本地实现交付时，工作区尚未提交或推送，未创建 Issue/PR，未修改 mCPE provider 或 feed pin，未触发固件构建、真盘操作或部署。后续 PR、CI 与固件进度以 Issue #59 的记录为准；本地历史测试结果不随这些动作改写。
+
+### 6.6 Issue #65：Warning、默认配置与日期状态展示
+
+本节记录 2026-10-12 已有定向执行，不是本次文档维护重跑。需求来源为 [Issue #65](https://github.com/WooDragon/outdoor-backup/issues/65)。第 6.1–6.5 节的旧全量、r1/r2 和修订过程保留为历史；其通过结果不自动扩大到本轮工作树。各层计数独立，不累计为总覆盖。
+
+| 验证面 | 已有结果 | 实际证据 |
+|---|---|---|
+| Warning 提取与规划 | native OpenWrt guest 加载 ExifTool 13.59 源码；synthetic semantic 123 TAP 断言、UUID 4 TAP 断言、Python integration 21 test methods，suite rc0 | `/private/tmp/outdoor-warning-20261012/green-final/` 的 `suite.stdout`、`suite.stderr`、`suite.rc`、`helper-counts.json` 与 `provider.txt` |
+| 默认表单与加载 | native CBI 48 场景 / 333 断言；native config 22 / 121；DOM 8 / 92，各 rc0 | `/tmp/outdoor-defaults-evidence/green/` 的 `native-last.*`、`config2.*`、`dom2.*` |
+| LuCI 日期合同 | native Lua 82 / 401，suite rc0 | `/tmp/outdoor-defaults-evidence/native-luci-final/` 的 `suite.stdout`、`suite.stderr` 与 `suite.rc` |
+| 新库默认与既有 policy | host synthetic 81 / 314，rc0；目标工具和真实 ext4/btrfs 两项 blocked | `/tmp/outdoor-defaults-evidence/green/library.stdout`、`library.stderr` 与 `library.rc` |
+| 日期状态展示 | 生产 renderer + Node DOM double 20 / 169；主进度 4 / 22；弹框 3 / 72，整体 rc0 | `/tmp/outdoor-date-ui-20261012/green-final.stdout`、`green-final.stderr` 与 `green-final.rc` |
+
+本次文档核对读取了上述结果与退出码，没有补造测试命令或临时素材证据。Warning 证据不等于真实 provider IPK 安装；host synthetic 不等于目标工具或真实文件系统验收；Node DOM double 不等于浏览器或实际 LuCI XHR 验收。真实素材只确认过字段可读，不证明修后设备日期归档或 browser 验收。
+
+本轮全量、root CI、SDK/IPK 和固件尚未执行。目标真实介质、拔盘/掉电、性能及浏览器/full CGI auth 的 G1–G6 未验收项仍由 [Issue #59](https://github.com/WooDragon/outdoor-backup/issues/59) 单独跟踪；Issue #65 的局部结果不关闭它。包版本只在 [BUILD 的可选包边界](../BUILD.md#可选日期包与-provider-边界) 记录，不把 recipe release 当作发布成功。

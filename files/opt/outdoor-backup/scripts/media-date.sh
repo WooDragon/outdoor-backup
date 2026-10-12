@@ -126,7 +126,10 @@ media_date_library_check() {
         media_date_validate library "$MEDIA_DATE_LIBRARY_JSON" || { media_date_fail invalid_library; return 1; }
     else
         library_layout_empty_root "$TARGET_BACKUP_ROOT" || { media_date_fail unknown_nonempty_library; return 1; }
-        config_valid_archive_offset "${ARCHIVE_OFFSET_MINUTES:-}" || { media_date_fail invalid_archive_offset; return 1; }
+        # Default only at new-library admission, after owner/FD9 checks. An
+        # existing marker must keep the empty-offset policy-inheritance branch.
+        [ -n "${ARCHIVE_OFFSET_MINUTES:-}" ] || ARCHIVE_OFFSET_MINUTES=480
+        config_valid_archive_offset "$ARCHIVE_OFFSET_MINUTES" || { media_date_fail invalid_archive_offset; return 1; }
         return 0
     fi
     MEDIA_DATE_LIBRARY_ID=$(jq -r '.library_id' "$MEDIA_DATE_WORK/helper.json") || return 1

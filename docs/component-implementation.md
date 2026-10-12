@@ -4,7 +4,7 @@
 
 **前置阅读**：修改 date/mirror 配置、manual/initialize 动作、日期规划与路由发布前，应先读取 [media-date-library-implementation.md](media-date-library-implementation.md)。该文档区分现行本地接口与设计规格，并记录 G1–G6 的证据边界。执行日期配置或旧 cleanup 前，应先读取 [media-date-library-operations.md](media-date-library-operations.md)。HTTP 表单、权限与 task 字段以 [WEBUI_DEVELOPER_GUIDE.md](WEBUI_DEVELOPER_GUIDE.md) 为权威说明。
 
-日期主体本地实现与定向验证已闭合，有限范围复核 APPROVED。修后未重跑全量；不能发布。证据应先读取 [implementation 验证节](media-date-library-implementation.md#6-验收证据的边界)。本文件下方保留既有组件记录与历史示例；首次配置的 RW 窗口仅属于 mirror 兼容行为或显式 initialize，date 自动任务缺配置时只读拒绝。cleanup 现行协议由 manager 后端统一准入，不再授权任意目录；下方旧 fixture/清理描述不扩展这一边界。
+日期主体已有本地实现与定向验证；有限范围 APPROVED 属于历史轮次，不扩大为本轮 Issue #65 的结论。配置 loader 在有效 target 确定后派生未配置的 mirror 根，保留显式 legacy/UCI 优先级。loader 不读取库 marker；新库默认策略与既有 policy 继承由 owner/FD 9 准入分支区分。修改默认值或 CBI 显示/持久 intent 前，应先读取 [implementation 配置合同](media-date-library-implementation.md#1-配置合同) 与 [WebUI 日期 CBI 合同](WEBUI_DEVELOPER_GUIDE.md#日期-cbi-与日志边界)。修后未重跑全量；不能据局部结果称为发布通过。证据应先读取 [implementation 验证节](media-date-library-implementation.md#6-验收证据的边界)。本文件下方保留既有组件记录与历史示例；首次配置的 RW 窗口仅属于 mirror 兼容行为或显式 initialize，date 自动任务缺配置时只读拒绝。cleanup 现行协议由 manager 后端统一准入，不再授权任意目录；下方旧 fixture/清理描述不扩展这一边界。
 
 ## 1. 热插拔触发脚本
 
@@ -54,7 +54,7 @@ CBI 配置页保留 `target_mount`、`target_uuid` 和 `backup_root` 三个手�
 
 [`target-device.sh`](../files/opt/outdoor-backup/scripts/target-device.sh) 提供最小的 target-only 设备提取。[`target.lua`](../luci-app-outdoor-backup/luasrc/model/outdoor-backup/target.lua) 是固定 helper。它读取脚本输出并验证 JSON。CBI 只使用该 helper 的已验证数据生成显示为 device、UUID、mount 和 filesystem type 的选项；容量和卷标不属于该选择器的显示数据。
 
-选择模式只生成 3 个 formvalues。唯一持久化路径仍是原 CBI `Map.parse()` 和 `Map.save()`。保存前，CBI 会重枚举，并按 UUID 与 mount 的组合复验选择。枚举失败、选择失效或 UUID/mount 不匹配时，CBI 不保存新的 target 值。manual 模式保持当前手工字段、继承和空 UUID 的 `rmempty` 行为。
+选择模式生成 mount、UUID 和镜像根三个目标 formvalues。日期根的默认显示、目标变化和空 intent 另按 [WebUI 日期 CBI 合同](WEBUI_DEVELOPER_GUIDE.md#日期-cbi-与日志边界) 提交；显示默认值不能直接变成持久配置。唯一持久化路径仍是原 CBI `Map.parse()` 和 `Map.save()`。保存前，CBI 会重枚举，并按 UUID 与 mount 的组合复验选择。枚举失败、选择失效或 UUID/mount 不匹配时，CBI 不保存新的 target 值。manual 模式保持当前手工字段、继承和空 UUID 的 `rmempty` 行为。
 
 当选择有效新目标时，CBI 从有效旧配置计算 backup-root 后缀。有效旧配置按 defaults < legacy < UCI 的顺序加载，并进行路径正规化。CBI 将该后缀附加到新 mount；没有合法相对后缀时使用 `SDMirrors`。CBI 拒绝 target 外的 backup root，并拒绝与 SD source mount 相交的 target。运行时目标守卫仍是最终安全边界；状态信息不是锁。
 
@@ -274,7 +274,9 @@ EOF
 }
 ```
 
-## 5. 安装脚本
+## 5. 安装脚本（历史示例）
+
+以下代码保留历史组件说明，不是当前包安装入口。其静态 BACKUP_ROOT 赋值不代表现行 legacy 模板；当前配置合同应先读取 [implementation 配置合同](media-date-library-implementation.md#1-配置合同)。
 
 ### 文件: `/opt/outdoor-backup/install.sh`
 
@@ -406,7 +408,9 @@ printf '%s\n' 0 > "$LED/brightness" 2>/dev/null || true
 echo "Setup complete!"
 ```
 
-## 6. 配置文件模板
+## 6. 配置文件模板（历史示例）
+
+以下代码保留旧模板，包括静态根与尚无运行时消费者的 hook/extra-options。它不代表交付配置。当前模板的单一事实源为 [`backup.conf`](../files/opt/outdoor-backup/conf/backup.conf)；未配置根的派生与显式值的继承应先读取 [implementation 配置合同](media-date-library-implementation.md#1-配置合同)。
 
 ### 文件: `/opt/outdoor-backup/conf/backup.conf`
 

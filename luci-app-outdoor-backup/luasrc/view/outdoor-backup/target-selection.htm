@@ -5,7 +5,7 @@
 <option<%=attr("value", key) .. ifattr(key == selected, "selected", "selected")%>><%=pcdata(self.vallist[index])%></option>
 <% end %>
 </select>
-<div<%=attr("id", cbid .. "-selection-data") .. attr("data-roots", luci.util.serialize_json(self.selection_roots))%>></div>
+<div<%=attr("id", cbid .. "-selection-data") .. attr("data-roots", luci.util.serialize_json(self.selection_roots)) .. attr("data-mounts", luci.util.serialize_json(self.selection_mounts))%>></div>
 <p id="<%=pcdata(cbid)%>-selection-summary"></p>
 <script type="text/javascript">
 (function() {
@@ -17,6 +17,18 @@
             element = element.parentNode;
         }
         return null;
+    }
+
+    var previousMount;
+    var previousManualMount;
+
+    // Follow only the conventional value. Custom or manually edited paths stay
+    // untouched; the server still validates the full submitted configuration.
+    function rebaseRoot(field, oldMount, newMount, child) {
+        if (field && oldMount && newMount &&
+            field.value === oldMount.replace(/\/+$/, '') + '/' + child) {
+            field.value = newMount.replace(/\/+$/, '') + '/' + child;
+        }
     }
 
     function updateTargetFields() {
@@ -34,6 +46,18 @@
 
         roots = JSON.parse(data.getAttribute('data-roots'));
         manual = selector.value === 'manual';
+        var prefix = 'cbid.outdoor-backup.<%=pcdata(section)%>.';
+        var mount = document.getElementById(prefix + 'target_mount');
+        var library = document.getElementById(prefix + 'library_root');
+        var backup = document.getElementById(prefix + 'backup_root');
+        var mounts = JSON.parse(data.getAttribute('data-mounts'));
+        var currentMount = manual ? (mount && mount.value) : mounts[selector.value];
+        rebaseRoot(library, previousMount, currentMount, 'MediaLibrary');
+        if (manual && mount) {
+            rebaseRoot(backup, previousManualMount, mount.value, 'SDMirrors');
+            previousManualMount = mount.value;
+        }
+        previousMount = currentMount;
         summary.textContent = manual ?
             'Manual mode: the fields below are saved as entered.' :
             'Selected target will save backup root: ' + (roots[selector.value] || 'unknown');
@@ -51,6 +75,12 @@
         var selector = document.getElementById('<%=pcdata(cbid)%>');
         if (!selector) {
             return;
+        }
+        var mount = document.getElementById('cbid.outdoor-backup.<%=pcdata(section)%>.target_mount');
+        if (mount) {
+            previousMount = previousManualMount = mount.value;
+            mount.addEventListener('change', updateTargetFields);
+            mount.addEventListener('input', updateTargetFields);
         }
         selector.addEventListener('change', updateTargetFields);
         updateTargetFields();

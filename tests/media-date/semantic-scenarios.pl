@@ -85,7 +85,82 @@ is(choose(meta('video',{ CreateDate => ['2026:08:08 20:30:00'], DeviceModelName 
 is(choose(meta('video',{ CreationDateValue => ['2026:08:08 23:59:59+09:00'] })->{dates})->{bucket},
    '2026/20260808', 'M06 start date only');
 rejects(sub { meta('photo', { GPSLatitude => ['1'] }) }, 'unknown_metadata_field', 'M38 test double cannot inject nonwhitelist field');
-is_deeply(meta('photo', { Warning => ['Synthetic parse warning'], DateTimeOriginal => ['2026:08:08 12:00:00'] })->{dates}, [], 'M07 parsing warning yields no trusted date');
+is(choose(meta('photo', { Warning => ['Synthetic parse warning'], DateTimeOriginal => ['2024:01:02 16:30:00'] })->{dates})->{bucket}, '2024/20240102', 'M07 Warning does not veto valid EXIF capture');
+
+# Given any Warning, valid fields still use the delivered date/profile rules.
+# All identities and times below are invented, not copied from camera media.
+for my $warning ('[minor] The ExtractEmbedded option may find more tags in the media data',
+                 'Unrecognized synthetic warning') {
+    my $dji = meta('video', { Warning => [$warning], Encoder => ['DJI OsmoAction5 Pro'],
+        CreateDate => ['2024:01:02 16:30:00'] });
+    is(choose($dji->{dates})->{bucket}, '2024/20240103', 'Warning DJI UTC crosses day at library offset 480');
+    is_deeply($dji->{warnings}, ['metadata_parse_warning'], 'Warning diagnostic retained without raw text');
+}
+{
+    my $warning = { Warning => ['Unrecognized synthetic warning'] };
+    my $exif = meta('photo', { %$warning, DateTimeOriginal => ['2024:01:02 16:30:00'],
+        SubSecTimeOriginal => ['123'], OffsetTimeOriginal => ['+09:00'] });
+    is($exif->{dates}[0]{value}, '2024:01:02 16:30:00.123+09:00', 'Warning retains EXIF companion fields');
+    is(choose($exif->{dates})->{bucket}, '2024/20240102', 'Warning does not reinterpret EXIF as UTC');
+    is_deeply($exif->{warnings}, ['metadata_parse_warning'], 'EXIF Warning diagnostic retained');
+    my $internal = meta('video', { %$warning, TargetMaterialUmidRef => [$umid] });
+    my $external = meta('xml', { %$warning, NonRealTimeMetaTargetMaterialUmidRef => [$umid],
+        NonRealTimeMetaCreationDateValue => ['2024-01-02T16:30:00+09:00'] });
+    is($internal->{umid}, $umid, 'Warning preserves verified video UMID in private memory');
+    is($external->{umid}, $umid, 'Warning preserves verified XML UMID in private memory');
+    is(choose($external->{dates})->{bucket}, '2024/20240102', 'Warning preserves Sony XML offset date');
+    is_deeply($external->{warnings}, ['metadata_parse_warning'], 'XML Warning diagnostic retained');
+    my ($decisions, $pair_warnings) = group({'clip.mp4'=>$internal, 'unrelated.xml'=>$external});
+    is($decisions->{'unrelated.xml'}{anchor}, 'clip.mp4', 'Warning does not block exact UMID pairing');
+    is($decisions->{'clip.mp4'}{bucket}, '2024/20240102', 'Warning allows paired external date fallback');
+    my $dated_internal = meta('video', { %$warning, TargetMaterialUmidRef=>[$umid],
+        CreationDateValue=>['2024-01-03T16:30:00+09:00'] });
+    is(choose($dated_internal->{dates})->{bucket}, '2024/20240103', 'Warning preserves Sony embedded offset date');
+    ($decisions, $pair_warnings) = group({'clip.mp4'=>$dated_internal, 'unrelated.xml'=>$external});
+    is($decisions->{'clip.mp4'}{bucket}, '2024/20240103', 'Warning keeps internal Sony date ahead of paired external XML');
+    ($decisions, $pair_warnings) = group({'clip.mp4'=>$internal, 'second.mp4'=>$internal, 'unrelated.xml'=>$external});
+    ok($pair_warnings->{'unrelated.xml'}{ambiguous_pairing}, 'Warning does not relax duplicate UMID pairing');
+    is($decisions->{'unrelated.xml'}{anchor}, 'unrelated.xml', 'Warning duplicate UMID never chooses arbitrary video');
+    my $bad_identity = meta('xml', { %$warning, NonRealTimeMetaTargetMaterialUmidRef => ['not-an-identity'] });
+    is($bad_identity->{umid}, undef, 'Warning does not accept malformed UMID');
+    my $conflict_identity = meta('xml', { %$warning, TargetMaterialUmidRef => [$umid, '2'x64] });
+    is($conflict_identity->{umid}, undef, 'Warning does not accept conflicting UMIDs');
+    ok(grep($_ eq 'ambiguous_recording_identity', @{$conflict_identity->{warnings}}), 'Warning retains identity conflict diagnostic');
+    for my $kind ('photo', 'video', 'xml') {
+        my %fields = (DateTimeOriginal=>['2024:01:02 16:30:00'], Encoder=>['DJI OsmoAction5 Pro'],
+            CreateDate=>['2024:01:02 16:30:00'], CreationDateValue=>['2024-01-02T16:30:00+09:00'],
+            TargetMaterialUmidRef=>[$umid]);
+        my $error = meta($kind, { %$warning, %fields, Error=>['Synthetic fatal error'] });
+        is(choose($error->{dates})->{bucket}, 'Undated', "Warning plus Error remains Undated for $kind");
+        is($error->{umid}, undef, "Warning plus Error blocks pairing for $kind");
+        is_deeply($error->{warnings}, ['metadata_parse_warning'], "Warning plus Error keeps diagnostic for $kind");
+    }
+    is(choose(meta('video', { %$warning, Encoder=>['DJI OsmoAction5 Pro'],
+        CreateDate=>['2024:02:30 16:30:00'] })->{dates})->{bucket}, 'Undated', 'Warning does not legalize invalid DJI date');
+    is(choose(meta('video', { %$warning, Encoder=>['Unknown synthetic camera'],
+        CreateDate=>['2024:01:02 16:30:00'] })->{dates})->{bucket}, 'Undated', 'Warning does not authorize unknown UTC profile');
+    is(choose(meta('photo', { %$warning, DateTimeOriginal=>['2024:01:02 16:30:00','2024:01:03 16:30:00'] })->{dates})->{reason},
+        'conflicting_capture_date', 'Warning does not hide conflicting date peers');
+    is(choose(meta('photo', { %$warning, DateTimeOriginal=>['2024:01:02 16:30:00'],
+        OffsetTimeOriginal=>['+08:00','+09:00'] })->{dates})->{bucket}, 'Undated', 'Warning does not relax ambiguous EXIF offsets');
+}
+
+# ExtractInfo failure must bypass even apparently useful fields from GetInfo.
+{
+    package FailedMetadataReader;
+    sub ExtractInfo { return 0 }
+    sub GetInfo { die "GetInfo must not run after ExtractInfo failure" }
+}
+{
+    my $dir = tempdir(CLEANUP=>1);
+    open(my $fh, '>', "$dir/failed.mp4") or die $!;
+    print {$fh} 'synthetic'; close($fh) or die $!;
+    my $extractor = bless {tool=>bless({}, 'FailedMetadataReader')}, 'OutdoorBackup::MediaDate::Extractor';
+    my $failed = $extractor->extract("$dir/failed.mp4");
+    is(choose($failed->{dates})->{bucket}, 'Undated', 'ExtractInfo failure remains Undated');
+    is_deeply($failed->{warnings}, ['metadata_parse_failed'], 'ExtractInfo failure retains separate diagnostic');
+    is($failed->{umid}, undef, 'ExtractInfo failure cannot pair');
+}
 
 my $video = meta('video', { TargetMaterialUmidRef => [$umid], CreationDateValue => ['2026:08:09 00:30:00+09:00'] });
 my $xml = meta('xml', { NonRealTimeMetaTargetMaterialUmidRef => [$umid], NonRealTimeMetaCreationDateValue => ['2026:08:10 00:30:00+09:00'] });
@@ -211,4 +286,12 @@ for my $count (31,32,33) {
     my $bounded=meta('xml',{NonRealTimeMetaCreationDateValue=>[('2026:08:08 12:00:00Z') x $count]});
     is(choose($bounded->{dates})->{bucket},$count <= 32 ? '2026/20260808' : 'Undated','M07 excessive duplicate fields do not silently discard contradictory peers');
 }
-plan tests => 84;
+($result,$routes,$root) = planner_fixture({'clip.mp4'=>['video',{
+    Warning=>['Unrecognized synthetic warning'], Encoder=>['DJI OsmoAction5 Pro'],
+    CreateDate=>['2024:01:02 16:30:00'], TargetMaterialUmidRef=>[$umid]}]}, history('clip.mp4','Undated'));
+is($routes->{entries}{'clip.mp4'}{bucket}, 'Undated', 'Warning metadata completion cannot move fixed old route');
+unlike(OutdoorBackup::MediaDate::JSON::encode_json([$routes,$result]), qr/\Q$umid\E/, 'Warning raw UMID never stored in routes or public output');
+is_deeply($result->{warnings}, [
+    {source_relpath=>'clip.mp4', code=>'metadata_parse_warning'},
+    {source_relpath=>'clip.mp4', code=>'no_capture_date'}], 'Warning planner public output retains only controlled diagnostics');
+plan tests => 123;

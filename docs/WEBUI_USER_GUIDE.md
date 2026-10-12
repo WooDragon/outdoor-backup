@@ -64,9 +64,11 @@ LuCI 主页 → Services（服务） → Outdoor Backup
 
 运行中快照先报告未知值。transferring 阶段可从 manager 的同步 wait loop 采样 rsync 条目、普通传输文件、字节与速率；未知值不能当作零传输。条目包含目录，不是完整文件数或字节完成率。日期 planning 显示分析素材，finalizing 显示同步、摘要与最终检查，二者没有 ETA。增量传输也没有可靠 ETA。页面刷新只读取同一快照，不新建 writer。
 
-日期 task 可显示本次 layout、comparison_mode、archive、warnings 和 replaced。completed 不表示历史全库逐字核验。默认 quick 可能漏掉同 size/mtime 内容变化；mtime-only 更新可保留同内容旧文件。manual checksum 与独立 initialize 是 root CLI，没有 WebUI trigger 或队列。
+日期 task 分为“日期归档信息”“元数据提示”和“旧版本保留”。归档信息显示 Accepted files、Retained routes、Excluded 和 Undated；Retained routes 包含历史固定位置，不是已复制完成数。未知计数显示 `Unknown / 未知`，不是 0，也不是错误。Warning 和 Undated 不等于备份失败，任务结果以主状态为准。提取器保留 Warning 提示，同时继续使用验证合法的日期与配对字段；真正读取失败/Error 仍走兜底。
 
-**前置阅读**：启用日期模式或处理其警告前，应先读取 [media-date-library-implementation.md](media-date-library-implementation.md)。执行 root CLI 前，应先读取 [media-date-library-operations.md](media-date-library-operations.md)。主体本地实现与定向验证已闭合，有限范围复核 APPROVED；修后未重跑全量，不能发布。浏览器/full CGI auth 及真机端到端尚未验收。
+旧版本保留分区区分未知、0 和正数。保留目录存在不证明已有旧文件；保留文件也不证明新旧内容不同。技术详情、保留目录路径与比较帮助默认折叠。completed 不表示历史全库逐字核验。默认 quick 可能漏掉同 size/mtime 内容变化；mtime-only 更新可保留同内容旧文件。manual checksum 与独立 initialize 是 root CLI，没有 WebUI trigger、队列或新增写操作。mirror 与没有 task 的旧 snapshot 保持原显示。
+
+**前置阅读**：启用日期模式或处理其警告前，应先读取 [media-date-library-implementation.md](media-date-library-implementation.md)。执行 root CLI 前，应先读取 [media-date-library-operations.md](media-date-library-operations.md)。历史有限范围 APPROVED 不扩大到本轮默认配置与状态展示改动。已有定向证据应先读取 [implementation 的 Issue #65 验证节](media-date-library-implementation.md#66-issue-65warning默认配置与日期状态展示)。修后全量、root CI、SDK 与固件尚未执行。浏览器/full CGI auth 及真机端到端尚未验收。
 
 备份完成后，history 的文件数和字节数来自成功 rsync 的 `--stats` 输出。管理器只会在 rsync、摘要写入、最终目标锚点健康检查和目标身份复验均成功后记录 `completed`。
 
@@ -161,11 +163,15 @@ Use this after backing up to NAS.
 | **Enable Auto Backup** | 启用/禁用自动备份 | 启用 |
 | **Target storage** | 已挂载目标的选择器；`Manual / keep current` 保留手工字段 | Manual / keep current |
 | **Target Mount / Target UUID** | 手工目标字段；manual 模式不改变它们 | 继承现有配置 |
-| **Backup Root Directory** | 镜像根，date 不将它作为媒体根 | `/mnt/ssd/SDMirrors` |
+| **Backup Root Directory** | 镜像根，date 不将它作为媒体根；显式 legacy/UCI 值保留 | 未配置时随有效目标派生 SDMirrors |
 | **Backup Layout** | 默认 mirror；显式 date 需实际 helper 能力检查 | mirror |
-| **Date Library Root** | 独立目标直接子目录；不与镜像根或来源相交 | 未配置保留空 intent，date 可派生 MediaLibrary |
-| **Fixed Archive Offset** | 新库显式固定分钟偏移；既有 policy 不在线改变 | 新库无隐式值 |
+| **Date Library Root** | 独立目标直接子目录；不与镜像根或来源相交 | 显示目标下的 MediaLibrary；mirror 无日期 intent 时不写此值 |
+| **Fixed Archive Offset** | 未配置时显示新库默认值或既有 policy；policy 不在线改变 | 默认规则应先读取下方权威操作说明 |
 | **Debug Mode** | 调试日志开关 | 禁用 |
+
+**前置阅读**：配置新库默认 offset、继承既有 policy 或切换 date 前，应先读取 [media-date-library-operations 的选择新日期库](media-date-library-operations.md#2-选择新日期库)。该节是日期启用步骤的唯一权威，配置页不另建初始化流程。
+
+页面中的常规默认日期根随目标选择或手工 Target Mount 改变。常规镜像根也随手工 mount 改变；选择目标时仍保留合法旧 mirror 后缀。用户手工修改的路径保留原值，并继续接受服务端路径与隔离验证。仅显示默认日期根不会给 mirror 增加日期 intent。date 的默认根正常保存。保存不创建目录、库或卡配置。
 
 来源挂载点（**SD Card Mount Point**）应填写安全的绝对路径。保存不要求该目录已存在或 SD 卡已插入。配置页不会创建目录或挂载 SD 卡。实际任务的来源目录创建与 SD 卡挂载仍受运行期守卫约束。
 

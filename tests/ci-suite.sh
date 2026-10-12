@@ -100,7 +100,7 @@ validate_suite() {
         exit 64
     }
     case $suite in
-        test-media-date-regressions.sh|test-media-date-package.sh|test-media-date-helper.sh|test-media-date-manager.sh|test-media-date-transfer.sh|test-media-date-library.sh|test-media-date-lifecycle.sh|test-luci-media-date.sh|test-backup-core.sh|test-backup-progress.sh|test-card-config.sh|test-card-identity.sh|test-card-reader.sh|test-cleanup.sh|test-config.sh|test-feed-layout.sh|test-hotplug-service.sh|test-led-lifecycle.sh|test-led.sh|test-live-progress.sh|test-lock.sh|test-luci-acl.sh|test-luci-target-config.sh|test-luci-target-fd.sh|test-luci-target-selection.sh|test-manager-cancellation.sh|test-manager-removal.sh|test-manager-service.sh|test-manager-source-identity.sh|test-owner-event.sh|test-service-control.sh|test-service-lifecycle.sh|test-service-state.sh|test-source-identity.sh|test-status.sh|test-storage-lifecycle.sh|test-target-anchor.sh|test-target-device.sh|test-target-list.sh|test-target-manager.sh|test-transfer-process.sh) ;;
+        test-media-date-regressions.sh|test-media-date-package.sh|test-media-date-helper.sh|test-media-date-manager.sh|test-media-date-transfer.sh|test-media-date-library.sh|test-media-date-lifecycle.sh|test-luci-media-date.sh|test-luci-media-date-ui.sh|test-backup-core.sh|test-backup-progress.sh|test-card-config.sh|test-card-identity.sh|test-card-reader.sh|test-cleanup.sh|test-config.sh|test-feed-layout.sh|test-hotplug-service.sh|test-led-lifecycle.sh|test-led.sh|test-live-progress.sh|test-lock.sh|test-luci-acl.sh|test-luci-target-config.sh|test-luci-target-fd.sh|test-luci-target-selection.sh|test-manager-cancellation.sh|test-manager-removal.sh|test-manager-service.sh|test-manager-source-identity.sh|test-owner-event.sh|test-service-control.sh|test-service-lifecycle.sh|test-service-state.sh|test-source-identity.sh|test-status.sh|test-storage-lifecycle.sh|test-target-anchor.sh|test-target-device.sh|test-target-list.sh|test-target-manager.sh|test-transfer-process.sh) ;;
         *)
             printf 'FAIL: unsupported suite: %s\n' "$suite" >&2
             exit 64
@@ -147,6 +147,10 @@ main() {
             prepare_media_date
             printf 'native lifecycle kernel=%s arch=%s; real /proc; source=/src (read-only)\n' "$(uname -s)" "$(uname -m)"
             exec /bin/ash "/src/$suite" --inside "$TEST_EVIDENCE/lifecycle.json"
+            ;;
+        test-luci-media-date-ui.sh)
+            require_opkg node
+            exec /bin/ash "/src/$suite"
             ;;
         test-luci-media-date.sh)
             require_opkg ubusd ubus rpcd libuci-lua lua luci-base luci-compat luci-lib-jsonc luci-lib-nixio jq node
