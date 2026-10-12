@@ -17,7 +17,7 @@
 | `archive_offset_minutes` | 显式值应为 `-840..840` 的规范整数。新库未配置时，`media_date_library_check` 在 owner/FD 9 准入后的初始化分支补入 `480`（UTC+08:00）。既有库未配置时沿用固定 policy，包括 `0`；显式不同值拒绝。`config_load` 保留空 offset，不读取库 marker，也不猜 TZ、旅行时区或 DST。 |
 | `target_mount` / `target_uuid` | 已挂载目标的路径与实际 UUID；不猜盘，不格式化，不挂载，不修改 fstab。 |
 
-CBI 的能力检查加载真实 helper schema 和模块，而非只检查文件存在。运行时还会检查工具和目标能力；配置页通过不等于任务准入通过。CBI 显示目标下的默认日期根，以及新库默认 offset 或既有 policy。默认路径随目标选择或手工 mount 改变，自定义路径保留并继续验证；选择器保留合法旧 mirror 后缀。显示默认值不等于持久 intent：mirror 无日期 intent 时不写 `library_root`，不因显示值制造重叠；date 默认根应正常保存。CBI 保存不创建目录、库或卡配置。表单细节以 [WEBUI_DEVELOPER_GUIDE 的日期 CBI 合同](WEBUI_DEVELOPER_GUIDE.md#日期-cbi-与日志边界) 为权威。
+CBI 的能力检查加载真实 helper schema 和模块，而非只检查文件存在。运行时还会检查工具和目标能力；配置页通过不等于任务准入通过。CBI 显示目标下的默认日期根，以及新库默认 offset 或既有 policy。默认路径随目标选择或手工 mount 改变，自定义路径保留并继续验证；选择器保留合法旧 mirror 后缀。显示默认值不等于持久 intent：mirror 无日期 intent 时不写 `library_root`，不因显示值制造重叠；date 默认根应正常保存。CBI 保存不创建目录、库或卡配置。F1 将初始 offset 显示基准固定在 model 构造时，先于 target 的暂存变更；无显式 offset 且未改显示值或未提交字段时保持继承，目标切换不把旧显示值写成新策略。F2 保留最后一个非空手工 mount 的重基基准，清空后恢复非空时默认根仍跟随，自定义根不变。表单细节以 [WEBUI_DEVELOPER_GUIDE 的日期 CBI 合同](WEBUI_DEVELOPER_GUIDE.md#日期-cbi-与日志边界) 为权威。
 
 ## 2. manager 的公开动作
 
@@ -236,6 +236,19 @@ LuCI 后续证据根为 `/private/tmp/outdoor-luci-bootstrap.fUbP24/`：`red/` �
 | LuCI 日期合同 | native Lua 82 / 401，suite rc0 | `/tmp/outdoor-defaults-evidence/native-luci-final/` 的 `suite.stdout`、`suite.stderr` 与 `suite.rc` |
 | 新库默认与既有 policy | host synthetic 81 / 314，rc0；目标工具和真实 ext4/btrfs 两项 blocked | `/tmp/outdoor-defaults-evidence/green/library.stdout`、`library.stderr` 与 `library.rc` |
 | 日期状态展示 | 生产 renderer + Node DOM double 20 / 169；主进度 4 / 22；弹框 3 / 72，整体 rc0 | `/tmp/outdoor-date-ui-20261012/green-final.stdout`、`green-final.stderr` 与 `green-final.rc` |
+
+#### F1/F2/S1 后续定向修订
+
+以下为最新一轮已有执行。上一表中的 CBI 48/333、DOM 8/92 和状态 20/169 保留为前轮证据，不表示当前修后计数；其他局部数据不变。真实旧 RED 日志及其分类保留，不由后续 GREEN 覆盖。
+
+| 验证面 | 最新结果 | 实际证据与范围 |
+|---|---|---|
+| F1/F2 native CBI | 53 场景 / 380 断言，0 fail，rc0 | `/tmp/outdoor-defaults-f1-f2/green/native.*`；包含独立 GET/POST 四场景及使用真实 DOM 值输入 native 的一场景 |
+| F2 target DOM | 10 场景 / 132 断言，0 fail，rc0 | `/tmp/outdoor-defaults-f1-f2/green/dom.*`；生产脚本与 DOM double |
+| synthetic form adapter | 7 场景 / 7 passed，0 fail，rc0；未报告断言总数 | `/tmp/outdoor-defaults-f1-f2/green/adapter.*`；实际 CBI validators 加 synthetic form adapter，不等于浏览器验收 |
+| S1 状态 UI | 27 场景 / 219 断言，0 fail，rc0；主进度 4/22、弹框 3/72 保持 | `/tmp/outdoor-date-ui-s1-20261012/green.*`；生产 renderer 与 Node DOM double |
+
+F1 的 native GET/POST 场景验证初始显示基准在任何 staged target 变更前固定。F2 验证空手工 mount 不推进默认根的重基基准，恢复非空后继续跟随，custom 路径不变。S1 验证同任务/同历史记录刷新保留实际 open/closed、新 job 重置折叠及缺身份不猜；renderer 只使用上一轮可见记录的状态，不累积无界跨轮缓存。维护这些接口前应先读取 [WebUI 日期 CBI 合同](WEBUI_DEVELOPER_GUIDE.md#日期-cbi-与日志边界) 与 [日期任务/状态合同](WEBUI_DEVELOPER_GUIDE.md#日期任务与状态合同)。
 
 本次文档核对读取了上述结果与退出码，没有补造测试命令或临时素材证据。Warning 证据不等于真实 provider IPK 安装；host synthetic 不等于目标工具或真实文件系统验收；Node DOM double 不等于浏览器或实际 LuCI XHR 验收。真实素材只确认过字段可读，不证明修后设备日期归档或 browser 验收。
 

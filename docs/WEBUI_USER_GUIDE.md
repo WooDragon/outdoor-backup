@@ -66,7 +66,7 @@ LuCI 主页 → Services（服务） → Outdoor Backup
 
 日期 task 分为“日期归档信息”“元数据提示”和“旧版本保留”。归档信息显示 Accepted files、Retained routes、Excluded 和 Undated；Retained routes 包含历史固定位置，不是已复制完成数。未知计数显示 `Unknown / 未知`，不是 0，也不是错误。Warning 和 Undated 不等于备份失败，任务结果以主状态为准。提取器保留 Warning 提示，同时继续使用验证合法的日期与配对字段；真正读取失败/Error 仍走兜底。
 
-旧版本保留分区区分未知、0 和正数。保留目录存在不证明已有旧文件；保留文件也不证明新旧内容不同。技术详情、保留目录路径与比较帮助默认折叠。completed 不表示历史全库逐字核验。默认 quick 可能漏掉同 size/mtime 内容变化；mtime-only 更新可保留同内容旧文件。manual checksum 与独立 initialize 是 root CLI，没有 WebUI trigger、队列或新增写操作。mirror 与没有 task 的旧 snapshot 保持原显示。
+旧版本保留分区区分未知、0 和正数。保留目录存在不证明已有旧文件；保留文件也不证明新旧内容不同。技术详情、保留目录路径与比较帮助在新任务中默认折叠。同任务或同历史记录刷新时，页面保留用户实际选择的展开或关闭状态。新 job 重置折叠；身份不足时页面不猜测沿用旧选择，也不跨已消失记录累积选择。身份与刷新合同应先读取 [WEBUI_DEVELOPER_GUIDE 的日期任务与状态合同](WEBUI_DEVELOPER_GUIDE.md#日期任务与状态合同)。completed 不表示历史全库逐字核验。默认 quick 可能漏掉同 size/mtime 内容变化；mtime-only 更新可保留同内容旧文件。manual checksum 与独立 initialize 是 root CLI，没有 WebUI trigger、队列或新增写操作。mirror 与没有 task 的旧 snapshot 保持原显示。
 
 **前置阅读**：启用日期模式或处理其警告前，应先读取 [media-date-library-implementation.md](media-date-library-implementation.md)。执行 root CLI 前，应先读取 [media-date-library-operations.md](media-date-library-operations.md)。历史有限范围 APPROVED 不扩大到本轮默认配置与状态展示改动。已有定向证据应先读取 [implementation 的 Issue #65 验证节](media-date-library-implementation.md#66-issue-65warning默认配置与日期状态展示)。修后全量、root CI、SDK 与固件尚未执行。浏览器/full CGI auth 及真机端到端尚未验收。
 
@@ -171,7 +171,7 @@ Use this after backing up to NAS.
 
 **前置阅读**：配置新库默认 offset、继承既有 policy 或切换 date 前，应先读取 [media-date-library-operations 的选择新日期库](media-date-library-operations.md#2-选择新日期库)。该节是日期启用步骤的唯一权威，配置页不另建初始化流程。
 
-页面中的常规默认日期根随目标选择或手工 Target Mount 改变。常规镜像根也随手工 mount 改变；选择目标时仍保留合法旧 mirror 后缀。用户手工修改的路径保留原值，并继续接受服务端路径与隔离验证。仅显示默认日期根不会给 mirror 增加日期 intent。date 的默认根正常保存。保存不创建目录、库或卡配置。
+页面中的常规默认日期根随目标选择或手工 Target Mount 改变。常规镜像根也随手工 mount 改变；选择目标时仍保留合法旧 mirror 后缀。用户手工修改的路径保留原值，并继续接受服务端路径与隔离验证。清空手工 Target Mount 的输入不丢弃最后一个非空重基基准；恢复非空值后，常规默认根继续跟随，自定义路径保持原值。空输入仍受原保存校验约束。未显式配置 offset 时，页面在 model 构造时固定初始显示基准。用户未修改该显示值或未提交 offset 字段时仍继承策略；切换目标不会把旧库显示值写成新库策略，也不会把新库默认值当作修改既有 policy。仅显示默认日期根不会给 mirror 增加日期 intent。date 的默认根正常保存。保存不创建目录、库或卡配置。
 
 来源挂载点（**SD Card Mount Point**）应填写安全的绝对路径。保存不要求该目录已存在或 SD 卡已插入。配置页不会创建目录或挂载 SD 卡。实际任务的来源目录创建与 SD 卡挂载仍受运行期守卫约束。
 

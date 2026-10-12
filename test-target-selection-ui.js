@@ -152,6 +152,11 @@ function createFixture(roots) {
     return {
         actualSelect,
         libraryField,
+        inputMount(value) {
+            manualFields.target_mount.value = value;
+            assert.equal(typeof mountListeners.input, 'function', 'Missing mount input listener');
+            mountListeners.input();
+        },
         changeMount(value) {
             manualFields.target_mount.value = value;
             assert.equal(typeof mountListeners.change, 'function', 'Missing mount listener');
@@ -189,6 +194,39 @@ function fieldValues(fields) {
 }
 
 const cases = [
+    {
+        name: '9 clearing and retyping mount keeps generated roots linked',
+        run() {
+            const fixture = createFixture({ [SELECTED_VALUE]: SELECTED_ROOT });
+            fixture.fireLoad();
+            for (const mount of ['/mnt/', '', '/mnt/new']) fixture.inputMount(mount);
+            fixture.changeMount('/mnt/new');
+            // Publish actual DOM values before assertions, including on RED. The
+            // native Map consumes these unchanged; no repaired fixture values.
+            if (process.env.TARGET_SELECTION_DOM_EVIDENCE) {
+                fs.writeFileSync(process.env.TARGET_SELECTION_DOM_EVIDENCE, JSON.stringify({
+                    target_mount: fixture.manualFields.target_mount.value,
+                    backup_root: fixture.manualFields.backup_root.value,
+                    library_root: fixture.libraryField.value
+                }));
+            }
+            assert.equal(fixture.manualFields.backup_root.value, '/mnt/new/SDMirrors');
+            assert.equal(fixture.libraryField.value, '/mnt/new/MediaLibrary');
+        }
+    },
+    {
+        name: '10 clearing mount does not overwrite custom roots',
+        run() {
+            const fixture = createFixture({ [SELECTED_VALUE]: SELECTED_ROOT });
+            fixture.manualFields.backup_root.value = '/mnt/old/Custom';
+            fixture.libraryField.value = '/mnt/old/CustomDate';
+            fixture.fireLoad();
+            for (const mount of ['/mnt/', '', '/mnt/new']) fixture.inputMount(mount);
+            fixture.changeMount('/mnt/new');
+            assert.equal(fixture.manualFields.backup_root.value, '/mnt/old/Custom');
+            assert.equal(fixture.libraryField.value, '/mnt/old/CustomDate');
+        }
+    },
     {
         name: '6 manual mount rebases both generated roots',
         run() {
@@ -302,7 +340,8 @@ for (const testCase of cases) {
     }
 }
 
-assert.equal(cases.length, 8, 'Every required DOM scenario must execute');
+assert.equal(cases.length, 10, 'Every required DOM scenario must execute');
+if (failed === 0) nativeAssert.equal(assertions, 132, 'Every required DOM assertion must execute');
 console.log(`cases=${cases.length} assertions=${assertions} passed=${passed} failed=${failed}`);
 if (failed > 0) {
     process.exitCode = 1;

@@ -61,6 +61,10 @@ class Element {
     appendChild(child) { this.children.push(child); return child; }
     setAttribute(name, value) { this.attributes[name] = String(value); }
     getAttribute(name) { return this.attributes[name]; }
+    removeAttribute(name) { delete this.attributes[name]; }
+    // HTMLDetailsElement.open reflects presence of the boolean open attribute.
+    get open() { return this.getAttribute('open') !== undefined; }
+    set open(value) { if (value) this.setAttribute('open', ''); else this.removeAttribute('open'); }
     querySelectorAll(selector) {
         const match = selector.match(/^\[([\w-]+)\]$/);
         if (!match) throw new Error('Unsupported DOM selector: ' + selector);
@@ -305,6 +309,116 @@ scenario('J21 malformed task preserves identity without inventing phase progress
         check(tagged(elements['current-backup'],'fieldset').length===0, 'malformed schema shows empty date sections');
     }
 });
+function runningJob(overrides = {}) {
+    return Object.assign({}, backup, {uuid:'same-card', device:'sda1', started_at:1000, task:dateTask()}, overrides);
+}
+function historyRecord(overrides = {}) {
+    return Object.assign({uuid:'same-card', last_backup_at:2000, status:'completed', task:dateTask()}, overrides);
+}
+function detailChoices(node) { return tagged(node,'details').map(detail => detail.open); }
+function setChoices(node, choices) { tagged(node,'details').forEach((detail,index) => detail.open=choices[index]); }
+function historyViews() {
+    return elements['history-table'].querySelectorAll('[data-task-index]');
+}
+scenario('J22 unchanged current snapshot preserves each details toggle', () => {
+    const job=runningJob(), current=elements['current-backup'];
+    context.updateCurrentBackup(job);
+    check(detailChoices(current).join(',')==='false,false,false', 'new current job is not collapsed');
+    setChoices(current,[true,true,true]);
+    context.updateCurrentBackup(JSON.parse(JSON.stringify(job)));
+    check(detailChoices(current).join(',')==='true,true,true', 'unchanged snapshot closes user details');
+    setChoices(current,[false,true,false]);
+    context.updateCurrentBackup(JSON.parse(JSON.stringify(job)));
+    check(detailChoices(current).join(',')==='false,true,false', 'user closing details is not preserved');
+    context.updateCurrentBackup(JSON.parse(JSON.stringify(job)));
+    check(detailChoices(current).join(',')==='false,true,false', 'next poll resurrects an earlier open choice');
+});
+scenario('J23 phase/progress/content updates retain current job choices', () => {
+    const job=runningJob(), current=elements['current-backup'];
+    context.updateCurrentBackup(job);setChoices(current,[true,false,true]);
+    for (const phase of ['planning','transferring','finalizing']) {
+        const next=JSON.parse(JSON.stringify(job));
+        next.task.phase=phase;next.progress_percent=99;next.name='Renamed alias';
+        next.task.warnings[0].count=3;next.task.replaced.path='/new/display/path';next.task.comparison_mode='checksum';
+        context.updateCurrentBackup(next);
+        check(detailChoices(current).join(',')==='true,false,true', 'mutable update changes task identity: ' + phase);
+        check(content(current).includes('Renamed alias') && content(current).includes('3 次'), 'restoring choices must not freeze content');
+    }
+});
+scenario('J24 same card next job and changed source reset current details', () => {
+    const current=elements['current-backup'];
+    for (const changed of [{started_at:1001},{uuid:'other-card'},{device:'sdb1'}]) {
+        context.updateCurrentBackup(runningJob());setChoices(current,[true,true,true]);
+        context.updateCurrentBackup(runningJob(changed));
+        check(detailChoices(current).join(',')==='false,false,false', 'new identity inherited details: ' + JSON.stringify(changed));
+    }
+    for (const absent of [{started_at:undefined},{started_at:null},{started_at:0},{started_at:'1000'},{uuid:undefined},{device:undefined}]) {
+        const job=runningJob(absent);
+        context.updateCurrentBackup(job);setChoices(current,[true,true,true]);context.updateCurrentBackup(job);
+        check(detailChoices(current).join(',')==='false,false,false', 'insufficient current identity guessed from UUID');
+    }
+});
+scenario('J25 history reorder and current rendering cannot mix record choices', () => {
+    const first=historyRecord(), second=historyRecord({uuid:'other-card',last_backup_at:2001});
+    context.updateHistoryTable([first,second]);
+    setChoices(historyViews()[0],[true,false,true]);setChoices(historyViews()[1],[false,true,false]);
+    context.updateCurrentBackup(runningJob());setChoices(elements['current-backup'],[true,true,true]);
+    context.updateHistoryTable([Object.assign({},second,{name:'Updated alias'}),Object.assign({},first,{status:'failed'})]);
+    check(detailChoices(historyViews()[0]).join(',')==='false,true,false', 'history choices keyed by row index');
+    check(detailChoices(historyViews()[1]).join(',')==='true,false,true', 'history reorder loses record choices');
+    check(detailChoices(elements['current-backup']).join(',')==='true,true,true', 'history refresh changes current toggles');
+    setChoices(elements['current-backup'],[false,false,false]);context.updateCurrentBackup(runningJob());
+    check(detailChoices(historyViews()[1]).join(',')==='true,false,true', 'current refresh changes historical toggles');
+    setChoices(historyViews()[1],[false,false,true]);context.updateHistoryTable([second,first]);
+    check(detailChoices(historyViews()[1]).join(',')==='false,false,true', 'history user closing details not preserved');
+    context.updateHistoryTable([second,historyRecord({last_backup_at:2002})]);
+    check(detailChoices(historyViews()[1]).join(',')==='false,false,false', 'same card new history record inherits prior job');
+    check(detailChoices(historyViews()[0]).join(',')==='false,true,false', 'new neighboring record resets unrelated history');
+});
+scenario('J26 mirror/missing/invalid/removed views drop remembered choices', () => {
+    const current=elements['current-backup'];
+    const invalid=dateTask();invalid.version=2;
+    for (const reset of [null,runningJob({task:undefined}),runningJob({task:null}),
+        runningJob({task:Object.assign(dateTask(),{layout:'mirror'})}),runningJob({task:invalid})]) {
+        context.updateCurrentBackup(runningJob());setChoices(current,[true,true,true]);
+        context.updateCurrentBackup(reset);context.updateCurrentBackup(runningJob());
+        check(detailChoices(current).join(',')==='false,false,false', 'current date choices survive clearing update');
+    }
+    for (const reset of [[],[historyRecord({task:undefined})],[historyRecord({task:null})],
+        [historyRecord({task:Object.assign(dateTask(),{layout:'mirror'})})],[historyRecord({task:invalid})]]) {
+        context.updateHistoryTable([historyRecord()]);setChoices(historyViews()[0],[true,true,true]);
+        context.updateHistoryTable(reset);context.updateHistoryTable([historyRecord()]);
+        check(detailChoices(historyViews()[0]).join(',')==='false,false,false', 'history date choices survive clearing update');
+    }
+});
+scenario('J27 conditional details use stable roles, not changing node order', () => {
+    for (const historical of [false,true]) {
+        const render=value => historical ? context.updateHistoryTable([historyRecord({task:value})]) : context.updateCurrentBackup(runningJob({task:value}));
+        const view=() => historical ? historyViews()[0] : elements['current-backup'];
+        render(dateTask());setChoices(view(),[true,true,false]);
+        const noWarning=dateTask();noWarning.warnings=[];render(noWarning);
+        check(detailChoices(view()).join(',')==='true,false', 'warning disappearance shifts path/help choices');
+        render(dateTask());
+        check(detailChoices(view()).join(',')==='false,true,false', 'removed warning resurrects old open state');
+        setChoices(view(),[true,true,true]);
+        const noPath=dateTask();noPath.replaced.path=null;render(noPath);
+        check(detailChoices(view()).join(',')==='true,true', 'path disappearance shifts metadata/help choices');
+        render(dateTask());
+        check(detailChoices(view()).join(',')==='true,false,true', 'removed path resurrects old open state');
+    }
+});
+scenario('J28 history identity requires record time; removed records do not cache choices', () => {
+    for (const absent of [{last_backup_at:undefined},{last_backup_at:null},{last_backup_at:0},{last_backup_at:'2000'},{uuid:undefined}]) {
+        const entry=historyRecord(absent);
+        context.updateHistoryTable([entry]);setChoices(historyViews()[0],[true,true,true]);
+        context.updateHistoryTable([entry]);
+        check(detailChoices(historyViews()[0]).join(',')==='false,false,false', 'history guessed record identity from card alone');
+    }
+    const first=historyRecord(), second=historyRecord({uuid:'other-card'});
+    context.updateHistoryTable([first,second]);setChoices(historyViews()[0],[true,true,true]);
+    context.updateHistoryTable([second]);context.updateHistoryTable([first,second]);
+    check(detailChoices(historyViews()[0]).join(',')==='false,false,false', 'removed record recovered unbounded cached choices');
+});
 // Optional argument is a copy of the actually installed guest framework, not a mock.
 async function realXHR() {
     const framework=fs.readFileSync(process.argv[2], 'utf8');
@@ -338,8 +452,8 @@ async function realXHR() {
     const domOnly=process.argv[2]==='--dom-only';
     check(process.argv[2], 'actual installed LuCI source path or explicit --dom-only required');
     if (!domOnly && process.argv[2]) await realXHR();
-    check(ran===(domOnly ? 20 : 21), 'unexpected case count');
-    check(assertions===(domOnly ? 168 : 177), 'unexpected assertion count before final hard-count guard');
+    check(ran===(domOnly ? 27 : 28), 'unexpected case count');
+    check(assertions===(domOnly ? 218 : 227), 'unexpected assertion count before final hard-count guard');
     console.log(`ran=${ran} passed=${ran-failedCases} failed=${failedCases} assertions=${assertions} assertion_failures=${failures}`);
     console.log(domOnly ? 'Boundary: production renderer + Node DOM double; no browser/E2E or actual LuCI XHR run.' : 'Boundary: Node DOM double + installed LuCI XHR source; not browser/E2E.');
     if (failures) process.exitCode=1;

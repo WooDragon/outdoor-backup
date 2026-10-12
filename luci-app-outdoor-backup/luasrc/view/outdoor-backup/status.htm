@@ -437,9 +437,10 @@ function taskSection(title) {
     section.appendChild(taskNode('legend', '', title));
     return section;
 }
-/** @param {string} title Toggle label. @returns {Element} Initially closed help. */
-function taskDetails(title) {
+/** @param {string} title Toggle label. @param {string} role Stable UI role. @returns {Element} Initially closed help. */
+function taskDetails(title, role) {
     var details = taskNode('details', 'outdoor-task-details');
+    details.setAttribute('data-task-detail', role);
     details.appendChild(taskNode('summary', '', title));
     return details;
 }
@@ -485,7 +486,7 @@ function metadataSummary(task) {
         return section;
     }
     var notices = taskNode('ul', 'outdoor-task-notices');
-    var details = taskDetails('元数据技术详情');
+    var details = taskDetails('元数据技术详情', 'metadata');
     task.warnings.forEach(function(warning) {
         var known = Object.prototype.hasOwnProperty.call(messages, warning.code);
         notices.appendChild(taskNode('li', '', (known ? messages[warning.code] : '未识别的元数据提示') + ' — ' + warning.count + ' 次'));
@@ -505,7 +506,7 @@ function replacedSummary(replaced) {
     section.appendChild(taskNode('p', '', text));
     section.appendChild(taskNode('p', 'cbi-section-descr', '保留目录存在不代表已保留文件；旧版本也不证明内容不同。'));
     if (replaced.path !== null) {
-        var details = taskDetails('保留目录路径');
+        var details = taskDetails('保留目录路径', 'retained-path');
         details.appendChild(taskNode('code', 'outdoor-task-path', replaced.path));
         section.appendChild(details);
     }
@@ -513,7 +514,7 @@ function replacedSummary(replaced) {
 }
 /** @param {Object} task Valid date task. @returns {Element} Collapsed comparison/help, no write actions. */
 function comparisonHelp(task) {
-    var details = taskDetails('比较方式与操作边界');
+    var details = taskDetails('比较方式与操作边界', 'comparison');
     details.appendChild(taskNode('p', '', task.comparison_mode === 'quick' ?
         'Quick compares size/mtime; same size/mtime content changes may be missed. Mtime-only changes may retain identical old content in replaced.' :
         'Checksum reads current source and corresponding destination media in full; it does not audit historical media absent from this card.'));
@@ -532,10 +533,52 @@ function taskSummary(task) {
     view.appendChild(comparisonHelp(task));
     return view;
 }
-/** @param {Element} container Refreshed current/history container. @param {Object} task Optional task. @returns {void} */
-function appendTaskSummary(container, task) {
+/** @param {Object} record Published current/history entry. @param {boolean} historical Entry kind.
+ * @returns {string|null} Stable published job identity; insufficient legacy fields cannot inherit choices.
+ */
+function taskRecordIdentity(record, historical) {
+    if (!record || !validTask(record.task) || record.task.layout !== 'date' ||
+        typeof record.uuid !== 'string' || !record.uuid.trim()) return null;
+    var timestamp = historical ? record.last_backup_at : record.started_at;
+    if (!isNonNegativeFinite(timestamp) || timestamp === 0) return null;
+    if (!historical && (typeof record.device !== 'string' || !record.device.trim())) return null;
+    return JSON.stringify(historical ? ['history', record.uuid, timestamp] :
+        ['current', record.uuid, timestamp, record.device]);
+}
+/** @param {Element} owner Current container or history tbody. @returns {Object} One-refresh choices.
+ * Read actual DOM state, including user-closed details. Drop old view references
+ * before rebuilding: removed records/roles have no cache to resurrect later.
+ */
+function takeTaskDetails(owner) {
+    var saved = Object.create(null);
+    var views = owner._outdoorTaskViews || [];
+    owner._outdoorTaskViews = [];
+    views.forEach(function(view) {
+        var choices = Object.create(null);
+        var details = view.querySelectorAll('[data-task-detail]');
+        for (var i = 0; i < details.length; i++) {
+            choices[details[i].getAttribute('data-task-detail')] = details[i].open;
+        }
+        saved[view._outdoorTaskIdentity] = choices;
+    });
+    return saved;
+}
+/** @param {Element} container Refreshed current/history cell. @param {Object} task Optional task.
+ * @param {string|null} identity Stable record key. @param {Object} saved Previous DOM choices.
+ * @param {Element} owner Optional history tbody; current uses container. @returns {void}
+ */
+function appendTaskSummary(container, task, identity, saved, owner) {
     var summary = taskSummary(task);
-    if (summary) container.appendChild(summary);
+    if (!summary) return;
+    container.appendChild(summary);
+    if (!identity) return;
+    var choices = saved[identity] || Object.create(null);
+    var details = summary.querySelectorAll('[data-task-detail]');
+    for (var i = 0; i < details.length; i++) {
+        details[i].open = choices[details[i].getAttribute('data-task-detail')] === true;
+    }
+    summary._outdoorTaskIdentity = identity;
+    (owner || container)._outdoorTaskViews.push(summary);
 }
 /** @param {Object} backup Active snapshot. @returns {string} Existing main identity region with escaped text. */
 function backupIdentity(backup) {
@@ -601,6 +644,8 @@ function isNonNegativeFinite(value) {
 
 function updateCurrentBackup(backup) {
     var container = document.getElementById('current-backup');
+    var detailState = takeTaskDetails(container);
+    var taskIdentity = taskRecordIdentity(backup, false);
 
     if (!backup || !backup.active) {
         container.innerHTML = '<p style="color: #888; font-style: italic;">No backup in progress</p>';
@@ -610,14 +655,14 @@ function updateCurrentBackup(backup) {
     var taskValid = validTask(backup.task);
     if (backup.task !== undefined && backup.task !== null && !taskValid) {
         container.innerHTML = backupIdentity(backup);
-        appendTaskSummary(container, backup.task);
+        appendTaskSummary(container, backup.task, taskIdentity, detailState);
         return;
     }
     if (taskValid && backup.task.phase !== 'transferring') {
         container.innerHTML = backupIdentity(backup) + '<p>' +
             (backup.task.phase === 'planning' ? '正在分析素材 / Analyzing media; progress unknown; no ETA' :
                 'Finalizing / 正在完成同步、摘要与最终检查; no ETA') + '</p>';
-        appendTaskSummary(container, backup.task);
+        appendTaskSummary(container, backup.task, taskIdentity, detailState);
         return;
     }
 
@@ -674,7 +719,7 @@ function updateCurrentBackup(backup) {
 
     html += '</div>';
     container.innerHTML = html;
-    appendTaskSummary(container, backup.task);
+    appendTaskSummary(container, backup.task, taskIdentity, detailState);
 }
 
 function updateStorageInfo(storage) {
@@ -707,6 +752,7 @@ function updateStorageInfo(storage) {
 
 function updateHistoryTable(history) {
     var tbody = document.getElementById('history-table');
+    var detailState = takeTaskDetails(tbody);
 
     if (!history || history.length === 0) {
         tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #888; font-style: italic;">No backup history found</td></tr>';
@@ -742,7 +788,8 @@ function updateHistoryTable(history) {
         var taskCells = tbody.querySelectorAll('[data-task-index]');
         for (var taskIndex = 0; taskIndex < taskCells.length; taskIndex++) {
             var cell = taskCells[taskIndex];
-            appendTaskSummary(cell, history[Number(cell.getAttribute('data-task-index'))].task);
+            var record = history[Number(cell.getAttribute('data-task-index'))];
+            appendTaskSummary(cell, record.task, taskRecordIdentity(record, true), detailState, tbody);
         }
     }
     var links = tbody.querySelectorAll('[data-history-index]');

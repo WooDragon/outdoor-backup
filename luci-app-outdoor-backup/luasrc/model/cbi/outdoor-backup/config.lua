@@ -304,21 +304,22 @@ end
 -- Marker I/O is a read-only UI concern; runtime config_load remains pure. Empty
 -- configured offset adopts an existing policy (including 0), not the new default.
 local initial_offset = offset:cfgvalue("config")
-local displayed_offset
-local function default_offset(section)
-    if displayed_offset then return displayed_offset end
-    local root = library_root:cfgvalue(section)
+-- Freeze the display baseline during model construction, before native parse
+-- can stage target/library changes. Args: none. Returns canonical offset text.
+local function initial_display_offset()
+    if configured(initial_offset) then return initial_offset end
+    local root = configured(initial_library) and initial_library or child_root(initial_target, "MediaLibrary")
     local marker = root and require("nixio.fs").lstat(root .. "/.outdoor-backup/library.json")
     local policy = marker and media.library(root)
-    displayed_offset = policy and tostring(policy.archive_offset_minutes) or "480"
-    return displayed_offset
+    return policy and tostring(policy.archive_offset_minutes) or "480"
 end
+local displayed_offset = initial_display_offset()
 offset.cfgvalue = function(self, section)
-    return configured(initial_offset) and initial_offset or default_offset(section)
+    return displayed_offset
 end
 offset.formvalue = function(self, section)
     local value = self.map:formvalue(self:cbid(section))
-    if not configured(initial_offset) and value == default_offset(section) then return "" end
+    if not configured(initial_offset) and (value == nil or value == displayed_offset) then return "" end
     return value
 end
 

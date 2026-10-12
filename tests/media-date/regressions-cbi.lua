@@ -3,6 +3,16 @@ local root = arg[1]
 local ran = 0
 local function run(name, effective, saved, form, value, accepted)
     local options = {}
+    local initial_root = saved.library_root or effective.library_root
+    if initial_root == '' then initial_root = (saved.target_mount or effective.target_mount) .. '/MediaLibrary' end
+    local marker_reads = 0
+    -- These validator fixtures own no library marker. Model construction now
+    -- reads its immutable baseline eagerly; only this exact read is permitted.
+    package.loaded['nixio.fs'] = {lstat=function(path)
+        assert(path == initial_root .. '/.outdoor-backup/library.json', 'non-initial marker read')
+        marker_reads = marker_reads + 1
+        return nil
+    end}
     package.loaded['luci.model.outdoor-backup.target'] = {list=function() return nil, 'synthetic unavailable' end}
     package.loaded['luci.model.outdoor-backup.media'] = {
         config=function() return effective end, probe=function() return true end
@@ -26,6 +36,7 @@ local function run(name, effective, saved, form, value, accepted)
     translate = function(text) return text end
     TypedSection = {}; Value = {}; ListValue = {}; Flag = {}; DummyValue = {}
     dofile(root .. '/luci-app-outdoor-backup/luasrc/model/cbi/outdoor-backup/config.lua')
+    assert(marker_reads == 1, 'initial marker must be checked exactly once during construction')
     local library = options.library_root
     -- Absent browser fields take native CBI's empty/remove branch, not the
     -- rendered cfgvalue. This adapter checks validators, never claims a save.

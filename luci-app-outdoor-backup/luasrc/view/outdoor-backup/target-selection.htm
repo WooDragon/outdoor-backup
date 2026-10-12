@@ -53,11 +53,14 @@
         var mounts = JSON.parse(data.getAttribute('data-mounts'));
         var currentMount = manual ? (mount && mount.value) : mounts[selector.value];
         rebaseRoot(library, previousMount, currentMount, 'MediaLibrary');
-        if (manual && mount) {
+        if (manual && mount && mount.value) {
             rebaseRoot(backup, previousManualMount, mount.value, 'SDMirrors');
             previousManualMount = mount.value;
         }
-        previousMount = currentMount;
+        // Clearing an input must not discard the last root-matching anchor.
+        if (currentMount) {
+            previousMount = currentMount;
+        }
         summary.textContent = manual ?
             'Manual mode: the fields below are saved as entered.' :
             'Selected target will save backup root: ' + (roots[selector.value] || 'unknown');
@@ -78,7 +81,9 @@
         }
         var mount = document.getElementById('cbid.outdoor-backup.<%=pcdata(section)%>.target_mount');
         if (mount) {
-            previousMount = previousManualMount = mount.value;
+            if (mount.value) {
+                previousMount = previousManualMount = mount.value;
+            }
             mount.addEventListener('change', updateTargetFields);
             mount.addEventListener('input', updateTargetFields);
         }

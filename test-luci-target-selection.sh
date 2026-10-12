@@ -15,7 +15,11 @@ fi
 
 mkdir -p /var/lock
 opkg update >/dev/null
-opkg install lua luci-compat uci libuci-lua >/dev/null
+opkg install lua luci-compat uci libuci-lua node >/dev/null
+
+# Native CBI consumes the production DOM's actual final values, even on RED.
+dom_rc=0
+TARGET_SELECTION_DOM_EVIDENCE=/tmp/target-selection-dom.json node /src/test-target-selection-ui.js || dom_rc=$?
 
 lua - /src/luci-app-outdoor-backup/luasrc/model/cbi/outdoor-backup/config.lua <<'LUA'
 local model = assert(arg[1], "missing config model")
@@ -172,7 +176,7 @@ local function render_target_template(contents, selector)
     return table.concat(chunks)
 end
 
-local function submit(map, values, omit_token)
+local function submit(map, values, omit_token, omit_offset)
     forms = { ["cbi.submit"] = "1", token = not omit_token and "target-fixture-token" or nil,
         [form_value("backup_layout")] = "mirror", [form_value("library_root")] = "",
         [form_value("archive_offset_minutes")] = "" }
@@ -186,6 +190,7 @@ local function submit(map, values, omit_token)
             forms[form_value(name)] = value
         end
     end
+    if omit_offset then forms[form_value("archive_offset_minutes")] = nil end
     map:parse()
 end
 
@@ -650,9 +655,67 @@ do
     check(reloaded(root, "archive_offset_minutes") == "-60", "D09 integer overwritten")
 end
 
-check(cases == 48, "all required cases executed")
-if assertions ~= 333 then
-    fail(string.format("all required assertions executed (expected=333, actual=%d)", assertions))
+-- Independent GET and POST Maps: never render POST offset before Map.parse.
+for _, source_policy in ipairs({false, true}) do
+    for _, omit_offset in ipairs({false, true}) do
+        begin("F1-" .. tostring(source_policy) .. "-" .. tostring(omit_offset), "GET offset inheritance is stable across POST target staging")
+        local root = temporary_dir("get-post")
+        current_confdir, current_savedir = root .. "/conf", root .. "/save"
+        local source_target, destination = root .. "/A", root .. "/B"
+        local stored = {enabled="0", target_mount=source_target, mount_point="/virtual/source"}
+        write_config(current_confdir, stored)
+        fixture:configure(stored)
+        fixture:authenticate()
+        local library = (source_policy and source_target or destination) .. "/MediaLibrary"
+        assert(os.execute("mkdir -p " .. library .. "/.outdoor-backup") == 0)
+        local policy = {version=1, library_id="22222222-2222-4222-8222-222222222222",
+            layout="date", parser_profile="media-date-v1", archive_offset_minutes=0}
+        local marker = library .. "/.outdoor-backup/library.json"
+        local content = require("luci.jsonc").stringify(policy)
+        local file = assert(io.open(marker, "w")); file:write(content); file:close()
+        fixture.libraries = {[library]=policy}
+        local targets = {{device="/dev/sdb1", uuid="SSD-ONE", mount=destination, fstype="ext4"}}
+        local document = json(targets, source_target, source_target .. "/SDMirrors")
+        queue(helper(document), helper(document), helper(document))
+        forms = {}
+        local get_map = assert(dofile(model))
+        local shown = option(get_map, "archive_offset_minutes"):cfgvalue("config")
+        check(shown == (source_policy and "0" or "480"), "F1 incorrect GET display")
+        check(saved_config(root) == "", "F1 GET wrote UCI")
+        local post_map = assert(dofile(model))
+        submit(post_map, {enabled="0", _target_selector="7:SSD-ONE" .. destination,
+            target_mount=source_target, target_uuid="", backup_root=source_target .. "/SDMirrors",
+            mount_point="/virtual/source", backup_layout="date",
+            library_root=source_target .. "/MediaLibrary", archive_offset_minutes=shown}, nil, omit_offset)
+        check(post_map.save, "F1 independent POST rejected unchanged/absent offset")
+        check(reloaded(root, "archive_offset_minutes") == nil, "F1 display/fallback became explicit offset")
+        check(reloaded(root, "library_root") == destination .. "/MediaLibrary", "F1 date root not selected")
+        check(reloaded(root, "backup_root") == destination .. "/SDMirrors", "F1 mirror root not selected")
+        check(require("nixio.fs").readfile(marker) == content, "F1 policy marker modified")
+        fixture.libraries = nil
+    end
+end
+
+begin("F2", "actual DOM clearing/retyping values save through native CBI unchanged")
+do
+    local file = assert(io.open("/tmp/target-selection-dom.json", "r"), "missing actual DOM evidence")
+    local values = assert(require("luci.jsonc").parse(file:read("*a"))); file:close()
+    local stored = {enabled="0", target_mount="/mnt/old", mount_point="/virtual/source"}
+    local map, root = load_map("dom-input-save", stored, json({}, "/mnt/old", "/mnt/old/SDMirrors"))
+    check(values.target_mount == "/mnt/new", "F2 missing actual final input")
+    values.enabled, values._target_selector, values.target_uuid = "0", "manual", ""
+    values.mount_point, values.backup_layout, values.archive_offset_minutes = "/virtual/source", "date", "480"
+    submit(map, values)
+    check(map.save, "F2 actual DOM values rejected by native save")
+    check(reloaded(root, "target_mount") == values.target_mount, "F2 mount not saved")
+    check(reloaded(root, "backup_root") == "/mnt/new/SDMirrors", "F2 generated mirror not saved")
+    check(reloaded(root, "library_root") == "/mnt/new/MediaLibrary", "F2 generated date root not saved")
+    check(reloaded(root, "archive_offset_minutes") == nil, "F2 display offset persisted")
+end
+
+check(cases == 53, "all required cases executed")
+if assertions ~= 380 then
+    fail(string.format("all required assertions executed (expected=380, actual=%d)", assertions))
 end
 if failed ~= 0 then
     print(string.format("cases=%d assertions=%d failed=%d", cases, assertions, failed))
@@ -660,3 +723,4 @@ if failed ~= 0 then
 end
 print(string.format("cases=%d assertions=%d failed=0", cases, assertions))
 LUA
+[ "$dom_rc" -eq 0 ]
