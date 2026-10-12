@@ -1,6 +1,6 @@
 # 媒体日期库：本地实现与接口
 
-> 状态：现行源码合同已按 Issue #65 同步。本轮只有定向证据；全量、root CI、SDK/IPK 与固件尚未执行。首轮 F1–F8、R1（CI Lua）及 fixture/RPC bootstrap 的闭合与 APPROVED 属于历史轮次，不扩大到本轮。本文不是部署批准。
+> 状态：现行源码合同已按 Issue #65 同步。本轮修后本地全量已通过，GitHub CI/SDK/IPK 和固件仍待验证（见 [第 6.6 节](#66-issue-65warning默认配置与日期状态展示)）。首轮 F1–F8、R1（CI Lua）及 fixture/RPC bootstrap 的闭合与 APPROVED 属于历史轮次，不扩大到本轮。本文不是部署批准。
 > 读者：维护 OpenWrt shell、Perl 和 Lua LuCI 接口的开发者。synthetic 指人工构造的隔离素材或存储夹具，不是真实原卡验收。
 
 **前置阅读**：产品不变量、日期规则和 G1–G6 门槛在 [media-date-library-design.md](media-date-library-design.md)。变更产品合同前应先读取该设计。执行设备命令前应先读取 [media-date-library-operations.md](media-date-library-operations.md)。历史设计与本地实现评审状态在 [media-date-library-review.md](media-date-library-review.md)。本文只记录现行实现，不复制设计取舍。
@@ -75,7 +75,7 @@ manager 复用原 owner、FD 8 lease、FD 9 anchor 和 runner/drain。所有 rea
 
 ## 6. 验收证据的边界
 
-本节是验证数字与证据边界的单一事实源。本次文档维护只核对既有日志，没有重新执行测试。第 6.1–6.5 节及 PR #60 第 1 轮记录属于历史执行与修订；其中“本次/当前”按该轮解释，不代替 Issue #65 的状态。历史评审应先读取 [评审记录第 7 节](media-date-library-review.md#7-本地实现修订闭合与有限范围复核)。本轮证据在第 6.6 节；修后全量尚未执行，不能称为 release passed。
+本节是验证数字与证据边界的单一事实源。本次文档维护只核对既有日志，没有重新执行测试。第 6.1–6.5 节及 PR #60 第 1 轮记录属于历史执行与修订；其中“本次/当前”按该轮解释，不代替 Issue #65 的状态。历史评审应先读取 [评审记录第 7 节](media-date-library-review.md#7-本地实现修订闭合与有限范围复核)。本轮证据在[第 6.6 节](#66-issue-65warning默认配置与日期状态展示)；本轮修后本地全量已通过，GitHub CI/SDK/IPK 和固件仍待验证；不能称为 release passed。
 
 ### 6.1 唯一收尾全量与分层计数
 
@@ -252,4 +252,8 @@ F1 的 native GET/POST 场景验证初始显示基准在任何 staged target 变
 
 本次文档核对读取了上述结果与退出码，没有补造测试命令或临时素材证据。Warning 证据不等于真实 provider IPK 安装；host synthetic 不等于目标工具或真实文件系统验收；Node DOM double 不等于浏览器或实际 LuCI XHR 验收。真实素材只确认过字段可读，不证明修后设备日期归档或 browser 验收。
 
-本轮全量、root CI、SDK/IPK 和固件尚未执行。目标真实介质、拔盘/掉电、性能及浏览器/full CGI auth 的 G1–G6 未验收项仍由 [Issue #59](https://github.com/WooDragon/outdoor-backup/issues/59) 单独跟踪；Issue #65 的局部结果不关闭它。包版本只在 [BUILD 的可选包边界](../BUILD.md#可选日期包与-provider-边界) 记录，不把 recipe release 当作发布成功。
+本轮修后本地全量已通过，GitHub CI/SDK/IPK 和固件仍待验证。目标真实介质、拔盘/掉电、性能及浏览器/full CGI auth 的 G1–G6 未验收项仍由 [Issue #59](https://github.com/WooDragon/outdoor-backup/issues/59) 单独跟踪；Issue #65 的局部结果不关闭它。包版本只在 [BUILD 的可选包边界](../BUILD.md#可选日期包与-provider-边界) 记录，不把 recipe release 当作发布成功。
+
+本轮评审修复对应源码 commit `e42d904661f57ad1abd212cd521d38d2f5282578`（tree `c7c1956521ac53829c76353c8ae01937be50a980`）。该轮在固定镜像 `openwrt/rootfs:aarch64_generic-24.10.8@sha256:f6dd33c1d9b7d6f1e0848f2fbb92b8d03fc9b425dc08c3574a44936b93133704` 中实际执行了一次既有入口 `tests/run-ci.sh`。该入口运行完整根目录 suite。runner 发现 42 个 suite。runner 执行 42 个 suite。结果为 `passed=42`、`failed=0`、`blocked-suite=0`、`rc=0`。其中包括新增的 status UI suite。
+
+suite 数量不等于 BDD 场景数或断言数。内部 SDK/IPK/G3 provider 标识仍为 `BLOCKED/source-moduleload`。42 个 suite 全绿不证明目标 provider、真实介质或浏览器验收通过。运行结束后，仓库 tracked 与 staged 状态均为 clean。GitHub CI、SDK/IPK 和固件尚未执行。本轮没有勾选 Issue #59 的真实验收门槛。
